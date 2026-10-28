@@ -1,0 +1,7 @@
+{
+  "required": true,
+  "package": "dev.horizonlab.testmod.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "mixins": ["BaseMixin"],
+  "injectors": { "defaultRequire": 1 }
+}

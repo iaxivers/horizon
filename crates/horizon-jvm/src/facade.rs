@@ -74,6 +74,37 @@ pub fn ensure(root: &Path) -> Result<PathBuf, String> {
     Ok(out)
 }
 
+/// The game's own libraries (DataFixerUpper, fastutil, Guava, JOML...) as `horizon-prepare`
+/// copied them, checked, into `.local/minecraft/<version>/libraries/client/`: game classes
+/// extend and name them, so Fabric's class loader needs them beside the facade. Sorted.
+pub fn game_libraries(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let lock = horizon_prepare::artifacts::Lock::read(root)?;
+    let dir = lock.directory.join("libraries/client");
+    let mut jars = Vec::new();
+    let mut stack = vec![dir.clone()];
+    while let Some(next) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&next) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "jar") {
+                jars.push(path);
+            }
+        }
+    }
+    if jars.is_empty() {
+        return Err(format!(
+            "no game libraries in {}: run horizon-prepare --prepare first",
+            dir.display()
+        ));
+    }
+    jars.sort();
+    Ok(jars)
+}
+
 /// What [`build`] did.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Stats {

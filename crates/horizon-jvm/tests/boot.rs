@@ -47,12 +47,24 @@ fn jvm_starts_and_both_directions_work() {
     assert!(horizon_jvm::jars(&dir.join("missing")).is_empty());
 
     horizon_jvm::set_log_sink(Some(record));
-    let bridge = horizon_jvm::start(&home, &jars, &[]).expect("JVM starts");
+    let config = horizon_jvm::Config {
+        home: home.clone(),
+        work: dir.join("work"),
+        jars: jars.clone(),
+        class_path: Vec::new(),
+        fabric: None,
+    };
+    let bridge = horizon_jvm::start(&config).expect("JVM starts");
     let version = bridge.java_version().to_string();
     assert!(!version.is_empty());
+    assert!(!bridge.fabric() && bridge.mods().is_empty());
 
     // A second start returns the same JVM and runs nothing again.
-    let again = horizon_jvm::start(&home, &[], &[]).expect("idempotent");
+    let again = horizon_jvm::start(&horizon_jvm::Config {
+        jars: Vec::new(),
+        ..config
+    })
+    .expect("idempotent");
     assert!(std::ptr::eq(bridge, again));
     assert!(horizon_jvm::get().is_some());
 

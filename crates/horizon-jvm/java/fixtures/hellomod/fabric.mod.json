@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "horizon_hello",
+  "version": "1.0.0",
+  "name": "Horizon Hello",
+  "description": "Says hello from inside Horizon: a check of the Java mod bridge.",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["dev.horizonlab.hellomod.HelloMod"],
+    "client": ["dev.horizonlab.hellomod.HelloMod"]
+  },
+  "depends": {
+    "fabricloader": ">=0.20",
+    "minecraft": "26.3"
+  }
+}

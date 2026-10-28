@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "horizon_test",
+  "version": "1.0.0",
+  "name": "Horizon Test Mod",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["dev.horizonlab.testmod.TestMod"],
+    "client": ["dev.horizonlab.testmod.ClientMod"]
+  },
+  "mixins": ["horizon_test.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.20",
+    "minecraft": "26.3"
+  }
+}

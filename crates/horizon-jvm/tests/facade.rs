@@ -86,7 +86,14 @@ fn facade_classes_load_and_return_defaults() {
     assert_eq!(stats.skipped, 5);
     assert!(stats.stubbed >= 20, "{stats:?}");
 
-    let bridge = horizon_jvm::start(&home, &[], &[facade]).expect("JVM starts");
+    let bridge = horizon_jvm::start(&horizon_jvm::Config {
+        home: home.clone(),
+        work: dir.join("work"),
+        jars: Vec::new(),
+        class_path: vec![facade],
+        fabric: None,
+    })
+    .expect("JVM starts");
     let mut env = bridge.vm().attach_current_thread().unwrap();
     let mut run = || -> jni::errors::Result<()> {
         // Constructors: one with a `new` among the super call's arguments, one calling this(...).

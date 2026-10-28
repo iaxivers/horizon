@@ -1509,6 +1509,8 @@ dependencies = [
  "jni 0.21.1",
  "libloading",
  "log",
+ "sha2",
+ "ureq",
  "zip",
 ]
 

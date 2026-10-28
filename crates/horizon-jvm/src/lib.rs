@@ -1,4 +1,4 @@
-//! Java mods inside Horizon: phase 1 of the Java mod bridge.
+//! Java mods inside Horizon: the Java mod bridge.
 //!
 //! The game starts one JVM per process, and only when `mods-java/` (beside `options.txt`)
 //! holds at least one `.jar`. With no jars nothing here runs: no library is loaded and no
@@ -6,16 +6,20 @@
 //! PATH, found the way `horizon-prepare` finds it), loaded at run time from its `libjvm`, so
 //! the game links against no JDK.
 //!
-//! What runs in it so far: the bridge's own classes (`java/dev/horizonlab/bridge/`, compiled by
-//! `build.rs` and embedded in the binary), with Rust natives registered on
-//! `dev.horizonlab.bridge.Natives`. Fabric Loader and the facade come in phase 2.
+//! What runs in it:
+//! - the bridge's own jar (`java/dev/horizonlab/bridge/`, built by `build.rs`, embedded in the
+//!   binary and written to the work folder), with Rust natives on `dev.horizonlab.bridge.Natives`;
+//! - with a facade ([`facade`]), Fabric Loader ([`libs`]) through `HorizonGameProvider`: it
+//!   finds the mods in `mods-java/`, applies their Mixins to the facade's classes and runs their
+//!   `main` and `client`/`server` entrypoints.
 //!
 //! A JVM can be created once per process (JNI allows no second one after a destroy), so
 //! [`start`] is idempotent: later calls return the running bridge.
 
 pub mod facade;
+pub mod libs;
 
-use jni::objects::{JClass, JObject, JString, JValue};
+use jni::objects::{JClass, JObject, JObjectArray, JString, JValue};
 use jni::{JNIEnv, JavaVM, NativeMethod, sys};
 use std::ffi::{CString, c_void};
 use std::path::{Path, PathBuf};
@@ -31,15 +35,8 @@ pub const JAVA_MAJOR: i64 = 25;
 /// the folder holding `bin/` and `lib/`.
 pub const JAVA_HOME_VAR: &str = "HORIZON_JAVA_HOME";
 
-/// The bridge's own class files, compiled by build.rs.
-const NATIVES_CLASS: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/classes/dev/horizonlab/bridge/Natives.class"
-));
-const BOOT_CLASS: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/classes/dev/horizonlab/bridge/Boot.class"
-));
+/// The bridge's jar, built by build.rs.
+const BRIDGE_JAR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/horizon-bridge.jar"));
 
 static BRIDGE: OnceLock<Bridge> = OnceLock::new();
 /// Held while a JVM is being made, so two threads never both try.
@@ -47,11 +44,50 @@ static STARTING: Mutex<()> = Mutex::new(());
 /// Where `Natives.log` lines go instead of the game log (tests).
 static SINK: Mutex<Option<fn(&str)>> = Mutex::new(None);
 
+/// Which half of the game the mods run in: their `client` or `server` entrypoints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Client,
+    Server,
+}
+
+/// What [`start`] runs.
+pub struct Config {
+    /// The Java home to load the JVM from ([`find_java_home`]).
+    pub home: PathBuf,
+    /// The bridge's own files: its jar, and Fabric Loader's in `lib/`.
+    pub work: PathBuf,
+    /// The jars in `mods-java/` ([`jars`]).
+    pub jars: Vec<PathBuf>,
+    /// More class path entries (tests put a facade there to load it without Fabric).
+    pub class_path: Vec<PathBuf>,
+    /// Fabric Loader runs only with a facade.
+    pub fabric: Option<Fabric>,
+}
+
+/// Fabric Loader's part of [`Config`].
+pub struct Fabric {
+    /// The facade jar ([`facade::ensure`]).
+    pub facade: PathBuf,
+    /// The game's libraries ([`facade::game_libraries`]), on Fabric's class path beside it.
+    pub libraries: Vec<PathBuf>,
+    /// The folder Fabric reads mods from (`mods-java/`).
+    pub mods: PathBuf,
+    /// The game folder: Fabric writes `config/` there.
+    pub game_dir: PathBuf,
+    /// The game version Horizon plays.
+    pub version: String,
+    pub side: Side,
+}
+
 /// The running JVM.
 pub struct Bridge {
     vm: JavaVM,
     java_version: String,
     home: PathBuf,
+    /// The mods Fabric loaded, `id version`, built-in ones included; empty without Fabric.
+    mods: Vec<String>,
+    fabric: bool,
 }
 
 impl Bridge {
@@ -63,14 +99,27 @@ impl Bridge {
     pub fn java_version(&self) -> &str {
         &self.java_version
     }
-    /// Loads (and initializes) a class by its binary name, `net/minecraft/...`, on this
-    /// thread: a check that the class path holds it and that it verifies.
+    /// The Java home the JVM was loaded from.
+    pub fn home(&self) -> &Path {
+        &self.home
+    }
+    /// Whether Fabric Loader started.
+    pub fn fabric(&self) -> bool {
+        self.fabric
+    }
+    /// The mods Fabric loaded, as `id version`: `minecraft`, `java` and `fabricloader` too.
+    pub fn mods(&self) -> &[String] {
+        &self.mods
+    }
+    /// Loads (and initializes) a class by its binary name, `net/minecraft/...`: through
+    /// Fabric's class loader when Fabric runs (so Mixins apply), else the system one.
     pub fn check_class(&self, name: &str) -> Result<(), String> {
         let mut env = self
             .vm
             .attach_current_thread()
             .map_err(|e| format!("attach: {e}"))?;
-        match env.find_class(name) {
+        let found = self.find_class(&mut env, name);
+        match found {
             Ok(class) => {
                 let _ = env.delete_local_ref(class);
                 Ok(())
@@ -78,9 +127,25 @@ impl Bridge {
             Err(e) => Err(describe(&mut env, e)),
         }
     }
-    /// The Java home the JVM was loaded from.
-    pub fn home(&self) -> &Path {
-        &self.home
+    /// A game or mod class, through Fabric's class loader when Fabric runs.
+    pub fn find_class<'local>(
+        &self,
+        env: &mut JNIEnv<'local>,
+        name: &str,
+    ) -> jni::errors::Result<JClass<'local>> {
+        if !self.fabric {
+            return env.find_class(name);
+        }
+        let name = env.new_string(name)?;
+        let class = env
+            .call_static_method(
+                "dev/horizonlab/bridge/fabric/FabricBoot",
+                "gameClass",
+                "(Ljava/lang/String;)Ljava/lang/Class;",
+                &[JValue::Object(&name)],
+            )?
+            .l()?;
+        Ok(JClass::from(class))
     }
 }
 
@@ -147,21 +212,50 @@ pub fn libjvm(home: &Path) -> Result<PathBuf, String> {
         })
 }
 
+/// Writes the embedded bridge jar to `work/horizon-bridge.jar` when it differs.
+fn write_bridge_jar(work: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(work).map_err(|e| format!("{}: {e}", work.display()))?;
+    let path = work.join("horizon-bridge.jar");
+    if std::fs::read(&path).ok().as_deref() != Some(BRIDGE_JAR) {
+        std::fs::write(&path, BRIDGE_JAR).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(path)
+}
+
 type CreateJavaVm =
     unsafe extern "system" fn(*mut *mut sys::JavaVM, *mut *mut c_void, *mut c_void) -> sys::jint;
 
-/// Starts the JVM from the Java at `home` with `class_path` (Fabric Loader and its libraries,
-/// later), defines the bridge's classes and calls `Boot.hello(jars)`. Returns the running
-/// bridge; once one runs, every call returns it.
-pub fn start(
-    home: &Path,
-    jars: &[PathBuf],
-    class_path: &[PathBuf],
-) -> Result<&'static Bridge, String> {
+/// Starts the JVM, registers the natives, says hello and, with [`Config::fabric`], starts
+/// Fabric Loader. Returns the running bridge; once one runs, every call returns it.
+pub fn start(config: &Config) -> Result<&'static Bridge, String> {
     let _starting = STARTING.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(bridge) = BRIDGE.get() {
         return Ok(bridge);
     }
+    let mut class_path = vec![write_bridge_jar(&config.work)?];
+    if config.fabric.is_some() {
+        class_path.extend(libs::ensure(&config.work.join("lib"))?);
+    }
+    class_path.extend(config.class_path.iter().cloned());
+    let vm = create_vm(&config.home, &class_path)?;
+    let mut env = vm
+        .attach_current_thread_permanently()
+        .map_err(|e| format!("attach: {e}"))?;
+    let java_version = boot(&mut env, &config.jars).map_err(|e| describe(&mut env, e))?;
+    let mods = match &config.fabric {
+        Some(fabric) => start_fabric(&mut env, fabric).map_err(|e| describe(&mut env, e))?,
+        None => Vec::new(),
+    };
+    Ok(BRIDGE.get_or_init(|| Bridge {
+        vm,
+        java_version,
+        home: config.home.clone(),
+        mods,
+        fabric: config.fabric.is_some(),
+    }))
+}
+
+fn create_vm(home: &Path, class_path: &[PathBuf]) -> Result<JavaVM, String> {
     let path = libjvm(home)?;
     // SAFETY: loading libjvm runs its initialisers, which only set up the library itself.
     let library = unsafe { libloading::Library::new(&path) }
@@ -175,16 +269,14 @@ pub fn start(
     // A JVM never unloads: keep its library mapped for the life of the process.
     std::mem::forget(library);
 
-    let mut options: Vec<String> = vec![
+    let joined = std::env::join_paths(class_path).map_err(|e| format!("class path: {e}"))?;
+    let options = [
         // Leave SIGINT, SIGTERM and SIGHUP to the game: Ctrl+C and shutdown stay Horizon's.
-        "-Xrs".into(),
+        "-Xrs".to_string(),
         "-Dfile.encoding=UTF-8".into(),
         "-Dhorizon.bridge=1".into(),
+        format!("-Djava.class.path={}", joined.to_string_lossy()),
     ];
-    if !class_path.is_empty() {
-        let joined = std::env::join_paths(class_path).map_err(|e| format!("class path: {e}"))?;
-        options.push(format!("-Djava.class.path={}", joined.to_string_lossy()));
-    }
     let options: Vec<CString> = options
         .into_iter()
         .map(|o| CString::new(o).map_err(|_| "a NUL in a JVM option".to_string()))
@@ -213,34 +305,29 @@ pub fn start(
         ));
     }
     // SAFETY: `vm` is the JVM just created.
-    let vm = unsafe { JavaVM::from_raw(vm) }.map_err(|e| format!("JavaVM: {e}"))?;
-    let java_version = boot(&vm, jars)?;
-    Ok(BRIDGE.get_or_init(|| Bridge {
-        vm,
-        java_version,
-        home: home.to_path_buf(),
-    }))
+    unsafe { JavaVM::from_raw(vm) }.map_err(|e| format!("JavaVM: {e}"))
 }
 
-/// Defines the bridge's classes, registers the natives and runs `Boot.hello`.
-fn boot(vm: &JavaVM, jars: &[PathBuf]) -> Result<String, String> {
-    let mut env = vm
-        .attach_current_thread_permanently()
-        .map_err(|e| format!("attach: {e}"))?;
-    let result = boot_in(&mut env, jars);
-    result.map_err(|e| describe(&mut env, e))
+fn strings<'local>(
+    env: &mut JNIEnv<'local>,
+    items: &[String],
+) -> jni::errors::Result<JObjectArray<'local>> {
+    let array = env.new_object_array(
+        items.len() as sys::jsize,
+        "java/lang/String",
+        JObject::null(),
+    )?;
+    for (i, item) in items.iter().enumerate() {
+        let s = env.new_string(item)?;
+        env.set_object_array_element(&array, i as sys::jsize, &s)?;
+        env.delete_local_ref(s)?;
+    }
+    Ok(array)
 }
 
-fn boot_in(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
-    let loader = env
-        .call_static_method(
-            "java/lang/ClassLoader",
-            "getSystemClassLoader",
-            "()Ljava/lang/ClassLoader;",
-            &[],
-        )?
-        .l()?;
-    let natives = env.define_class("dev/horizonlab/bridge/Natives", &loader, NATIVES_CLASS)?;
+/// Registers the natives and runs `Boot.hello`.
+fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
+    let natives = env.find_class("dev/horizonlab/bridge/Natives")?;
     env.register_native_methods(
         &natives,
         &[NativeMethod {
@@ -249,19 +336,14 @@ fn boot_in(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
             fn_ptr: native_log as *mut c_void,
         }],
     )?;
-    let boot = env.define_class("dev/horizonlab/bridge/Boot", &loader, BOOT_CLASS)?;
-    let array = env.new_object_array(
-        jars.len() as sys::jsize,
-        "java/lang/String",
-        JObject::null(),
-    )?;
-    for (i, jar) in jars.iter().enumerate() {
-        let path = env.new_string(jar.to_string_lossy())?;
-        env.set_object_array_element(&array, i as sys::jsize, path)?;
-    }
+    let jars: Vec<String> = jars
+        .iter()
+        .map(|j| j.to_string_lossy().into_owned())
+        .collect();
+    let array = strings(env, &jars)?;
     let version = env
         .call_static_method(
-            &boot,
+            "dev/horizonlab/bridge/Boot",
             "hello",
             "([Ljava/lang/String;)Ljava/lang/String;",
             &[JValue::Object(&array)],
@@ -271,7 +353,50 @@ fn boot_in(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
     Ok(env.get_string(&version)?.into())
 }
 
-/// A JNI error as text; a Java exception pending is cleared and given as its `toString()`.
+/// Runs `FabricBoot.start`: Knot, mod discovery, Mixin, entrypoints.
+fn start_fabric(env: &mut JNIEnv, fabric: &Fabric) -> jni::errors::Result<Vec<String>> {
+    let side = env.new_string(match fabric.side {
+        Side::Client => "client",
+        Side::Server => "server",
+    })?;
+    let version = env.new_string(&fabric.version)?;
+    let facade = env.new_string(fabric.facade.to_string_lossy())?;
+    let mods = env.new_string(fabric.mods.to_string_lossy())?;
+    let game_dir = env.new_string(fabric.game_dir.to_string_lossy())?;
+    let libraries: Vec<String> = fabric
+        .libraries
+        .iter()
+        .map(|l| l.to_string_lossy().into_owned())
+        .collect();
+    let libraries = strings(env, &libraries)?;
+    let loaded = env
+        .call_static_method(
+            "dev/horizonlab/bridge/fabric/FabricBoot",
+            "start",
+            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)[Ljava/lang/String;",
+            &[
+                JValue::Object(&side),
+                JValue::Object(&version),
+                JValue::Object(&facade),
+                JValue::Object(&libraries),
+                JValue::Object(&mods),
+                JValue::Object(&game_dir),
+            ],
+        )?
+        .l()?;
+    let loaded = JObjectArray::from(loaded);
+    let count = env.get_array_length(&loaded)?;
+    let mut out = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        let item = JString::from(env.get_object_array_element(&loaded, i)?);
+        out.push(env.get_string(&item)?.into());
+        env.delete_local_ref(item)?;
+    }
+    Ok(out)
+}
+
+/// A JNI error as text; a Java exception pending is cleared and given as its `toString()`,
+/// with its cause's.
 fn describe(env: &mut JNIEnv, error: jni::errors::Error) -> String {
     if !matches!(error, jni::errors::Error::JavaException) {
         return error.to_string();
@@ -280,10 +405,28 @@ fn describe(env: &mut JNIEnv, error: jni::errors::Error) -> String {
         return error.to_string();
     };
     let _ = env.exception_clear();
-    env.call_method(&throwable, "toString", "()Ljava/lang/String;", &[])
-        .and_then(|v| v.l())
-        .and_then(|s| env.get_string(&JString::from(s)).map(String::from))
-        .unwrap_or_else(|_| "a Java exception (its toString() failed)".into())
+    let mut text = Vec::new();
+    let mut current: JObject = throwable.into();
+    for _ in 0..8 {
+        if current.is_null() {
+            break;
+        }
+        let line = env
+            .call_method(&current, "toString", "()Ljava/lang/String;", &[])
+            .and_then(|v| v.l())
+            .and_then(|s| env.get_string(&JString::from(s)).map(String::from))
+            .unwrap_or_else(|_| "a Java exception (its toString() failed)".into());
+        text.push(line);
+        current = match env
+            .call_method(&current, "getCause", "()Ljava/lang/Throwable;", &[])
+            .and_then(|v| v.l())
+        {
+            Ok(cause) => cause,
+            Err(_) => break,
+        };
+    }
+    let _ = env.exception_clear();
+    text.join(", caused by ")
 }
 
 fn emit(line: &str) {

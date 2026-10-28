@@ -15,8 +15,17 @@ libloading = "0.8"
 log = "0.4"
 # The facade jar (facade.rs) is read from and written to zip files.
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Fabric Loader's pinned jars (libs.rs): downloaded once, checked by SHA-256.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+sha2 = "0.10"
 # Java discovery, shared with horizon-prepare: JAVA_HOME, the PATH, Minecraft's runtimes.
 horizon-prepare = { path = "../horizon-prepare" }
+
+[build-dependencies]
+# build.rs compiles the bridge's Java against Fabric Loader (src/libs.rs, shared) and packs it.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

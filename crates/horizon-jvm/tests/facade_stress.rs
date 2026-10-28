@@ -2,9 +2,13 @@
 //! Run it on the real game jar to check the facade before Fabric uses it:
 //!
 //! ```sh
-//! HORIZON_FACADE_JAR=~/.minecraft/versions/26.3/26.3.jar \
+//! HORIZON_FACADE_JAR=$PWD/.local/minecraft/26.3/jars/client.jar \
+//! HORIZON_FACADE_LIBS=$PWD/.local/minecraft/26.3/libraries/client \
 //!   cargo test -p horizon-jvm --test facade_stress -- --ignored --nocapture
 //! ```
+//!
+//! `HORIZON_FACADE_LIBS` (optional) is a folder of the jar's libraries, put on the class path
+//! as they are.
 //!
 //! `VerifyError` and `ClassFormatError` are the facade's bugs and fail the test; a class that
 //! needs a library the jar doesn't hold (`NoClassDefFoundError`) is counted, not failed.
@@ -26,6 +30,26 @@ fn java_home() -> Option<PathBuf> {
         .find(|java| java.is_file())
         .and_then(|java| std::fs::canonicalize(java).ok())
         .and_then(|java| java.parent()?.parent().map(Path::to_path_buf))
+}
+
+/// Every jar under `HORIZON_FACADE_LIBS`.
+fn libraries() -> Vec<PathBuf> {
+    let Some(root) = std::env::var_os("HORIZON_FACADE_LIBS") else {
+        return Vec::new();
+    };
+    let mut jars = Vec::new();
+    let mut stack = vec![PathBuf::from(root)];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "jar") {
+                jars.push(path);
+            }
+        }
+    }
+    jars
 }
 
 #[test]
@@ -60,7 +84,14 @@ fn every_class_of_a_jar_loads() {
     }
     names.sort();
 
-    let bridge = horizon_jvm::start(&home, &[], &[facade]).expect("JVM starts");
+    let bridge = horizon_jvm::start(&horizon_jvm::Config {
+        home: home.clone(),
+        work: dir.join("work"),
+        jars: Vec::new(),
+        class_path: std::iter::once(facade).chain(libraries()).collect(),
+        fabric: None,
+    })
+    .expect("JVM starts");
     let mut env = bridge.vm().attach_current_thread().unwrap();
     let mut failures: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut loaded = 0;
