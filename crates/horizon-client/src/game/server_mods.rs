@@ -414,7 +414,11 @@ mod run {
                     health: p.health,
                 })
                 .collect();
-            let dedicated = self.options.dedicated.is_some();
+            // Not `options.dedicated`: single player's server thread sets it too.
+            let dedicated = matches!(
+                self.options.execution_role,
+                crate::game::execution_role::ExecutionRole::DedicatedServer
+            );
             if let Err(e) =
                 horizon_jvm::events::server_tick(self.ticks as i64, dedicated, &players, events)
             {
@@ -426,7 +430,7 @@ mod run {
                         self.tell_server_player(None, &uuid, Text::literal(text));
                     }
                     horizon_jvm::events::Action::Broadcast { text } => {
-                        if dedicated {
+                        if self.options.dedicated.is_some() {
                             super::super::dedicated::log("INFO", &text);
                         } else {
                             log::info!("{text}");

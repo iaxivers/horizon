@@ -178,8 +178,10 @@ fn fabric_api_and_a_mod_on_the_real_game() {
         health: 17.0,
     };
     let uuid = steve.uuid.clone();
+    // HORIZON_TEST_DEDICATED=1: mirror a dedicated server instead of single player's.
+    let dedicated = std::env::var_os("HORIZON_TEST_DEDICATED").is_some();
     let tick = |n: i64, players: &[Player], events: &[Event]| {
-        horizon_jvm::events::server_tick(n, false, players, events).unwrap();
+        horizon_jvm::events::server_tick(n, dedicated, players, events).unwrap();
         horizon_jvm::events::take_actions()
     };
     let actions = tick(

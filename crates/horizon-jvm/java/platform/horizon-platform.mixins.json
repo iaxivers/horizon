@@ -12,7 +12,9 @@
     "ServerPlayerMixin",
     "PlayerListMixin",
     "MinecraftServerMixin",
-    "ServerLevelMixin"
+    "ServerLevelMixin",
+    "DedicatedServerMixin",
+    "IntegratedServerMixin"
   ],
   "injectors": {
     "defaultRequire": 1
