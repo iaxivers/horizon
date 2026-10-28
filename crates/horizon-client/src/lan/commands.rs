@@ -21,7 +21,7 @@ use std::{
 };
 
 /// Commands.CommandSelection: registered only on dedicated servers.
-const DEDICATED_ONLY: &[&str] = &[
+pub const DEDICATED_ONLY: &[&str] = &[
     "ban",
     "ban-ip",
     "banlist",
@@ -39,7 +39,7 @@ const DEDICATED_ONLY: &[&str] = &[
     "whitelist",
 ];
 /// Registered only on integrated servers.
-const INTEGRATED_ONLY: &[&str] = &["publish", "unpublish"];
+pub const INTEGRATED_ONLY: &[&str] = &["publish", "unpublish"];
 /// Commands that check permissions only on dedicated servers
 /// (`checkPermissions` in SeedCommand and VersionCommand).
 const OPEN_WHEN_INTEGRATED: &[&str] = &["seed", "version"];

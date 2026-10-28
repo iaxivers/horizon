@@ -125,7 +125,13 @@ mod run {
                 .map_err(|e| log::warn!("Java mods: no commands: {e}"))
                 .ok()?
                 .into_iter()
-                .filter(|n| !crate::game::mods::vanilla_command(n))
+                // Vanilla's, the dedicated server's and single player's own included: those
+                // stay Horizon's.
+                .filter(|n| {
+                    !crate::game::mods::vanilla_command(n)
+                        && !horizon_client::lan::commands::DEDICATED_ONLY.contains(&n.as_str())
+                        && !horizon_client::lan::commands::INTEGRATED_ONLY.contains(&n.as_str())
+                })
                 .collect();
             let tree = horizon_jvm::events::command_tree(&names)
                 .map_err(|e| log::warn!("Java mods: no command tree: {e}"))
