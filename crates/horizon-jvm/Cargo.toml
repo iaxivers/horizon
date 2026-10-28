@@ -13,6 +13,8 @@ jni = "0.21.1"
 # so nothing links against a JDK at build time.
 libloading = "0.8"
 log = "0.4"
+# The facade jar (facade.rs) is read from and written to zip files.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 # Java discovery, shared with horizon-prepare: JAVA_HOME, the PATH, Minecraft's runtimes.
 horizon-prepare = { path = "../horizon-prepare" }
 

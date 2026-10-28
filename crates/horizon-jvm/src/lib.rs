@@ -13,6 +13,8 @@
 //! A JVM can be created once per process (JNI allows no second one after a destroy), so
 //! [`start`] is idempotent: later calls return the running bridge.
 
+pub mod facade;
+
 use jni::objects::{JClass, JObject, JString, JValue};
 use jni::{JNIEnv, JavaVM, NativeMethod, sys};
 use std::ffi::{CString, c_void};
@@ -60,6 +62,21 @@ impl Bridge {
     /// `Runtime.version()` of the running JVM, as Java reported it.
     pub fn java_version(&self) -> &str {
         &self.java_version
+    }
+    /// Loads (and initializes) a class by its binary name, `net/minecraft/...`, on this
+    /// thread: a check that the class path holds it and that it verifies.
+    pub fn check_class(&self, name: &str) -> Result<(), String> {
+        let mut env = self
+            .vm
+            .attach_current_thread()
+            .map_err(|e| format!("attach: {e}"))?;
+        match env.find_class(name) {
+            Ok(class) => {
+                let _ = env.delete_local_ref(class);
+                Ok(())
+            }
+            Err(e) => Err(describe(&mut env, e)),
+        }
     }
     /// The Java home the JVM was loaded from.
     pub fn home(&self) -> &Path {
@@ -133,9 +150,14 @@ pub fn libjvm(home: &Path) -> Result<PathBuf, String> {
 type CreateJavaVm =
     unsafe extern "system" fn(*mut *mut sys::JavaVM, *mut *mut c_void, *mut c_void) -> sys::jint;
 
-/// Starts the JVM from the Java at `home`, defines the bridge's classes and calls
-/// `Boot.hello(jars)`. Returns the running bridge; once one runs, every call returns it.
-pub fn start(home: &Path, jars: &[PathBuf]) -> Result<&'static Bridge, String> {
+/// Starts the JVM from the Java at `home` with `class_path` (Fabric Loader and its libraries,
+/// later), defines the bridge's classes and calls `Boot.hello(jars)`. Returns the running
+/// bridge; once one runs, every call returns it.
+pub fn start(
+    home: &Path,
+    jars: &[PathBuf],
+    class_path: &[PathBuf],
+) -> Result<&'static Bridge, String> {
     let _starting = STARTING.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(bridge) = BRIDGE.get() {
         return Ok(bridge);
@@ -153,15 +175,20 @@ pub fn start(home: &Path, jars: &[PathBuf]) -> Result<&'static Bridge, String> {
     // A JVM never unloads: keep its library mapped for the life of the process.
     std::mem::forget(library);
 
-    let options: Vec<CString> = [
+    let mut options: Vec<String> = vec![
         // Leave SIGINT, SIGTERM and SIGHUP to the game: Ctrl+C and shutdown stay Horizon's.
-        "-Xrs",
-        "-Dfile.encoding=UTF-8",
-        "-Dhorizon.bridge=1",
-    ]
-    .iter()
-    .map(|o| CString::new(*o).expect("no NUL in JVM options"))
-    .collect();
+        "-Xrs".into(),
+        "-Dfile.encoding=UTF-8".into(),
+        "-Dhorizon.bridge=1".into(),
+    ];
+    if !class_path.is_empty() {
+        let joined = std::env::join_paths(class_path).map_err(|e| format!("class path: {e}"))?;
+        options.push(format!("-Djava.class.path={}", joined.to_string_lossy()));
+    }
+    let options: Vec<CString> = options
+        .into_iter()
+        .map(|o| CString::new(o).map_err(|_| "a NUL in a JVM option".to_string()))
+        .collect::<Result<_, _>>()?;
     let mut raw: Vec<sys::JavaVMOption> = options
         .iter()
         .map(|o| sys::JavaVMOption {
