@@ -66,6 +66,42 @@ mod run {
     use horizon_world::registry::{BlockRegistry, BlockStateId};
     use serde_json::{Value, json};
 
+    /// What Java mods hear of a tick (crate horizon-jvm).
+    #[cfg(feature = "java-mods")]
+    use horizon_jvm::events::Event as JavaEvent;
+    #[cfg(not(feature = "java-mods"))]
+    #[allow(dead_code)]
+    enum JavaEvent {
+        Joined {
+            uuid: String,
+        },
+        Left {
+            uuid: String,
+        },
+        Chat {
+            uuid: String,
+            text: String,
+        },
+        Block {
+            uuid: String,
+            position: [i32; 3],
+            state: String,
+            placed: bool,
+        },
+    }
+
+    /// Whether Java mods run here: the bridge started Fabric with its platform mod.
+    fn java_mods_on() -> bool {
+        #[cfg(feature = "java-mods")]
+        {
+            horizon_jvm::events::enabled()
+        }
+        #[cfg(not(feature = "java-mods"))]
+        {
+            false
+        }
+    }
+
     /// Blocks queued for levels that don't tick (another dimension, in-frame)
     /// are kept up to this many; the oldest go first.
     const MAX_QUEUED_WRITES: usize = 1 << 16;
@@ -239,7 +275,7 @@ mod run {
         /// Whether what players do now reaches server mods: one is running
         /// and this game simulates the world.
         fn hears_players(&self) -> bool {
-            self.mods.server && self.remote.is_none()
+            (self.mods.server || java_mods_on()) && self.remote.is_none()
         }
 
         /// The tick's end: joins and leaves, the tick's events, the tick hook.
@@ -249,25 +285,41 @@ mod run {
                 self.reload_dev_mods();
             }
             self.send_server_mod_commands();
-            if !self.mods.server {
+            let wasm = self.mods.server;
+            let java = java_mods_on() && self.remote.is_none();
+            if !wasm && !java {
                 return;
             }
             let players = self.server_players(None);
-            let snapshot = self.mod_snapshot_with(players.clone());
-            self.mods.mods.set_snapshot(snapshot);
-            self.lend_world();
+            if wasm {
+                let snapshot = self.mod_snapshot_with(players.clone());
+                self.mods.mods.set_snapshot(snapshot);
+                self.lend_world();
+            }
             let before = std::mem::take(&mut self.mods.players);
+            // Java mods hear the same joins, leaves and actions, in the same order.
+            let mut java_events = Vec::new();
             for p in before
                 .iter()
                 .filter(|p| !players.iter().any(|q| q.id == p.id))
             {
-                self.mods.mods.player_left(p);
+                if wasm {
+                    self.mods.mods.player_left(p);
+                }
+                if java {
+                    java_events.push(JavaEvent::Left { uuid: p.id.clone() });
+                }
             }
             for p in players
                 .iter()
                 .filter(|p| !before.iter().any(|q| q.id == p.id))
             {
-                self.mods.mods.player_joined(p);
+                if wasm {
+                    self.mods.mods.player_joined(p);
+                }
+                if java {
+                    java_events.push(JavaEvent::Joined { uuid: p.id.clone() });
+                }
             }
             for event in std::mem::take(&mut self.mods.events) {
                 let who = |w: &Who| {
@@ -284,7 +336,14 @@ mod run {
                 };
                 match event {
                     ModEvent::Chat(w, text) => {
-                        if let Some(p) = who(&w) {
+                        let Some(p) = who(&w) else { continue };
+                        if java {
+                            java_events.push(JavaEvent::Chat {
+                                uuid: p.id.clone(),
+                                text: text.clone(),
+                            });
+                        }
+                        if wasm {
                             self.mods.mods.player_chat(&p, &text);
                         }
                     }
@@ -295,6 +354,17 @@ mod run {
                         placed,
                     } => {
                         let Some(p) = who(&w) else { continue };
+                        if java {
+                            java_events.push(JavaEvent::Block {
+                                uuid: p.id.clone(),
+                                position: pos,
+                                state: state.clone(),
+                                placed,
+                            });
+                        }
+                        if !wasm {
+                            continue;
+                        }
                         let pos = BlockPos {
                             x: pos[0],
                             y: pos[1],
@@ -308,12 +378,69 @@ mod run {
                     }
                 }
             }
-            self.mods.mods.server_tick(self.ticks);
-            self.return_world();
+            if wasm {
+                self.mods.mods.server_tick(self.ticks);
+                self.return_world();
+            }
+            if java {
+                self.tick_java_mods(&players, &java_events);
+            }
             self.mods.players = players;
-            self.show_mod_output();
-            self.apply_mod_block_writes();
+            if wasm {
+                self.show_mod_output();
+                self.apply_mod_block_writes();
+            }
         }
+
+        /// Hands the tick to the Java mods (crate horizon-jvm: Fabric API's events), then sends
+        /// what they asked: system messages to a player or everyone.
+        #[cfg(feature = "java-mods")]
+        fn tick_java_mods(&mut self, players: &[ServerPlayer], events: &[JavaEvent]) {
+            let players: Vec<horizon_jvm::events::Player> = players
+                .iter()
+                .map(|p| horizon_jvm::events::Player {
+                    uuid: p.id.clone(),
+                    name: p.name.clone(),
+                    position: [p.x, p.y, p.z],
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    dimension: p.dimension.clone(),
+                    game_mode: match p.game_mode {
+                        GameMode::Survival => 0,
+                        GameMode::Creative => 1,
+                        GameMode::Adventure => 2,
+                        GameMode::Spectator => 3,
+                    },
+                    health: p.health,
+                })
+                .collect();
+            let dedicated = self.options.dedicated.is_some();
+            if let Err(e) =
+                horizon_jvm::events::server_tick(self.ticks as i64, dedicated, &players, events)
+            {
+                log::warn!("Java mods: a tick failed: {e}");
+            }
+            for action in horizon_jvm::events::take_actions() {
+                match action {
+                    horizon_jvm::events::Action::Tell { uuid, text } => {
+                        self.tell_server_player(None, &uuid, Text::literal(text));
+                    }
+                    horizon_jvm::events::Action::Broadcast { text } => {
+                        if dedicated {
+                            super::super::dedicated::log("INFO", &text);
+                        } else {
+                            log::info!("{text}");
+                        }
+                        for p in self.server_players(None) {
+                            self.tell_server_player(None, &p.id, Text::literal(text.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        #[cfg(not(feature = "java-mods"))]
+        fn tick_java_mods(&mut self, _players: &[ServerPlayer], _events: &[JavaEvent]) {}
 
         /// Players' command trees list the running server mods' commands
         /// after vanilla's, whenever they change (or a hub opens).

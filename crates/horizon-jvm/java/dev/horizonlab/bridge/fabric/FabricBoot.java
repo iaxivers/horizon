@@ -70,6 +70,7 @@ public final class FabricBoot {
         } else {
             loader.invokeEntrypoints("server", DedicatedServerModInitializer.class, DedicatedServerModInitializer::onInitializeServer);
         }
+        freezeRegistries();
         List<String> mods = new ArrayList<>();
         for (ModContainer mod : loader.getAllMods()) {
             mods.add(mod.getMetadata().getId() + " " + mod.getMetadata().getVersion().getFriendlyString());
@@ -97,6 +98,23 @@ public final class FabricBoot {
         bootstrap.getMethod("bootStrap").invoke(null);
         bootstrap.getMethod("validate").invoke(null);
         Natives.log("Minecraft bootstrap done in " + (System.nanoTime() - started) / 1_000_000 + " ms");
+    }
+
+    /**
+     * Freezes the built-in registries once the mods have registered their content, as Fabric
+     * API's MainMixin does right after the entrypoints (Fabric API delays vanilla's freeze).
+     */
+    private static void freezeRegistries() {
+        try {
+            Class<?> registries = Class.forName("net.minecraft.core.registries.BuiltInRegistries", true, gameLoader);
+            registries.getMethod("bootStrap").invoke(null);
+            Class<?> tabs = Class.forName("net.minecraft.world.item.CreativeModeTabs", true, gameLoader);
+            tabs.getMethod("validate").invoke(null);
+        } catch (ClassNotFoundException e) {
+            // Not a Minecraft game jar (the bridge's own tests).
+        } catch (ReflectiveOperationException e) {
+            Natives.log("Freezing the registries failed: " + (e.getCause() != null ? e.getCause() : e));
+        }
     }
 
     /** A game or mod class, loaded and initialized by Knot, so Mixins apply to it. */

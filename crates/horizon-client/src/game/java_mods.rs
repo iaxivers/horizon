@@ -122,6 +122,7 @@ fn fabric(
         game_jar: horizon_jvm::facade::game_jar(root)?,
         libraries: horizon_jvm::facade::game_libraries(root)?,
         add_mods,
+        platform: true,
         mods: dir.to_path_buf(),
         game_dir: dir.parent().map(Path::to_path_buf).unwrap_or_default(),
         version: game_version(root)?,

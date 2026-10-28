@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "horizon_events_test",
+  "version": "1.0.0",
+  "name": "Horizon Events Test",
+  "description": "A plain server-side Fabric mod that answers to Fabric API's events: the bridge's end-to-end test.",
+  "environment": "*",
+  "entrypoints": { "main": ["dev.horizonlab.eventsmod.EventsMod"] },
+  "depends": { "fabricloader": ">=0.20", "minecraft": "26.3", "fabric-api": "*" }
+}

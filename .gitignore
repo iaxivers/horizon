@@ -35,3 +35,5 @@
 
 # Release-only compiled original exporter bundle.
 /exporters/
+# Minecraft's logger writes logs/ where the bridge's tests run.
+/crates/horizon-jvm/logs/

@@ -17,6 +17,7 @@
 //! A JVM can be created once per process (JNI allows no second one after a destroy), so
 //! [`start`] is idempotent: later calls return the running bridge.
 
+pub mod events;
 pub mod facade;
 pub mod libs;
 
@@ -38,6 +39,10 @@ pub const JAVA_HOME_VAR: &str = "HORIZON_JAVA_HOME";
 
 /// The bridge's jar, built by build.rs.
 const BRIDGE_JAR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/horizon-bridge.jar"));
+/// The platform mod (`java/platform/`, Fabric mod `horizon`), built by build.rs against the
+/// prepared game jar and Fabric API; empty when the checkout had no prepared game to build it
+/// against.
+const PLATFORM_JAR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/horizon-platform.jar"));
 
 static BRIDGE: OnceLock<Bridge> = OnceLock::new();
 /// Held while a JVM is being made, so two threads never both try.
@@ -74,6 +79,9 @@ pub struct Fabric {
     pub libraries: Vec<PathBuf>,
     /// Mod jars to load besides the folder's: Fabric API ([`libs::ensure_fabric_api`]).
     pub add_mods: Vec<PathBuf>,
+    /// Loads the platform mod (game events for mods, [`events`]) when this build has it. Off
+    /// for a game jar that isn't Minecraft (the bridge's own tests).
+    pub platform: bool,
     /// The folder Fabric reads mods from (`mods-java/`).
     pub mods: PathBuf,
     /// The game folder: Fabric writes `config/` there.
@@ -215,14 +223,19 @@ pub fn libjvm(home: &Path) -> Result<PathBuf, String> {
         })
 }
 
-/// Writes the embedded bridge jar to `work/horizon-bridge.jar` when it differs.
-fn write_bridge_jar(work: &Path) -> Result<PathBuf, String> {
+/// Writes an embedded jar to `work/name` when it differs.
+fn write_jar(work: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     std::fs::create_dir_all(work).map_err(|e| format!("{}: {e}", work.display()))?;
-    let path = work.join("horizon-bridge.jar");
-    if std::fs::read(&path).ok().as_deref() != Some(BRIDGE_JAR) {
-        std::fs::write(&path, BRIDGE_JAR).map_err(|e| format!("{}: {e}", path.display()))?;
+    let path = work.join(name);
+    if std::fs::read(&path).ok().as_deref() != Some(bytes) {
+        std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     Ok(path)
+}
+
+/// Whether this build carries the platform mod (game events for mods).
+pub fn has_platform() -> bool {
+    !PLATFORM_JAR.is_empty()
 }
 
 type CreateJavaVm =
@@ -235,7 +248,7 @@ pub fn start(config: &Config) -> Result<&'static Bridge, String> {
     if let Some(bridge) = BRIDGE.get() {
         return Ok(bridge);
     }
-    let mut class_path = vec![write_bridge_jar(&config.work)?];
+    let mut class_path = vec![write_jar(&config.work, "horizon-bridge.jar", BRIDGE_JAR)?];
     if config.fabric.is_some() {
         class_path.extend(libs::ensure(&config.work.join("lib"))?);
     }
@@ -246,7 +259,23 @@ pub fn start(config: &Config) -> Result<&'static Bridge, String> {
         .map_err(|e| format!("attach: {e}"))?;
     let java_version = boot(&mut env, &config.jars).map_err(|e| describe(&mut env, e))?;
     let mods = match &config.fabric {
-        Some(fabric) => start_fabric(&mut env, fabric).map_err(|e| describe(&mut env, e))?,
+        Some(fabric) => {
+            let mut add_mods = fabric.add_mods.clone();
+            let platform = fabric.platform && has_platform();
+            if platform {
+                add_mods.push(write_jar(
+                    &config.work,
+                    "horizon-platform.jar",
+                    PLATFORM_JAR,
+                )?);
+            }
+            let mods =
+                start_fabric(&mut env, fabric, &add_mods).map_err(|e| describe(&mut env, e))?;
+            if platform {
+                prepare_data(&mut env).map_err(|e| describe(&mut env, e))?;
+            }
+            mods
+        }
         None => Vec::new(),
     };
     Ok(BRIDGE.get_or_init(|| Bridge {
@@ -333,11 +362,28 @@ fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
     let natives = env.find_class("dev/horizonlab/bridge/Natives")?;
     env.register_native_methods(
         &natives,
-        &[NativeMethod {
-            name: "log".into(),
-            sig: "(Ljava/lang/String;)V".into(),
-            fn_ptr: native_log as *mut c_void,
-        }],
+        &[
+            NativeMethod {
+                name: "log".into(),
+                sig: "(Ljava/lang/String;)V".into(),
+                fn_ptr: native_log as *mut c_void,
+            },
+            NativeMethod {
+                name: "tell".into(),
+                sig: "(Ljava/lang/String;Ljava/lang/String;)V".into(),
+                fn_ptr: native_tell as *mut c_void,
+            },
+            NativeMethod {
+                name: "broadcast".into(),
+                sig: "(Ljava/lang/String;)V".into(),
+                fn_ptr: native_broadcast as *mut c_void,
+            },
+            NativeMethod {
+                name: "allocate".into(),
+                sig: "(Ljava/lang/Class;)Ljava/lang/Object;".into(),
+                fn_ptr: native_allocate as *mut c_void,
+            },
+        ],
     )?;
     let jars: Vec<String> = jars
         .iter()
@@ -357,7 +403,11 @@ fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
 }
 
 /// Runs `FabricBoot.start`: Knot, mod discovery, Mixin, entrypoints.
-fn start_fabric(env: &mut JNIEnv, fabric: &Fabric) -> jni::errors::Result<Vec<String>> {
+fn start_fabric(
+    env: &mut JNIEnv,
+    fabric: &Fabric,
+    add_mods: &[PathBuf],
+) -> jni::errors::Result<Vec<String>> {
     let side = env.new_string(match fabric.side {
         Side::Client => "client",
         Side::Server => "server",
@@ -372,8 +422,7 @@ fn start_fabric(env: &mut JNIEnv, fabric: &Fabric) -> jni::errors::Result<Vec<St
         .map(|l| l.to_string_lossy().into_owned())
         .collect();
     let libraries = strings(env, &libraries)?;
-    let add_mods: Vec<String> = fabric
-        .add_mods
+    let add_mods: Vec<String> = add_mods
         .iter()
         .map(|m| m.to_string_lossy().into_owned())
         .collect();
@@ -405,9 +454,25 @@ fn start_fabric(env: &mut JNIEnv, fabric: &Fabric) -> jni::errors::Result<Vec<St
     Ok(out)
 }
 
+/// Loads the server's data (vanilla's data pack and the mods'): `HorizonData.prepare`, in the
+/// platform mod, through Fabric's class loader.
+fn prepare_data(env: &mut JNIEnv) -> jni::errors::Result<()> {
+    let name = env.new_string("dev.horizonlab.platform.HorizonData")?;
+    let class = env
+        .call_static_method(
+            "dev/horizonlab/bridge/fabric/FabricBoot",
+            "gameClass",
+            "(Ljava/lang/String;)Ljava/lang/Class;",
+            &[JValue::Object(&name)],
+        )?
+        .l()?;
+    env.call_static_method(JClass::from(class), "prepare", "()V", &[])?;
+    Ok(())
+}
+
 /// A JNI error as text; a Java exception pending is cleared and given as its `toString()`,
 /// with its cause's.
-fn describe(env: &mut JNIEnv, error: jni::errors::Error) -> String {
+pub(crate) fn describe(env: &mut JNIEnv, error: jni::errors::Error) -> String {
     if !matches!(error, jni::errors::Error::JavaException) {
         return error.to_string();
     }
@@ -454,4 +519,39 @@ extern "system" fn native_log(mut env: JNIEnv, _class: JClass, text: JString) {
             emit(&String::from(text));
         }
     }));
+}
+
+/// `Natives.tell(String uuid, String text)`.
+extern "system" fn native_tell(mut env: JNIEnv, _class: JClass, uuid: JString, text: JString) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (Ok(uuid), Ok(text)) = (env.get_string(&uuid), env.get_string(&text)) else {
+            return;
+        };
+        let (uuid, text) = (String::from(uuid), String::from(text));
+        events::push(events::Action::Tell { uuid, text });
+    }));
+}
+
+/// `Natives.broadcast(String text)`.
+extern "system" fn native_broadcast(mut env: JNIEnv, _class: JClass, text: JString) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Ok(text) = env.get_string(&text) {
+            events::push(events::Action::Broadcast { text: text.into() });
+        }
+    }));
+}
+
+/// `Natives.allocate(Class)`: an instance made without running a constructor (JNI
+/// `AllocObject`), for the game objects the platform mod mirrors Horizon's state into.
+extern "system" fn native_allocate<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    of: JClass<'local>,
+) -> sys::jobject {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        env.alloc_object(&of)
+            .map(JObject::into_raw)
+            .unwrap_or(std::ptr::null_mut())
+    }))
+    .unwrap_or(std::ptr::null_mut())
 }

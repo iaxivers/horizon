@@ -101,7 +101,7 @@ controllers = ["dep:gilrs", "dep:horizon-dualsense", "horizon-client-input/contr
 mods = ["horizon-mods/runtime"]
 # Runs Java mods from mods-java/ in an embedded JVM (the Java mod bridge, crates/horizon-jvm).
 # Off by default; with it on and no jars, the game starts no JVM.
-java-mods = ["dep:horizon-jvm"]
+java-mods = ["mods", "dep:horizon-jvm"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
 rng-trace = ["horizon-core/rng-trace"]
 

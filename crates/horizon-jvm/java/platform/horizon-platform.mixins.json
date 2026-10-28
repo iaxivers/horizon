@@ -1,0 +1,20 @@
+{
+  "required": true,
+  "package": "dev.horizonlab.platform.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "EntityAccess",
+    "ServerCommonListenerAccess",
+    "PlayerListAccess",
+    "MinecraftServerAccess",
+    "LevelAccess",
+    "ServerLevelAccess",
+    "ServerPlayerMixin",
+    "PlayerListMixin",
+    "MinecraftServerMixin",
+    "ServerLevelMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
