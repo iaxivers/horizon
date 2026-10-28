@@ -182,7 +182,8 @@ fn fabric_api_and_a_mod_on_the_real_game() {
     // HORIZON_TEST_DEDICATED=1: mirror a dedicated server instead of single player's.
     let dedicated = std::env::var_os("HORIZON_TEST_DEDICATED").is_some();
     let tick = |n: i64, players: &[Player], events: &[Event]| {
-        horizon_jvm::events::server_tick(n, dedicated, players, events).unwrap();
+        horizon_jvm::events::server_tick(n, dedicated, &dir.join("world"), players, events)
+            .unwrap();
         horizon_jvm::events::take_actions()
     };
     let actions = tick(
@@ -280,7 +281,14 @@ fn fabric_api_and_a_mod_on_the_real_game() {
     );
     let mut op = steve.clone();
     op.permission = 2;
-    horizon_jvm::events::server_tick(2, dedicated, std::slice::from_ref(&op), &[]).unwrap();
+    horizon_jvm::events::server_tick(
+        2,
+        dedicated,
+        &dir.join("world"),
+        std::slice::from_ref(&op),
+        &[],
+    )
+    .unwrap();
     horizon_jvm::events::take_actions();
     assert!(horizon_jvm::events::run_command(&uuid, "events secret").unwrap());
     let allowed = horizon_jvm::events::take_actions();

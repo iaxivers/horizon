@@ -22,6 +22,10 @@ public interface MinecraftServerAccess {
     void horizon$setRegistries(LayeredRegistryAccess<RegistryLayer> registries);
 
     @Mutable
+    @Accessor("scoreboard")
+    void horizon$setScoreboard(net.minecraft.server.ServerScoreboard scoreboard);
+
+    @Mutable
     @Accessor("gameRules")
     void horizon$setGameRules(net.minecraft.world.level.gamerules.GameRules rules);
 

@@ -59,6 +59,7 @@ public final class HorizonServer {
     private static PlayerList playerList;
     private static final Map<ResourceKey<Level>, ServerLevel> LEVELS = new LinkedHashMap<>();
     private static final List<ServerPlayer> PLAYERS = new ArrayList<>();
+    private static final Map<ServerLevel, List<ServerPlayer>> LEVEL_PLAYERS = new IdentityHashMap<>();
     private static final Map<UUID, ServerPlayer> BY_UUID = new HashMap<>();
     /** Every player ever mirrored, by UUID: a player who leaves and comes back is the same object. */
     private static final Map<UUID, ServerPlayer> KNOWN = new HashMap<>();
@@ -70,6 +71,13 @@ public final class HorizonServer {
     private static final Set<Object> MIRRORS = Collections.synchronizedSet(Collections.newSetFromMap(new IdentityHashMap<>()));
     private static final Map<String, Integer> FAILURES = new ConcurrentHashMap<>();
     private static boolean started;
+    /** Horizon's world folder, where mods keep their world data (getWorldPath). */
+    private static java.nio.file.Path worldDir;
+
+    /** The world folder Horizon plays, for MinecraftServer.getWorldPath. */
+    public static java.nio.file.Path worldDir() {
+        return worldDir;
+    }
 
     /** Whether this object is one of Horizon's mirrors (not a vanilla object a mod made). */
     public static boolean isMirror(Object object) {
@@ -141,6 +149,8 @@ public final class HorizonServer {
             ((MinecraftServerAccess) server).horizon$setWorldData(data.worldData());
             // Vanilla's defaults; Horizon's own rules are mirrored over them later.
             ((MinecraftServerAccess) server).horizon$setGameRules(MinecraftServer.DEFAULT_GAME_RULES.get());
+            // Teams and objectives: an empty one (Horizon's own come later); display names read it.
+            ((MinecraftServerAccess) server).horizon$setScoreboard(new net.minecraft.server.ServerScoreboard(server));
             try {
                 var constructor = Class.forName("net.minecraft.server.MinecraftServer$ReloadableResources", true, loader)
                         .getDeclaredConstructors()[0];
@@ -166,6 +176,7 @@ public final class HorizonServer {
             access.horizon$setClientSide(false);
             access.horizon$setRandom(net.minecraft.util.RandomSource.create());
             ((ServerLevelAccess) level).horizon$setServer(server);
+            ((ServerLevelAccess) level).horizon$setSleepStatus(new net.minecraft.server.players.SleepStatus());
             HorizonData.Loaded data = HorizonData.loaded;
             if (data != null) {
                 net.minecraft.core.RegistryAccess.Frozen registries = data.registries().compositeAccess();
@@ -230,6 +241,7 @@ public final class HorizonServer {
     /**
      * One server tick, called by Horizon (horizon-jvm's events.rs) at the tick's end.
      *
+     * @param world Horizon's world folder
      * @param motion five values per player: x, y, z, yaw, pitch
      * @param permissions per player: vanilla's permission level, 0 to 4
      * @param kinds per event: 0 joined, 1 left, 2 chat, 3 broke a block, 4 placed a block
@@ -237,7 +249,7 @@ public final class HorizonServer {
      * @param texts per event: the chat line, or the block state ("minecraft:oak_log[axis=y]")
      * @param positions three per event: the block's x, y, z
      */
-    public static void tick(long tick, boolean dedicated, String[] ids, String[] names, String[] dimensions,
+    public static void tick(long tick, boolean dedicated, String world, String[] ids, String[] names, String[] dimensions,
                             double[] motion, int[] modes, float[] health, int[] permissions,
                             int[] kinds, String[] who, String[] texts, int[] positions) {
         Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
@@ -249,6 +261,7 @@ public final class HorizonServer {
             return;
         }
         MinecraftServer server = HorizonServer.server;
+        if (world != null && !world.isEmpty()) worldDir = java.nio.file.Paths.get(world).toAbsolutePath();
         if (!started) {
             started = true;
             fire("ServerLifecycleEvents.SERVER_STARTING", () -> ServerLifecycleEvents.SERVER_STARTING.invoker().onServerStarting(server));
@@ -270,6 +283,9 @@ public final class HorizonServer {
                 player.setPosRaw(motion[i * 5], motion[i * 5 + 1], motion[i * 5 + 2]);
                 player.setYRot((float) motion[i * 5 + 3]);
                 player.setXRot((float) motion[i * 5 + 4]);
+                // A player's head and body face where Horizon's player looks.
+                player.setYHeadRot((float) motion[i * 5 + 3]);
+                player.setYBodyRot((float) motion[i * 5 + 3]);
                 player.setHealth(health[i]);
                 MODES.put(uuid, modes[i]);
                 PERMISSIONS.put(uuid, permissions[i]);
@@ -321,11 +337,48 @@ public final class HorizonServer {
                 BY_UUID.put(entry.getKey(), entry.getValue());
             }
         }
+        // Each level's players, as its own list (vanilla's code reads level.players()).
+        for (ServerLevel level : LEVELS.values()) LEVEL_PLAYERS.computeIfAbsent(level, l -> {
+            List<ServerPlayer> list = new ArrayList<>();
+            ((ServerLevelAccess) l).horizon$setPlayers(list);
+            return list;
+        }).clear();
+        for (ServerPlayer player : PLAYERS) {
+            if (player.level() instanceof ServerLevel level) {
+                List<ServerPlayer> list = LEVEL_PLAYERS.get(level);
+                if (list != null) list.add(player);
+            }
+        }
 
         for (ServerLevel level : new ArrayList<>(LEVELS.values())) {
             fire("ServerTickEvents.END_LEVEL_TICK", () -> ServerTickEvents.END_LEVEL_TICK.invoker().onEndTick(level));
         }
         fire("ServerTickEvents.END_SERVER_TICK", () -> ServerTickEvents.END_SERVER_TICK.invoker().onEndTick(server));
+    }
+
+    /**
+     * A mod moved a mirrored player: the mirror is there now, and Horizon is told to move the
+     * real player (its own /tp, across levels too).
+     */
+    public static void teleported(ServerPlayer player, ServerLevel level, net.minecraft.world.entity.PositionMoveRotation to) {
+        if (player.level() != level) ((EntityAccess) player).horizon$setLevel(level);
+        player.setPosRaw(to.position().x, to.position().y, to.position().z);
+        player.setYRot(to.yRot());
+        player.setXRot(to.xRot());
+        player.setYHeadRot(to.yRot());
+        player.setYBodyRot(to.yRot());
+        Natives.teleport(player.getStringUUID(), level.dimension().identifier().toString(),
+                to.position().x, to.position().y, to.position().z, to.yRot(), to.xRot());
+    }
+
+    private static final Map<String, Integer> DROPPED = new ConcurrentHashMap<>();
+
+    /** A packet a mod sent a mirrored player that Horizon doesn't take yet: logged once per type. */
+    public static void dropped(Object packet) {
+        String type = packet.getClass().getSimpleName();
+        if (DROPPED.merge(type, 1, Integer::sum) == 1) {
+            Natives.log("A mod sent a player a " + type + "; Horizon doesn't send those yet");
+        }
     }
 
     // ---- Commands -------------------------------------------------------------------------
@@ -404,12 +457,35 @@ public final class HorizonServer {
         HorizonData.Loaded data = HorizonData.loaded;
         if (player == null || data == null || !BY_UUID.containsKey(player.getUUID())) return false;
         try {
+            if (DEBUG_COMMANDS) debugCommand(data, player, line);
             data.reloadable().getCommands().performPrefixedCommand(player.createCommandSourceStack(), line);
         } catch (Throwable t) {
             Natives.tell(uuid, "An error occurred while running /" + line + ": " + t);
             fire("command /" + line, () -> { throw new RuntimeException(t); });
         }
         return true;
+    }
+
+    /**
+     * HORIZON_JAVA_DEBUG=commands: each command also runs once straight through the dispatcher
+     * first, so an exception vanilla would catch and hide ("An unexpected error occurred")
+     * is logged with its stack. The command then runs twice: for finding a mod's needs only.
+     */
+    private static final boolean DEBUG_COMMANDS = String.valueOf(System.getenv("HORIZON_JAVA_DEBUG")).contains("commands");
+
+    private static void debugCommand(HorizonData.Loaded data, ServerPlayer player, String line) {
+        try {
+            var dispatcher = data.reloadable().getCommands().getDispatcher();
+            dispatcher.execute(dispatcher.parse(line, player.createCommandSourceStack()));
+        } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
+            Natives.log("debug /" + line + ": " + e.getMessage());
+        } catch (Throwable t) {
+            Natives.log("debug /" + line + ": " + t);
+            for (StackTraceElement frame : t.getStackTrace()) {
+                if (frame.getClassName().startsWith("com.mojang.brigadier")) break;
+                Natives.log("    at " + frame);
+            }
+        }
     }
 
     private static BlockState state(String text) {

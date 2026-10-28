@@ -37,15 +37,21 @@ public final class HorizonData {
 
     static Loaded loaded;
 
-    /** Loads the server's data; called by Horizon (horizon-jvm) once Fabric has started. */
-    public static void prepare() throws Exception {
+    /**
+     * Loads the server's data; called by Horizon (horizon-jvm) once Fabric has started.
+     *
+     * @param datapacks a world data pack folder: its source is what makes Fabric API add the
+     *     mods' own data packs (their recipes, tags, loot, translations) to the repository
+     */
+    public static void prepare(String datapacks) throws Exception {
         long started = System.nanoTime();
         // Vanilla finds its data pack through the context class loader; a thread Horizon
         // attached to the JVM has none.
         Thread.currentThread().setContextClassLoader(HorizonData.class.getClassLoader());
-        Natives.log("vanilla data root: " + HorizonData.class.getClassLoader().getResource("data/.mcassetsroot")
-                + ", tag: " + HorizonData.class.getClassLoader().getResource("data/minecraft/tags/item/stone_tool_materials.json"));
-        PackRepository packs = ServerPacksSource.createVanillaTrustedRepository();
+        java.nio.file.Path folder = java.nio.file.Paths.get(datapacks);
+        java.nio.file.Files.createDirectories(folder);
+        PackRepository packs = ServerPacksSource.createPackRepository(
+                folder, new net.minecraft.world.level.validation.DirectoryValidator(path -> true));
         packs.reload();
         List<String> ids = new ArrayList<>(packs.getAvailableIds());
         ids.remove("vanilla");

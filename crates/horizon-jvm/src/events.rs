@@ -63,6 +63,15 @@ pub enum Action {
     Tell { uuid: String, text: String },
     /// `PlayerList.broadcastSystemMessage`: a line to every player, and the server log.
     Broadcast { text: String },
+    /// `ServerPlayer.teleport` and the connection's: the player is to be moved there.
+    Teleport {
+        uuid: String,
+        /// `minecraft:overworld`, ...
+        dimension: String,
+        position: [f64; 3],
+        yaw: f32,
+        pitch: f32,
+    },
 }
 
 static ACTIONS: Mutex<Vec<Action>> = Mutex::new(Vec::new());
@@ -129,6 +138,7 @@ fn strings<'local>(
 pub fn server_tick(
     tick: i64,
     dedicated: bool,
+    world: &std::path::Path,
     players: &[Player],
     events: &[Event],
 ) -> Result<(), String> {
@@ -142,7 +152,7 @@ pub fn server_tick(
         .map_err(|e| format!("attach: {e}"))?;
     // Local references made here are freed when the frame pops.
     let result = env.with_local_frame(64, |env| -> jni::errors::Result<()> {
-        call_tick(env, class, tick, dedicated, players, events)
+        call_tick(env, class, tick, dedicated, world, players, events)
     });
     result.map_err(|e| crate::describe(&mut env, e))
 }
@@ -152,9 +162,11 @@ fn call_tick(
     class: &GlobalRef,
     tick: i64,
     dedicated: bool,
+    world: &std::path::Path,
     players: &[Player],
     events: &[Event],
 ) -> jni::errors::Result<()> {
+    let world = env.new_string(world.to_string_lossy())?;
     let ids: Vec<&str> = players.iter().map(|p| p.uuid.as_str()).collect();
     let names: Vec<&str> = players.iter().map(|p| p.name.as_str()).collect();
     let dims: Vec<&str> = players.iter().map(|p| p.dimension.as_str()).collect();
@@ -218,10 +230,11 @@ fn call_tick(
     env.call_static_method(
         class,
         "tick",
-        "(JZ[Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;[D[I[F[I[I[Ljava/lang/String;[Ljava/lang/String;[I)V",
+        "(JZLjava/lang/String;[Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;[D[I[F[I[I[Ljava/lang/String;[Ljava/lang/String;[I)V",
         &[
             JValue::Long(tick),
             JValue::Bool(dedicated.into()),
+            JValue::Object(&world),
             JValue::Object(&ids),
             JValue::Object(&names),
             JValue::Object(&dims),

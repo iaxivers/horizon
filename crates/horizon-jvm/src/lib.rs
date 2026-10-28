@@ -272,7 +272,8 @@ pub fn start(config: &Config) -> Result<&'static Bridge, String> {
             let mods =
                 start_fabric(&mut env, fabric, &add_mods).map_err(|e| describe(&mut env, e))?;
             if platform {
-                prepare_data(&mut env).map_err(|e| describe(&mut env, e))?;
+                prepare_data(&mut env, &config.work.join("datapacks"))
+                    .map_err(|e| describe(&mut env, e))?;
             }
             mods
         }
@@ -374,6 +375,11 @@ fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
                 fn_ptr: native_tell as *mut c_void,
             },
             NativeMethod {
+                name: "teleport".into(),
+                sig: "(Ljava/lang/String;Ljava/lang/String;DDDFF)V".into(),
+                fn_ptr: native_teleport as *mut c_void,
+            },
+            NativeMethod {
                 name: "broadcast".into(),
                 sig: "(Ljava/lang/String;)V".into(),
                 fn_ptr: native_broadcast as *mut c_void,
@@ -456,7 +462,7 @@ fn start_fabric(
 
 /// Loads the server's data (vanilla's data pack and the mods'): `HorizonData.prepare`, in the
 /// platform mod, through Fabric's class loader.
-fn prepare_data(env: &mut JNIEnv) -> jni::errors::Result<()> {
+fn prepare_data(env: &mut JNIEnv, datapacks: &Path) -> jni::errors::Result<()> {
     let name = env.new_string("dev.horizonlab.platform.HorizonData")?;
     let class = env
         .call_static_method(
@@ -466,7 +472,13 @@ fn prepare_data(env: &mut JNIEnv) -> jni::errors::Result<()> {
             &[JValue::Object(&name)],
         )?
         .l()?;
-    env.call_static_method(JClass::from(class), "prepare", "()V", &[])?;
+    let datapacks = env.new_string(datapacks.to_string_lossy())?;
+    env.call_static_method(
+        JClass::from(class),
+        "prepare",
+        "(Ljava/lang/String;)V",
+        &[JValue::Object(&datapacks)],
+    )?;
     Ok(())
 }
 
@@ -529,6 +541,33 @@ extern "system" fn native_tell(mut env: JNIEnv, _class: JClass, uuid: JString, t
         };
         let (uuid, text) = (String::from(uuid), String::from(text));
         events::push(events::Action::Tell { uuid, text });
+    }));
+}
+
+/// `Natives.teleport(String uuid, String dimension, double x, y, z, float yaw, pitch)`.
+#[allow(clippy::too_many_arguments)]
+extern "system" fn native_teleport(
+    mut env: JNIEnv,
+    _class: JClass,
+    uuid: JString,
+    dimension: JString,
+    x: sys::jdouble,
+    y: sys::jdouble,
+    z: sys::jdouble,
+    yaw: sys::jfloat,
+    pitch: sys::jfloat,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (Ok(uuid), Ok(dimension)) = (env.get_string(&uuid), env.get_string(&dimension)) else {
+            return;
+        };
+        events::push(events::Action::Teleport {
+            uuid: uuid.into(),
+            dimension: dimension.into(),
+            position: [x, y, z],
+            yaw,
+            pitch,
+        });
     }));
 }
 

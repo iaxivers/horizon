@@ -14,7 +14,9 @@
     "MinecraftServerMixin",
     "ServerLevelMixin",
     "DedicatedServerMixin",
-    "IntegratedServerMixin"
+    "IntegratedServerMixin",
+    "PacketListenerMixin",
+    "GameListenerMixin"
   ],
   "injectors": {
     "defaultRequire": 1

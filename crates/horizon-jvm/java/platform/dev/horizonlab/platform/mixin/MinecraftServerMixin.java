@@ -18,6 +18,14 @@ public abstract class MinecraftServerMixin {
         if (HorizonServer.isMirror(this)) cir.setReturnValue(null);
     }
 
+    @Inject(method = "getWorldPath", at = @At("HEAD"), cancellable = true)
+    private void horizon$worldPath(net.minecraft.world.level.storage.LevelResource resource,
+                                   CallbackInfoReturnable<java.nio.file.Path> cir) {
+        if (HorizonServer.isMirror(this) && HorizonServer.worldDir() != null) {
+            cir.setReturnValue(HorizonServer.worldDir().resolve(resource.id()).normalize());
+        }
+    }
+
     @Inject(method = "getProfilePermissions", at = @At("HEAD"), cancellable = true)
     private void horizon$permissions(NameAndId player, CallbackInfoReturnable<LevelBasedPermissionSet> cir) {
         if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.permissions(player));

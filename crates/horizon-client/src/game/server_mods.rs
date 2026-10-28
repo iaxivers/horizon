@@ -90,6 +90,11 @@ mod run {
         },
     }
 
+    /// Teleports Java mods asked for while the hub was out of `self.lan`, done next tick.
+    #[cfg(feature = "java-mods")]
+    static PENDING_TELEPORTS: std::sync::Mutex<Vec<horizon_jvm::events::Action>> =
+        std::sync::Mutex::new(Vec::new());
+
     /// Whether Java mods run here: the bridge started Fabric with its platform mod.
     fn java_mods_on() -> bool {
         #[cfg(feature = "java-mods")]
@@ -445,14 +450,28 @@ mod run {
         /// what they asked: system messages to a player or everyone.
         #[cfg(feature = "java-mods")]
         fn tick_java_mods(&mut self, players: &[ServerPlayer], events: &[JavaEvent]) {
+            // Teleports Java mods asked for while the hub was out of `self.lan`.
+            let pending =
+                std::mem::take(&mut *PENDING_TELEPORTS.lock().unwrap_or_else(|e| e.into_inner()));
+            for action in pending {
+                self.java_teleport(action);
+            }
+            // A connection's facing, or the window's own player's in-frame.
+            let rotation = |id: &str| -> [f32; 2] {
+                self.lan
+                    .iter()
+                    .flat_map(|h| &h.hub.guests)
+                    .find(|g| uuid_string(g.uuid) == id)
+                    .map_or([self.yaw, self.pitch], |g| [g.yaw, g.pitch])
+            };
             let players: Vec<horizon_jvm::events::Player> = players
                 .iter()
                 .map(|p| horizon_jvm::events::Player {
                     uuid: p.id.clone(),
                     name: p.name.clone(),
                     position: [p.x, p.y, p.z],
-                    yaw: 0.0,
-                    pitch: 0.0,
+                    yaw: rotation(&p.id)[0],
+                    pitch: rotation(&p.id)[1],
                     dimension: p.dimension.clone(),
                     game_mode: match p.game_mode {
                         GameMode::Survival => 0,
@@ -476,9 +495,13 @@ mod run {
                 self.options.execution_role,
                 crate::game::execution_role::ExecutionRole::DedicatedServer
             );
-            if let Err(e) =
-                horizon_jvm::events::server_tick(self.ticks as i64, dedicated, &players, events)
-            {
+            if let Err(e) = horizon_jvm::events::server_tick(
+                self.ticks as i64,
+                dedicated,
+                &self.save.root,
+                &players,
+                events,
+            ) {
                 log::warn!("Java mods: a tick failed: {e}");
             }
             self.apply_java_actions(None);
@@ -492,6 +515,18 @@ mod run {
                 match action {
                     horizon_jvm::events::Action::Tell { uuid, text } => {
                         self.tell_server_player(host.as_deref_mut(), &uuid, Text::literal(text));
+                    }
+                    teleport @ horizon_jvm::events::Action::Teleport { .. } => {
+                        if host.is_some() {
+                            // The hub is out of `self.lan` (a connection's command): the
+                            // player's /tp needs it, so the next tick does it.
+                            PENDING_TELEPORTS
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .push(teleport);
+                        } else {
+                            self.java_teleport(teleport);
+                        }
                     }
                     horizon_jvm::events::Action::Broadcast { text } => {
                         if self.options.dedicated.is_some() {
@@ -508,6 +543,44 @@ mod run {
                         }
                     }
                 }
+            }
+        }
+
+        /// Moves a player as a Java mod asked: Horizon's own `/tp`, run by the server in the
+        /// target dimension (`execute in`), so a connection, the window's player and other
+        /// dimensions all go the way vanilla's teleports go.
+        #[cfg(feature = "java-mods")]
+        fn java_teleport(&mut self, action: horizon_jvm::events::Action) {
+            let horizon_jvm::events::Action::Teleport {
+                uuid,
+                dimension,
+                position: [x, y, z],
+                yaw,
+                pitch,
+            } = action
+            else {
+                return;
+            };
+            let Some(name) = self
+                .server_players(None)
+                .into_iter()
+                .find(|p| p.id == uuid)
+                .map(|p| p.name)
+            else {
+                return;
+            };
+            let line = format!("execute in {dimension} run tp {name} {x} {y} {z} {yaw} {pitch}");
+            // The server's own command (a function's rights), not the player's.
+            let permission = std::mem::replace(&mut self.ui.registries.permission, 4);
+            let source = self.server_source();
+            self.exec = Default::default();
+            let result = self.execute_line(&line, source);
+            self.ui.registries.permission = permission;
+            if let Err(e) = result {
+                log::warn!(
+                    "Java mods: a teleport failed ({line}): {}",
+                    e.message.plain()
+                );
             }
         }
 
