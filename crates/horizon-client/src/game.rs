@@ -77,6 +77,8 @@ mod initial_spawn;
 mod integrated;
 mod item_draw;
 mod item_particles;
+#[cfg(feature = "java-mods")]
+mod java_mods;
 mod jukebox;
 mod lan;
 mod lan_actions;
@@ -14952,6 +14954,8 @@ fn start_game<'a>(
         game.mods.dev = game.options.dev_mods.clone();
         game.start_moved_extras();
         game.start_mods();
+        #[cfg(feature = "java-mods")]
+        game.start_java_mods();
     }
     game.start_agent_control()?;
     if let Some(scenario) = game.options.benchmark.clone() {

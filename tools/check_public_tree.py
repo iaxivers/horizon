@@ -17,7 +17,10 @@ def prohibited(path):
     if path in ORIGINAL_JDK_TOOLS:
         return False
     # Original Horizon mod sources may also be tracked.
-    if parsed.suffix == ".java" and path.startswith(("mods/horizon/src/", "mods/horizon-lab/src/")):
+    # The Java mod bridge's own classes (crates/horizon-jvm) are original code too.
+    if parsed.suffix == ".java" and path.startswith(
+        ("mods/horizon/src/", "mods/horizon-lab/src/", "crates/horizon-jvm/java/")
+    ):
         return not ("/dev/horizonlab/" in path)
     return bool(parsed.parts and parsed.parts[0] in PRIVATE_ROOTS) or parsed.suffix.lower() in PRIVATE_EXTENSIONS
 

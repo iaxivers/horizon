@@ -29,6 +29,9 @@ horizon-friends = { path = "../horizon-friends" }
 # Horizon mods: sandboxed WebAssembly components, off unless installed and turned on (docs/mods.md).
 # Their runtime is the `mods` feature.
 horizon-mods = { path = "../horizon-mods", default-features = false, features = ["index"] }
+# Java mods (Fabric jars) in an embedded JVM, started only when mods-java/ holds jars; the
+# `java-mods` feature. Needs a JDK to build.
+horizon-jvm = { path = "../horizon-jvm", optional = true }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }
 winit = "0.30.13"
 pollster = "0.4"
@@ -96,6 +99,9 @@ controllers = ["dep:gilrs", "dep:horizon-dualsense", "horizon-client-input/contr
 # Runs code mods (wasmtime and cranelift: a quarter of a clean build). On in every release build
 # (release.yml); the tests and probes don't need it. Content mods load without it.
 mods = ["horizon-mods/runtime"]
+# Runs Java mods from mods-java/ in an embedded JVM (the Java mod bridge, crates/horizon-jvm).
+# Off by default; with it on and no jars, the game starts no JVM.
+java-mods = ["dep:horizon-jvm"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
 rng-trace = ["horizon-core/rng-trace"]
 

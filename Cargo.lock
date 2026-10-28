@@ -1392,6 +1392,7 @@ dependencies = [
  "horizon-friends",
  "horizon-hdr",
  "horizon-items",
+ "horizon-jvm",
  "horizon-mods",
  "horizon-protocol",
  "horizon-server-files",
@@ -1498,6 +1499,16 @@ dependencies = [
  "horizon-world",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "horizon-jvm"
+version = "0.1.0"
+dependencies = [
+ "horizon-prepare",
+ "jni 0.21.1",
+ "libloading",
+ "log",
 ]
 
 [[package]]
