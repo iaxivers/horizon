@@ -9,8 +9,9 @@
 //! What runs in it:
 //! - the bridge's own jar (`java/dev/horizonlab/bridge/`, built by `build.rs`, embedded in the
 //!   binary and written to the work folder), with Rust natives on `dev.horizonlab.bridge.Natives`;
-//! - with a facade ([`facade`]), Fabric Loader ([`libs`]) through `HorizonGameProvider`: it
-//!   finds the mods in `mods-java/`, applies their Mixins to the facade's classes and runs their
+//! - with a game jar (the player's own, [`facade::game_jar`]), Fabric Loader ([`libs`])
+//!   through `HorizonGameProvider`: it finds the mods in `mods-java/` and Fabric API, applies
+//!   their Mixins to the game's classes, bootstraps the game's registries and runs the mods'
 //!   `main` and `client`/`server` entrypoints.
 //!
 //! A JVM can be created once per process (JNI allows no second one after a destroy), so
@@ -61,16 +62,18 @@ pub struct Config {
     pub jars: Vec<PathBuf>,
     /// More class path entries (tests put a facade there to load it without Fabric).
     pub class_path: Vec<PathBuf>,
-    /// Fabric Loader runs only with a facade.
+    /// Fabric Loader runs only with a game jar.
     pub fabric: Option<Fabric>,
 }
 
 /// Fabric Loader's part of [`Config`].
 pub struct Fabric {
-    /// The facade jar ([`facade::ensure`]).
-    pub facade: PathBuf,
+    /// The game jar ([`facade::game_jar`], or a facade, [`facade::ensure`]).
+    pub game_jar: PathBuf,
     /// The game's libraries ([`facade::game_libraries`]), on Fabric's class path beside it.
     pub libraries: Vec<PathBuf>,
+    /// Mod jars to load besides the folder's: Fabric API ([`libs::ensure_fabric_api`]).
+    pub add_mods: Vec<PathBuf>,
     /// The folder Fabric reads mods from (`mods-java/`).
     pub mods: PathBuf,
     /// The game folder: Fabric writes `config/` there.
@@ -360,7 +363,7 @@ fn start_fabric(env: &mut JNIEnv, fabric: &Fabric) -> jni::errors::Result<Vec<St
         Side::Server => "server",
     })?;
     let version = env.new_string(&fabric.version)?;
-    let facade = env.new_string(fabric.facade.to_string_lossy())?;
+    let game_jar = env.new_string(fabric.game_jar.to_string_lossy())?;
     let mods = env.new_string(fabric.mods.to_string_lossy())?;
     let game_dir = env.new_string(fabric.game_dir.to_string_lossy())?;
     let libraries: Vec<String> = fabric
@@ -369,17 +372,24 @@ fn start_fabric(env: &mut JNIEnv, fabric: &Fabric) -> jni::errors::Result<Vec<St
         .map(|l| l.to_string_lossy().into_owned())
         .collect();
     let libraries = strings(env, &libraries)?;
+    let add_mods: Vec<String> = fabric
+        .add_mods
+        .iter()
+        .map(|m| m.to_string_lossy().into_owned())
+        .collect();
+    let add_mods = strings(env, &add_mods)?;
     let loaded = env
         .call_static_method(
             "dev/horizonlab/bridge/fabric/FabricBoot",
             "start",
-            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)[Ljava/lang/String;",
+            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)[Ljava/lang/String;",
             &[
                 JValue::Object(&side),
                 JValue::Object(&version),
-                JValue::Object(&facade),
+                JValue::Object(&game_jar),
                 JValue::Object(&libraries),
                 JValue::Object(&mods),
+                JValue::Object(&add_mods),
                 JValue::Object(&game_dir),
             ],
         )?

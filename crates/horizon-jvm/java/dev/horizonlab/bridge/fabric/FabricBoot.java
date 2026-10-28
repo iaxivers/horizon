@@ -17,8 +17,10 @@ import net.fabricmc.loader.impl.launch.knot.Knot;
 
 /**
  * Starts Fabric Loader inside Horizon's JVM (called from Rust, horizon-jvm): Knot with
- * {@link HorizonGameProvider}, mod discovery in mods-java/, Mixin on the facade, then the mods'
- * {@code main} and {@code client} (or {@code server}) entrypoints.
+ * {@link HorizonGameProvider}, mod discovery in mods-java/ (plus Fabric API, added by the
+ * bridge), Mixin on the game's classes, the game's own bootstrap (registries, as vanilla's
+ * server Main does it before Fabric's hook), then the mods' {@code main} and {@code client}
+ * (or {@code server}) entrypoints.
  */
 public final class FabricBoot {
     private FabricBoot() {}
@@ -28,19 +30,23 @@ public final class FabricBoot {
     /**
      * @param side "client" or "server"
      * @param version the game version Horizon plays ("26.3")
-     * @param facade the facade jar
-     * @param libraries the game's libraries, on Knot's class path beside the facade
+     * @param gameJar the game jar (the player's client jar, or a facade of it)
+     * @param libraries the game's libraries, on Knot's class path beside the game jar
      * @param modsDir the folder of mod jars (mods-java/)
+     * @param addMods more mod jars to load (Fabric API), or none
      * @param gameDir the game folder (config/ goes there)
      * @return one line per loaded mod, "id version"
      */
-    public static String[] start(String side, String version, String facade, String[] libraries, String modsDir, String gameDir) {
+    public static String[] start(String side, String version, String gameJar, String[] libraries, String modsDir, String[] addMods, String gameDir) throws ReflectiveOperationException {
         EnvType env = "server".equals(side) ? EnvType.SERVER : EnvType.CLIENT;
         System.setProperty("fabric.skipMcProvider", "true");
         System.setProperty("fabric.modsFolder", modsDir);
         System.setProperty("fabric.noGui", "true");
+        if (addMods.length > 0) {
+            System.setProperty("fabric.addMods", String.join(File.pathSeparator, addMods));
+        }
         HorizonGameProvider.version = version;
-        HorizonGameProvider.facade = Paths.get(facade).toAbsolutePath();
+        HorizonGameProvider.gameJar = Paths.get(gameJar).toAbsolutePath();
         HorizonGameProvider.gameDir = Paths.get(gameDir).toAbsolutePath();
         List<Path> libs = new ArrayList<>();
         for (String library : libraries) libs.add(Paths.get(library).toAbsolutePath());
@@ -56,6 +62,8 @@ public final class FabricBoot {
         Knot knot = new Knot(env);
         gameLoader = knot.init(new String[0]);
         FabricLoaderImpl loader = FabricLoaderImpl.INSTANCE;
+        bootstrapGame();
+        loader.prepareModInit(HorizonGameProvider.gameDir, null);
         loader.invokeEntrypoints("main", ModInitializer.class, ModInitializer::onInitialize);
         if (env == EnvType.CLIENT) {
             loader.invokeEntrypoints("client", ClientModInitializer.class, ClientModInitializer::onInitializeClient);
@@ -70,7 +78,28 @@ public final class FabricBoot {
         return mods.toArray(new String[0]);
     }
 
-    /** A game (facade) or mod class, loaded and initialized by Knot, so Mixins apply to it. */
+    /**
+     * What vanilla's server Main runs before Fabric calls the entrypoints: the version, then
+     * the built-in registries (blocks, items, entity types...) and their check. Pure Java data,
+     * as the data generator runs it: no world, no window.
+     */
+    private static void bootstrapGame() throws ReflectiveOperationException {
+        long started = System.nanoTime();
+        Class<?> constants;
+        try {
+            constants = Class.forName("net.minecraft.SharedConstants", true, gameLoader);
+        } catch (ClassNotFoundException e) {
+            Natives.log("No Minecraft bootstrap: the game jar holds no net.minecraft.SharedConstants");
+            return;
+        }
+        constants.getMethod("tryDetectVersion").invoke(null);
+        Class<?> bootstrap = Class.forName("net.minecraft.server.Bootstrap", true, gameLoader);
+        bootstrap.getMethod("bootStrap").invoke(null);
+        bootstrap.getMethod("validate").invoke(null);
+        Natives.log("Minecraft bootstrap done in " + (System.nanoTime() - started) / 1_000_000 + " ms");
+    }
+
+    /** A game or mod class, loaded and initialized by Knot, so Mixins apply to it. */
     public static Class<?> gameClass(String name) throws ClassNotFoundException {
         if (gameLoader == null) throw new IllegalStateException("Fabric Loader is not started");
         return Class.forName(name.replace('/', '.'), true, gameLoader);

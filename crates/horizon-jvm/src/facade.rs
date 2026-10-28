@@ -74,6 +74,22 @@ pub fn ensure(root: &Path) -> Result<PathBuf, String> {
     Ok(out)
 }
 
+/// The player's own client jar as `horizon-prepare` copied it, checked, into
+/// `.local/minecraft/<version>/jars/client.jar`: Fabric's game jar, run as it is. (Its client
+/// jar holds the server's classes too.)
+pub fn game_jar(root: &Path) -> Result<PathBuf, String> {
+    let lock = horizon_prepare::artifacts::Lock::read(root)?;
+    let jar = lock.directory.join("jars/client.jar");
+    if jar.is_file() {
+        Ok(jar)
+    } else {
+        Err(format!(
+            "no {}: run horizon-prepare --prepare first",
+            jar.display()
+        ))
+    }
+}
+
 /// The game's own libraries (DataFixerUpper, fastutil, Guava, JOML...) as `horizon-prepare`
 /// copied them, checked, into `.local/minecraft/<version>/libraries/client/`: game classes
 /// extend and name them, so Fabric's class loader needs them beside the facade. Sorted.

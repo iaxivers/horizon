@@ -150,8 +150,9 @@ fn fabric_loads_a_mod_runs_its_entrypoints_and_applies_its_mixin() {
         jars: horizon_jvm::jars(&mods),
         class_path: Vec::new(),
         fabric: Some(horizon_jvm::Fabric {
-            facade,
+            game_jar: facade,
             libraries: Vec::new(),
+            add_mods: Vec::new(),
             mods: mods.clone(),
             game_dir: dir.clone(),
             version: "26.3".into(),

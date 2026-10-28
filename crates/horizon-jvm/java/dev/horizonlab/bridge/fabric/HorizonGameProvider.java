@@ -17,8 +17,9 @@ import net.fabricmc.loader.impl.util.Arguments;
 
 /**
  * Fabric Loader's view of Horizon: the game is "minecraft" at Horizon's version, its jar is
- * the facade (Minecraft's classes with stub bodies, made by horizon-jvm's facade.rs), and
- * nothing in it is patched: Horizon itself calls the mods' entrypoints ({@link #launch}).
+ * the player's own game jar (or a facade of it, horizon-jvm's facade.rs), its libraries sit
+ * beside it on Knot's class path, and nothing in it is patched: Horizon itself bootstraps the
+ * game's registries and calls the mods' entrypoints ({@link FabricBoot}).
  *
  * <p>Found by Fabric Loader's ServiceLoader (META-INF/services in the bridge jar) once
  * {@code fabric.skipMcProvider} turns off its own Minecraft provider. {@link FabricBoot} sets
@@ -26,7 +27,7 @@ import net.fabricmc.loader.impl.util.Arguments;
  */
 public final class HorizonGameProvider implements GameProvider {
     static String version = "26.3";
-    static Path facade;
+    static Path gameJar;
     static Path gameDir = Paths.get(".");
     static List<Path> parentClassPath = Collections.emptyList();
     static List<Path> libraries = Collections.emptyList();
@@ -59,7 +60,7 @@ public final class HorizonGameProvider implements GameProvider {
         BuiltinModMetadata.Builder metadata = new BuiltinModMetadata.Builder(getGameId(), version)
                 .setName("Minecraft")
                 .setDescription("Minecraft " + version + ", run by Horizon");
-        return Collections.singletonList(new BuiltinMod(Collections.singletonList(facade), metadata.build()));
+        return Collections.singletonList(new BuiltinMod(Collections.singletonList(gameJar), metadata.build()));
     }
 
     @Override
@@ -87,20 +88,20 @@ public final class HorizonGameProvider implements GameProvider {
 
     @Override
     public boolean isEnabled() {
-        return facade != null;
+        return gameJar != null;
     }
 
     @Override
     public boolean locateGame(FabricLauncher launcher, String[] args) {
         arguments.parse(args);
-        return facade != null && facade.toFile().isFile();
+        return gameJar != null && gameJar.toFile().isFile();
     }
 
     @Override
     public void initialize(FabricLauncher launcher) {
         launcher.setValidParentClassPath(parentClassPath);
         // No patches: an empty table, so the transformer answers "unchanged" for every class.
-        transformer.locateEntrypoints(launcher, new ArrayList<>(Collections.singletonList(facade)));
+        transformer.locateEntrypoints(launcher, new ArrayList<>(Collections.singletonList(gameJar)));
     }
 
     @Override
@@ -110,7 +111,7 @@ public final class HorizonGameProvider implements GameProvider {
 
     @Override
     public void unlockClassPath(FabricLauncher launcher) {
-        launcher.addToClassPath(facade);
+        launcher.addToClassPath(gameJar);
         for (Path library : libraries) {
             launcher.addToClassPath(library);
         }

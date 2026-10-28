@@ -1,0 +1,3 @@
+# Fabric API, pinned by SHA-256: the mod most Fabric mods need. The bridge adds it to every
+# Fabric start (fabric.addMods) unless mods-java/ holds its own. file<TAB>url<TAB>sha256.
+fabric-api-0.165.0+26.3.jar	https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/0.165.0+26.3/fabric-api-0.165.0+26.3.jar	18442e2ad466d6ef41c37dbb4cb68495e6ca6658b1f1ee9be76143d155ef2c88

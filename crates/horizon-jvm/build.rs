@@ -7,6 +7,8 @@
 //! Needs a JDK at build time (JDK 25 for Horizon; any JDK 21 or newer compiles these):
 //! `JAVA_HOME`, else `javac` on the PATH.
 
+// Fabric API's half of libs.rs is the game's; build.rs needs only the loader.
+#[allow(dead_code)]
 #[path = "src/libs.rs"]
 mod libs;
 
@@ -39,6 +41,7 @@ fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
 fn main() {
     println!("cargo:rerun-if-changed=java/dev");
     println!("cargo:rerun-if-changed=fabric-libs.tsv");
+    println!("cargo:rerun-if-changed=fabric-api.tsv");
     println!("cargo:rerun-if-changed=src/libs.rs");
     println!("cargo:rerun-if-env-changed=JAVA_HOME");
     println!("cargo:rerun-if-env-changed=HORIZON_BRIDGE_LIBS");
