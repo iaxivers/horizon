@@ -182,7 +182,7 @@ const RELOAD_CHECK: Duration = Duration::from_secs(1);
 
 /// A vanilla command name: mods may not take it.
 #[cfg(feature = "mods")]
-fn vanilla_command(name: &str) -> bool {
+pub(super) fn vanilla_command(name: &str) -> bool {
     let d = vanilla::game_dispatcher();
     d.nodes[0]
         .children

@@ -29,6 +29,8 @@ pub struct Player {
     /// Vanilla's game mode ids: 0 survival, 1 creative, 2 adventure, 3 spectator.
     pub game_mode: i32,
     pub health: f32,
+    /// Vanilla's permission level, 0 (everyone) to 4 (owner): what the player's commands may do.
+    pub permission: u8,
 }
 
 /// Something a player did since the last tick.
@@ -168,6 +170,7 @@ fn call_tick(
     }
     let modes: Vec<i32> = players.iter().map(|p| p.game_mode).collect();
     let health: Vec<f32> = players.iter().map(|p| p.health).collect();
+    let permissions: Vec<i32> = players.iter().map(|p| i32::from(p.permission)).collect();
 
     // Events as parallel arrays: a kind per event (0 joined, 1 left, 2 chat, 3 broken,
     // 4 placed), its player, a text (chat line or block state) and a position.
@@ -202,6 +205,8 @@ fn call_tick(
     env.set_int_array_region(&modes_array, 0, &modes)?;
     let health_array = env.new_float_array(health.len() as sys::jsize)?;
     env.set_float_array_region(&health_array, 0, &health)?;
+    let permissions_array = env.new_int_array(permissions.len() as sys::jsize)?;
+    env.set_int_array_region(&permissions_array, 0, &permissions)?;
     let kinds_array = env.new_int_array(kinds.len() as sys::jsize)?;
     env.set_int_array_region(&kinds_array, 0, &kinds)?;
     let who = strings(env, &who)?;
@@ -213,7 +218,7 @@ fn call_tick(
     env.call_static_method(
         class,
         "tick",
-        "(JZ[Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;[D[I[F[I[Ljava/lang/String;[Ljava/lang/String;[I)V",
+        "(JZ[Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;[D[I[F[I[I[Ljava/lang/String;[Ljava/lang/String;[I)V",
         &[
             JValue::Long(tick),
             JValue::Bool(dedicated.into()),
@@ -223,6 +228,7 @@ fn call_tick(
             JValue::Object(&motion_array),
             JValue::Object(&modes_array),
             JValue::Object(&health_array),
+            JValue::Object(&permissions_array),
             JValue::Object(&kinds_array),
             JValue::Object(&who),
             JValue::Object(&texts),
@@ -230,4 +236,83 @@ fn call_tick(
         ],
     )?;
     Ok(())
+}
+
+/// Runs `f` on this thread's JNI env with the platform's `HorizonServer` class, in a local frame.
+fn with_server<T>(
+    f: impl FnOnce(&mut JNIEnv, &JClass) -> jni::errors::Result<T>,
+) -> Result<Option<T>, String> {
+    let Some(class) = server_class() else {
+        return Ok(None);
+    };
+    let bridge = crate::get().ok_or("the JVM is not running")?;
+    let mut env = bridge
+        .vm()
+        .attach_current_thread_permanently()
+        .map_err(|e| format!("attach: {e}"))?;
+    let result = env.with_local_frame(32, |env| {
+        let class = <&JClass>::from(class.as_obj());
+        f(env, class)
+    });
+    result.map(Some).map_err(|e| crate::describe(&mut env, e))
+}
+
+fn string_array(env: &mut JNIEnv, array: JObject) -> jni::errors::Result<Vec<String>> {
+    let array = jni::objects::JObjectArray::from(array);
+    let len = env.get_array_length(&array)?;
+    let mut out = Vec::with_capacity(len as usize);
+    for i in 0..len {
+        let item = jni::objects::JString::from(env.get_object_array_element(&array, i)?);
+        out.push(env.get_string(&item)?.into());
+        env.delete_local_ref(item)?;
+    }
+    Ok(out)
+}
+
+/// Every command the server's dispatcher has (vanilla's and the mods'), by name, sorted.
+pub fn command_names() -> Result<Vec<String>, String> {
+    let names = with_server(|env, class| {
+        let names = env
+            .call_static_method(class, "commandNames", "()[Ljava/lang/String;", &[])?
+            .l()?;
+        string_array(env, names)
+    })?;
+    Ok(names.unwrap_or_default())
+}
+
+/// These commands as a root of the commands report (Horizon's command tree format), as JSON.
+pub fn command_tree(names: &[String]) -> Result<String, String> {
+    let tree = with_server(|env, class| {
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let names = strings(env, &refs)?;
+        let tree = env
+            .call_static_method(
+                class,
+                "commandTree",
+                "([Ljava/lang/String;)Ljava/lang/String;",
+                &[JValue::Object(&names)],
+            )?
+            .l()?;
+        Ok(String::from(
+            env.get_string(&jni::objects::JString::from(tree))?,
+        ))
+    })?;
+    Ok(tree.unwrap_or_else(|| r#"{"type":"root","children":{}}"#.into()))
+}
+
+/// Runs a command line (no slash) as the player with this UUID; what it says comes back as
+/// [`Action`]s. False when that player isn't on the mirrored server.
+pub fn run_command(uuid: &str, line: &str) -> Result<bool, String> {
+    let ran = with_server(|env, class| {
+        let uuid = env.new_string(uuid)?;
+        let line = env.new_string(line)?;
+        env.call_static_method(
+            class,
+            "command",
+            "(Ljava/lang/String;Ljava/lang/String;)Z",
+            &[JValue::Object(&uuid), JValue::Object(&line)],
+        )?
+        .z()
+    })?;
+    Ok(ran.unwrap_or(false))
 }

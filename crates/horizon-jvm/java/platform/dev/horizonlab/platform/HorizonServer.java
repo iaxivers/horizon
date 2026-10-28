@@ -88,12 +88,14 @@ public final class HorizonServer {
     private static final Map<UUID, net.minecraft.stats.ServerStatsCounter> STATS = new ConcurrentHashMap<>();
     private static final Map<UUID, net.minecraft.server.PlayerAdvancements> ADVANCEMENTS = new ConcurrentHashMap<>();
 
-    /**
-     * A player's permissions on Horizon's server. Single player and a LAN host own their world;
-     * operators on dedicated servers come with Horizon's op list later.
-     */
+    /** Permission levels by player, as Horizon gives them each tick (0 everyone to 4 owner). */
+    private static final Map<UUID, Integer> PERMISSIONS = new ConcurrentHashMap<>();
+
+    /** A player's permissions on Horizon's server: the level Horizon gave for them. */
     public static net.minecraft.server.permissions.LevelBasedPermissionSet permissions(net.minecraft.server.players.NameAndId player) {
-        return net.minecraft.server.permissions.LevelBasedPermissionSet.OWNER;
+        int level = player == null ? 0 : PERMISSIONS.getOrDefault(player.id(), 0);
+        return net.minecraft.server.permissions.LevelBasedPermissionSet.forLevel(
+                net.minecraft.server.permissions.PermissionLevel.byId(level));
     }
 
     /** A player's stats: none kept yet (Horizon keeps its own). */
@@ -137,6 +139,8 @@ public final class HorizonServer {
         if (data != null) {
             ((MinecraftServerAccess) server).horizon$setRegistries(data.registries());
             ((MinecraftServerAccess) server).horizon$setWorldData(data.worldData());
+            // Vanilla's defaults; Horizon's own rules are mirrored over them later.
+            ((MinecraftServerAccess) server).horizon$setGameRules(MinecraftServer.DEFAULT_GAME_RULES.get());
             try {
                 var constructor = Class.forName("net.minecraft.server.MinecraftServer$ReloadableResources", true, loader)
                         .getDeclaredConstructors()[0];
@@ -227,13 +231,14 @@ public final class HorizonServer {
      * One server tick, called by Horizon (horizon-jvm's events.rs) at the tick's end.
      *
      * @param motion five values per player: x, y, z, yaw, pitch
+     * @param permissions per player: vanilla's permission level, 0 to 4
      * @param kinds per event: 0 joined, 1 left, 2 chat, 3 broke a block, 4 placed a block
      * @param who per event: the player's UUID
      * @param texts per event: the chat line, or the block state ("minecraft:oak_log[axis=y]")
      * @param positions three per event: the block's x, y, z
      */
     public static void tick(long tick, boolean dedicated, String[] ids, String[] names, String[] dimensions,
-                            double[] motion, int[] modes, float[] health,
+                            double[] motion, int[] modes, float[] health, int[] permissions,
                             int[] kinds, String[] who, String[] texts, int[] positions) {
         Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
         try {
@@ -267,6 +272,7 @@ public final class HorizonServer {
                 player.setXRot((float) motion[i * 5 + 4]);
                 player.setHealth(health[i]);
                 MODES.put(uuid, modes[i]);
+                PERMISSIONS.put(uuid, permissions[i]);
                 now.put(uuid, player);
             } catch (Throwable t) {
                 fire("mirroring player " + names[i], () -> { throw new RuntimeException(t); });
@@ -320,6 +326,90 @@ public final class HorizonServer {
             fire("ServerTickEvents.END_LEVEL_TICK", () -> ServerTickEvents.END_LEVEL_TICK.invoker().onEndTick(level));
         }
         fire("ServerTickEvents.END_SERVER_TICK", () -> ServerTickEvents.END_SERVER_TICK.invoker().onEndTick(server));
+    }
+
+    // ---- Commands -------------------------------------------------------------------------
+
+    private static com.mojang.brigadier.CommandDispatcher<net.minecraft.commands.CommandSourceStack> dispatcher() {
+        HorizonData.Loaded data = HorizonData.loaded;
+        return data == null ? null : data.reloadable().getCommands().getDispatcher();
+    }
+
+    /**
+     * Every command the server's dispatcher has, vanilla's and the mods' (Fabric API's command
+     * callback registers the mods' when the server's data loads). Horizon takes the names that
+     * aren't vanilla's.
+     */
+    public static String[] commandNames() {
+        var dispatcher = dispatcher();
+        if (dispatcher == null) return new String[0];
+        return dispatcher.getRoot().getChildren().stream().map(n -> n.getName()).sorted().toArray(String[]::new);
+    }
+
+    /**
+     * These commands as a root of the data generator's commands report, the format Horizon's
+     * command tree is in: {@code {"type": "root", "children": {...}}}. An argument of a type a
+     * vanilla client doesn't know (a mod's own) is sent as a greedy string: the client then
+     * still parses the line and Horizon's server checks it.
+     */
+    public static String commandTree(String[] names) {
+        var dispatcher = dispatcher();
+        com.google.gson.JsonObject root = new com.google.gson.JsonObject();
+        root.addProperty("type", "root");
+        com.google.gson.JsonObject children = new com.google.gson.JsonObject();
+        if (dispatcher != null) {
+            for (String name : names) {
+                var node = dispatcher.getRoot().getChild(name);
+                if (node == null) continue;
+                try {
+                    com.google.gson.JsonObject json = net.minecraft.commands.synchronization.ArgumentUtils.serializeNodeToJson(dispatcher, node);
+                    vanillaParsers(json);
+                    children.add(name, json);
+                } catch (Throwable t) {
+                    Natives.log("Command /" + name + " can't be sent to players: " + t);
+                }
+            }
+        }
+        root.add("children", children);
+        return root.toString();
+    }
+
+    private static void vanillaParsers(com.google.gson.JsonObject node) {
+        if (node.has("parser")) {
+            String parser = node.get("parser").getAsString();
+            if (!parser.startsWith("minecraft:") && !parser.startsWith("brigadier:")) {
+                node.addProperty("parser", "brigadier:string");
+                com.google.gson.JsonObject properties = new com.google.gson.JsonObject();
+                properties.addProperty("type", "greedy");
+                node.add("properties", properties);
+            }
+        }
+        if (node.has("children")) {
+            for (var entry : node.getAsJsonObject("children").entrySet()) {
+                vanillaParsers(entry.getValue().getAsJsonObject());
+            }
+        }
+    }
+
+    /**
+     * Runs a command line (no slash) as a player, as vanilla's server runs a player's command:
+     * their command source, the dispatcher's parse and errors. What the command says comes
+     * back through the player's system messages.
+     *
+     * @return false when the player isn't on Horizon's server (yet)
+     */
+    public static boolean command(String uuid, String line) {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        ServerPlayer player = KNOWN.get(UUID.fromString(uuid));
+        HorizonData.Loaded data = HorizonData.loaded;
+        if (player == null || data == null || !BY_UUID.containsKey(player.getUUID())) return false;
+        try {
+            data.reloadable().getCommands().performPrefixedCommand(player.createCommandSourceStack(), line);
+        } catch (Throwable t) {
+            Natives.tell(uuid, "An error occurred while running /" + line + ": " + t);
+            fire("command /" + line, () -> { throw new RuntimeException(t); });
+        }
+        return true;
     }
 
     private static BlockState state(String text) {

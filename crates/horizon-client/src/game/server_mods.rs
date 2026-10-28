@@ -102,6 +102,49 @@ mod run {
         }
     }
 
+    /// The commands Java mods add (not vanilla's): their names, and their tree as a root of
+    /// the commands report, merged into every player's command tree.
+    struct JavaCommands {
+        names: std::collections::HashSet<String>,
+        tree: Value,
+    }
+
+    /// The Java mods' commands, once the bridge has loaded the server's data (they don't
+    /// change after).
+    fn java_commands() -> Option<&'static JavaCommands> {
+        #[cfg(feature = "java-mods")]
+        {
+            static COMMANDS: std::sync::OnceLock<JavaCommands> = std::sync::OnceLock::new();
+            if let Some(commands) = COMMANDS.get() {
+                return Some(commands);
+            }
+            if !horizon_jvm::events::enabled() {
+                return None;
+            }
+            let names: Vec<String> = horizon_jvm::events::command_names()
+                .map_err(|e| log::warn!("Java mods: no commands: {e}"))
+                .ok()?
+                .into_iter()
+                .filter(|n| !crate::game::mods::vanilla_command(n))
+                .collect();
+            let tree = horizon_jvm::events::command_tree(&names)
+                .map_err(|e| log::warn!("Java mods: no command tree: {e}"))
+                .ok()
+                .and_then(|t| serde_json::from_str(&t).ok())?;
+            if !names.is_empty() {
+                log::info!("Java mods: commands /{}", names.join(", /"));
+            }
+            Some(COMMANDS.get_or_init(|| JavaCommands {
+                names: names.into_iter().collect(),
+                tree,
+            }))
+        }
+        #[cfg(not(feature = "java-mods"))]
+        {
+            None
+        }
+    }
+
     /// Blocks queued for levels that don't tick (another dimension, in-frame)
     /// are kept up to this many; the oldest go first.
     const MAX_QUEUED_WRITES: usize = 1 << 16;
@@ -412,6 +455,14 @@ mod run {
                         GameMode::Spectator => 3,
                     },
                     health: p.health,
+                    // A connection's level (ops, the LAN host's grant); the window's own player
+                    // in-frame owns its world.
+                    permission: self
+                        .lan
+                        .iter()
+                        .flat_map(|h| &h.hub.guests)
+                        .find(|g| uuid_string(g.uuid) == p.id)
+                        .map_or(4, |g| g.permission),
                 })
                 .collect();
             // Not `options.dedicated`: single player's server thread sets it too.
@@ -424,10 +475,17 @@ mod run {
             {
                 log::warn!("Java mods: a tick failed: {e}");
             }
+            self.apply_java_actions(None);
+        }
+
+        /// Sends what the Java mods asked since the last call: system messages to a player or
+        /// everyone. `host` is the hub when it is out of `self.lan`.
+        #[cfg(feature = "java-mods")]
+        fn apply_java_actions(&mut self, mut host: Option<&mut LanHost>) {
             for action in horizon_jvm::events::take_actions() {
                 match action {
                     horizon_jvm::events::Action::Tell { uuid, text } => {
-                        self.tell_server_player(None, &uuid, Text::literal(text));
+                        self.tell_server_player(host.as_deref_mut(), &uuid, Text::literal(text));
                     }
                     horizon_jvm::events::Action::Broadcast { text } => {
                         if self.options.dedicated.is_some() {
@@ -435,8 +493,12 @@ mod run {
                         } else {
                             log::info!("{text}");
                         }
-                        for p in self.server_players(None) {
-                            self.tell_server_player(None, &p.id, Text::literal(text.clone()));
+                        for p in self.server_players(host.as_deref()) {
+                            self.tell_server_player(
+                                host.as_deref_mut(),
+                                &p.id,
+                                Text::literal(text.clone()),
+                            );
                         }
                     }
                 }
@@ -449,15 +511,63 @@ mod run {
         /// Players' command trees list the running server mods' commands
         /// after vanilla's, whenever they change (or a hub opens).
         fn send_server_mod_commands(&mut self) {
-            let key = self.mods.mods.generation();
+            let java = java_commands();
+            // Java mods' commands load once, a while after the world opens.
+            let key = self.mods.mods.generation() ^ if java.is_some() { 1 << 63 } else { 0 };
             let Some(host) = self.lan.as_mut() else {
                 return;
             };
             if host.hub.mod_commands_key() == Some(key) {
                 return;
             }
-            let tree = command_tree(self.mods.mods.server_commands());
+            let mut tree = command_tree(self.mods.mods.server_commands());
+            if let Some(java) = java {
+                if tree.is_null() {
+                    tree = java.tree.clone();
+                } else if let (Some(ours), Some(theirs)) = (
+                    tree["children"].as_object_mut(),
+                    java.tree["children"].as_object(),
+                ) {
+                    // A WASM server mod's command of the same name wins, as it runs first.
+                    for (name, node) in theirs {
+                        ours.entry(name.clone()).or_insert_with(|| node.clone());
+                    }
+                }
+            }
             host.hub.set_mod_commands(key, tree);
+        }
+
+        /// `/line` from the player with this id, when a Java mod owns the command: run in the
+        /// JVM as that player, its answers sent back. False when no Java mod owns it.
+        fn java_command(&mut self, host: Option<&mut LanHost>, uuid: &str, line: &str) -> bool {
+            if !java_mods_on() {
+                return false;
+            }
+            let name = line.split_whitespace().next().unwrap_or_default();
+            let Some(java) = java_commands() else {
+                return false;
+            };
+            if !java.names.contains(name) {
+                return false;
+            }
+            #[cfg(feature = "java-mods")]
+            {
+                match horizon_jvm::events::run_command(uuid, line) {
+                    Ok(true) => {}
+                    Ok(false) => return false,
+                    Err(e) => {
+                        log::warn!("Java mods: /{line} failed: {e}");
+                        return false;
+                    }
+                }
+                self.apply_java_actions(host);
+                true
+            }
+            #[cfg(not(feature = "java-mods"))]
+            {
+                let _ = (host, uuid);
+                false
+            }
         }
 
         /// Lends the levels' chunks to capability `world` for the calls up to
@@ -567,6 +677,12 @@ mod run {
             let Some(me) = players.first().cloned() else {
                 return false;
             };
+            if self.java_command(None, &me.id, line) {
+                return true;
+            }
+            if !self.mods.server {
+                return false;
+            }
             let snapshot = self.mod_snapshot_with(players);
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world();
@@ -596,6 +712,12 @@ mod run {
             let Some(me) = players.iter().find(|p| p.id == id).cloned() else {
                 return false;
             };
+            if self.java_command(Some(&mut *host), &me.id, line) {
+                return true;
+            }
+            if !self.mods.server {
+                return false;
+            }
             let snapshot = self.mod_snapshot_with(players);
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world();

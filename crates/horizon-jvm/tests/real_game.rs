@@ -176,6 +176,7 @@ fn fabric_api_and_a_mod_on_the_real_game() {
         dimension: "minecraft:overworld".into(),
         game_mode: 0,
         health: 17.0,
+        permission: 0,
     };
     let uuid = steve.uuid.clone();
     // HORIZON_TEST_DEDICATED=1: mirror a dedicated server instead of single player's.
@@ -234,6 +235,70 @@ fn fabric_api_and_a_mod_on_the_real_game() {
         }),
         "{actions:?}"
     );
+    // The mod's command: listed, in the tree, and run as the player.
+    let names = horizon_jvm::events::command_names().unwrap();
+    assert!(
+        names.contains(&"events".to_string()) && names.contains(&"give".to_string()),
+        "{names:?}"
+    );
+    let tree: serde_json::Value =
+        serde_json::from_str(&horizon_jvm::events::command_tree(&["events".into()]).unwrap())
+            .unwrap();
+    println!("tree: {tree}");
+    assert_eq!(
+        tree["children"]["events"]["children"]["add"]["children"]["a"]["parser"],
+        "brigadier:integer"
+    );
+    for (line, answer) in [
+        ("events whoami", "[events] you are Steve at 10, 64, -4"),
+        ("events add 2 40", "[events] 42"),
+        ("events echo hello there", "[events] hello there"),
+    ] {
+        assert!(
+            horizon_jvm::events::run_command(&uuid, line).unwrap(),
+            "{line}"
+        );
+        let actions = horizon_jvm::events::take_actions();
+        println!("/{line}: {actions:?}");
+        assert_eq!(
+            actions,
+            vec![Action::Tell {
+                uuid: uuid.clone(),
+                text: answer.into()
+            }],
+            "/{line}"
+        );
+    }
+    // A gamemaster's command: refused at level 0, run at level 2.
+    assert!(horizon_jvm::events::run_command(&uuid, "events secret").unwrap());
+    let refused = horizon_jvm::events::take_actions();
+    println!("/events secret at level 0: {refused:?}");
+    assert!(
+        !refused
+            .iter()
+            .any(|a| matches!(a, Action::Tell { text, .. } if text.contains("42")))
+    );
+    let mut op = steve.clone();
+    op.permission = 2;
+    horizon_jvm::events::server_tick(2, dedicated, std::slice::from_ref(&op), &[]).unwrap();
+    horizon_jvm::events::take_actions();
+    assert!(horizon_jvm::events::run_command(&uuid, "events secret").unwrap());
+    let allowed = horizon_jvm::events::take_actions();
+    println!("/events secret at level 2: {allowed:?}");
+    assert_eq!(
+        allowed,
+        vec![Action::Tell {
+            uuid: uuid.clone(),
+            text: "[events] the secret is 42".into()
+        }]
+    );
+
+    // A command that doesn't parse answers with vanilla's error.
+    assert!(horizon_jvm::events::run_command(&uuid, "events add two").unwrap());
+    let actions = horizon_jvm::events::take_actions();
+    println!("/events add two: {actions:?}");
+    assert!(!actions.is_empty(), "an error comes back");
+
     let started = std::time::Instant::now();
     let mut counted = Vec::new();
     for n in 3..=100 {
