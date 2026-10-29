@@ -17,7 +17,8 @@ import net.minecraft.server.level.ServerPlayer;
 /**
  * A server-side Fabric mod written the usual way, against vanilla and Fabric API only: it
  * greets players who join, answers chat, reports broken blocks, counts ticks and has a
- * command, /events (whoami, add a b, echo text). It knows
+ * command, /events (whoami, add a b, echo text); breaking a log fells the logs above it, and
+ * diamond ore can't be broken. It knows
  * nothing about Horizon; the bridge's tests (tests/real_game.rs) and players run it as it is.
  */
 public class EventsMod implements ModInitializer {
@@ -72,6 +73,24 @@ public class EventsMod implements ModInitializer {
                                             + StringArgumentType.getString(context, "text")), false);
                                     return 1;
                                 })))));
+        // A tree feller, as FallingTree does it: breaking a log breaks the logs above it, with
+        // their drops. And diamond ore can't be broken.
+        PlayerBlockBreakEvents.BEFORE.register((level, player, pos, state, blockEntity) -> {
+            if (state.is(net.minecraft.world.level.block.Blocks.DIAMOND_ORE)) {
+                player.sendSystemMessage(Component.literal("[events] no diamonds for you"));
+                return false;
+            }
+            if (!state.is(net.minecraft.tags.BlockTags.LOGS)) return true;
+            int felled = 0;
+            net.minecraft.core.BlockPos above = pos.above();
+            while (level.isLoaded(above) && level.getBlockState(above).is(net.minecraft.tags.BlockTags.LOGS) && felled < 64) {
+                level.destroyBlock(above, true, player);
+                felled++;
+                above = above.above();
+            }
+            if (felled > 0) player.sendSystemMessage(Component.literal("[events] felled " + felled + " logs"));
+            return true;
+        });
         PlayerBlockBreakEvents.AFTER.register((level, player, pos, state, blockEntity) ->
                 player.sendSystemMessage(Component.literal("[events] you broke "
                         + BuiltInRegistries.BLOCK.getKey(state.getBlock()) + " at " + pos.toShortString())));

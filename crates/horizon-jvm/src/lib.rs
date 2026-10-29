@@ -20,6 +20,7 @@
 pub mod events;
 pub mod facade;
 pub mod libs;
+pub mod world;
 
 use jni::objects::{JClass, JObject, JObjectArray, JString, JValue};
 use jni::{JNIEnv, JavaVM, NativeMethod, sys};
@@ -395,6 +396,26 @@ fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
                 fn_ptr: native_open_menu as *mut c_void,
             },
             NativeMethod {
+                name: "blockState".into(),
+                sig: "(Ljava/lang/String;III)Ljava/lang/String;".into(),
+                fn_ptr: native_block_state as *mut c_void,
+            },
+            NativeMethod {
+                name: "setBlock".into(),
+                sig: "(Ljava/lang/String;IIILjava/lang/String;)V".into(),
+                fn_ptr: native_set_block as *mut c_void,
+            },
+            NativeMethod {
+                name: "dropItem".into(),
+                sig: "(Ljava/lang/String;DDDDDDLjava/lang/String;I)V".into(),
+                fn_ptr: native_drop_item as *mut c_void,
+            },
+            NativeMethod {
+                name: "levelEvent".into(),
+                sig: "(Ljava/lang/String;IIIIILjava/lang/String;)V".into(),
+                fn_ptr: native_level_event as *mut c_void,
+            },
+            NativeMethod {
                 name: "broadcast".into(),
                 sig: "(Ljava/lang/String;)V".into(),
                 fn_ptr: native_broadcast as *mut c_void,
@@ -644,6 +665,115 @@ extern "system" fn native_open_menu(
             env.get_string(&title).ok().map(String::from)
         };
         events::push(events::Action::OpenMenu { uuid, menu, title });
+    }));
+}
+
+/// `Natives.blockState(String dimension, int x, int y, int z)`: Horizon's block there, or
+/// null where no chunk is loaded (or outside a call that lent the world).
+extern "system" fn native_block_state<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    dimension: JString<'local>,
+    x: sys::jint,
+    y: sys::jint,
+    z: sys::jint,
+) -> sys::jstring {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Ok(dimension) = env.get_string(&dimension).map(String::from) else {
+            return std::ptr::null_mut();
+        };
+        match world::block(&dimension, x, y, z) {
+            Some(state) => env
+                .new_string(state)
+                .map(JString::into_raw)
+                .unwrap_or(std::ptr::null_mut()),
+            None => std::ptr::null_mut(),
+        }
+    }))
+    .unwrap_or(std::ptr::null_mut())
+}
+
+/// `Natives.setBlock(String dimension, int x, int y, int z, String state)`.
+extern "system" fn native_set_block(
+    mut env: JNIEnv,
+    _class: JClass,
+    dimension: JString,
+    x: sys::jint,
+    y: sys::jint,
+    z: sys::jint,
+    state: JString,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (Ok(dimension), Ok(state)) = (env.get_string(&dimension), env.get_string(&state))
+        else {
+            return;
+        };
+        events::push(events::Action::SetBlock {
+            dimension: dimension.into(),
+            position: [x, y, z],
+            state: state.into(),
+        });
+    }));
+}
+
+/// `Natives.dropItem(String dimension, double x, y, z, double vx, vy, vz, String item, int count)`.
+#[allow(clippy::too_many_arguments)]
+extern "system" fn native_drop_item(
+    mut env: JNIEnv,
+    _class: JClass,
+    dimension: JString,
+    x: sys::jdouble,
+    y: sys::jdouble,
+    z: sys::jdouble,
+    vx: sys::jdouble,
+    vy: sys::jdouble,
+    vz: sys::jdouble,
+    item: JString,
+    count: sys::jint,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (Ok(dimension), Ok(item)) = (env.get_string(&dimension), env.get_string(&item)) else {
+            return;
+        };
+        events::push(events::Action::DropItem {
+            dimension: dimension.into(),
+            position: [x, y, z],
+            velocity: [vx, vy, vz],
+            item: item.into(),
+            count,
+        });
+    }));
+}
+
+/// `Natives.levelEvent(String dimension, int type, int x, int y, int z, int data, String state)`.
+#[allow(clippy::too_many_arguments)]
+extern "system" fn native_level_event(
+    mut env: JNIEnv,
+    _class: JClass,
+    dimension: JString,
+    id: sys::jint,
+    x: sys::jint,
+    y: sys::jint,
+    z: sys::jint,
+    data: sys::jint,
+    state: JString,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Ok(dimension) = env.get_string(&dimension).map(String::from) else {
+            return;
+        };
+        let state = if state.is_null() {
+            None
+        } else {
+            env.get_string(&state).ok().map(String::from)
+        };
+        events::push(events::Action::LevelEvent {
+            dimension,
+            id,
+            position: [x, y, z],
+            data,
+            state,
+        });
     }));
 }
 

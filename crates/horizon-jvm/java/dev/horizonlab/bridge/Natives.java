@@ -31,6 +31,25 @@ public final class Natives {
      */
     public static native void openMenu(String uuid, String menu, String title);
 
+    /**
+     * Horizon's block at x y z of a dimension ("minecraft:oak_log[axis=y]"), or null where no
+     * chunk is loaded or outside a call that lent the world.
+     */
+    public static native String blockState(String dimension, int x, int y, int z);
+
+    /** A mod set a block of a mirrored level: Horizon makes it, as /setblock does. */
+    public static native void setBlock(String dimension, int x, int y, int z, String state);
+
+    /** A mod dropped an item (a block's drops): Horizon spawns the item entity. */
+    public static native void dropItem(String dimension, double x, double y, double z,
+                                       double vx, double vy, double vz, String item, int count);
+
+    /**
+     * A mod's level event (LevelEvent: 2001 a block's break particles and sound): {@code state}
+     * is the block state the data names, for the events whose data is one, else null.
+     */
+    public static native void levelEvent(String dimension, int type, int x, int y, int z, int data, String state);
+
     /** A system message to every player on the server, and its log. */
     public static native void broadcast(String text);
 

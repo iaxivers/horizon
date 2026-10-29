@@ -96,6 +96,32 @@ pub enum Action {
         /// The title, a JSON text component.
         title: Option<String>,
     },
+    /// `Level.setBlock` on a mirrored level: the block is to be that state (`/setblock`).
+    SetBlock {
+        dimension: String,
+        position: [i32; 3],
+        /// `minecraft:oak_log[axis=y]`.
+        state: String,
+    },
+    /// `ServerLevel.addFreshEntity` of an item (a block's drops): an item entity there.
+    DropItem {
+        dimension: String,
+        position: [f64; 3],
+        velocity: [f64; 3],
+        /// `minecraft:oak_log`.
+        item: String,
+        count: i32,
+    },
+    /// `ServerLevel.levelEvent`: a level event there (`LevelEvent`, 2001 a block's break
+    /// particles and sound), as Horizon's level events go.
+    LevelEvent {
+        dimension: String,
+        id: i32,
+        position: [i32; 3],
+        data: i32,
+        /// For the events whose data is a block state (2001): that state, by name.
+        state: Option<String>,
+    },
 }
 
 static ACTIONS: Mutex<Vec<Action>> = Mutex::new(Vec::new());
@@ -352,4 +378,36 @@ pub fn run_command(uuid: &str, line: &str) -> Result<bool, String> {
         .z()
     })?;
     Ok(ran.unwrap_or(false))
+}
+
+/// `PlayerBlockBreakEvents.BEFORE`: player `uuid` is about to break `state` at `position` of
+/// `dimension`. False when a mod cancels the break. Run it inside [`crate::world::with_blocks`]
+/// so mods read the world as it is; what they change comes back as actions.
+pub fn before_break(
+    uuid: &str,
+    dimension: &str,
+    position: [i32; 3],
+    state: &str,
+) -> Result<bool, String> {
+    let [x, y, z] = position;
+    let allowed = with_server(|env, class| {
+        let uuid = env.new_string(uuid)?;
+        let dimension = env.new_string(dimension)?;
+        let state = env.new_string(state)?;
+        env.call_static_method(
+            class,
+            "beforeBreak",
+            "(Ljava/lang/String;Ljava/lang/String;IIILjava/lang/String;)Z",
+            &[
+                JValue::Object(&uuid),
+                JValue::Object(&dimension),
+                JValue::Int(x),
+                JValue::Int(y),
+                JValue::Int(z),
+                JValue::Object(&state),
+            ],
+        )?
+        .z()
+    })?;
+    Ok(allowed.unwrap_or(true))
 }

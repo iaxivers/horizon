@@ -36,4 +36,11 @@ public abstract class MinecraftServerMixin {
     private void horizon$serverDirectory(CallbackInfoReturnable<java.nio.file.Path> cir) {
         if (HorizonServer.isMirror(this)) cir.setReturnValue(net.fabricmc.loader.api.FabricLoader.getInstance().getGameDir());
     }
+
+    /** Loot's random sequences (seeded by world generation settings the mirror lacks). */
+    @Inject(method = "getRandomSequence", at = @At("HEAD"), cancellable = true)
+    private void horizon$randomSequence(net.minecraft.resources.Identifier id,
+                                        CallbackInfoReturnable<net.minecraft.util.RandomSource> cir) {
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(net.minecraft.util.RandomSource.create());
+    }
 }

@@ -309,6 +309,84 @@ fn fabric_api_and_a_mod_on_the_real_game() {
     println!("/events add two: {actions:?}");
     assert!(!actions.is_empty(), "an error comes back");
 
+    // Horizon's world, as mods read it: a three-log tree at 0 64..=66 0 on grass, diamond
+    // ore beside it.
+    struct World;
+    impl horizon_jvm::world::Blocks for World {
+        fn block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
+            assert_eq!(dimension, "minecraft:overworld");
+            Some(
+                match (x, y, z) {
+                    (0, 64..=66, 0) => "minecraft:oak_log[axis=y]",
+                    (0, 63, 0) => "minecraft:grass_block[snowy=false]",
+                    (2, 64, 0) => "minecraft:diamond_ore",
+                    _ => "minecraft:air",
+                }
+                .into(),
+            )
+        }
+    }
+    let allowed = horizon_jvm::world::with_blocks(&World, || {
+        horizon_jvm::events::before_break(
+            &uuid,
+            "minecraft:overworld",
+            [0, 64, 0],
+            "minecraft:oak_log[axis=y]",
+        )
+    })
+    .unwrap();
+    let actions = horizon_jvm::events::take_actions();
+    println!("breaking the tree: {allowed} {actions:?}");
+    assert!(allowed);
+    for y in [65, 66] {
+        assert!(
+            actions.contains(&Action::SetBlock {
+                dimension: "minecraft:overworld".into(),
+                position: [0, y, 0],
+                state: "minecraft:air".into(),
+            }),
+            "log {y} felled: {actions:?}"
+        );
+    }
+    let drops: Vec<_> = actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::DropItem {
+                item,
+                count,
+                position,
+                ..
+            } => Some((item.as_str(), *count, position[1].floor() as i32)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        drops,
+        vec![("minecraft:oak_log", 1, 65), ("minecraft:oak_log", 1, 66)],
+        "{actions:?}"
+    );
+    assert!(actions.contains(&Action::Tell {
+        uuid: uuid.clone(),
+        text: "[events] felled 2 logs".into()
+    }));
+    let allowed = horizon_jvm::world::with_blocks(&World, || {
+        horizon_jvm::events::before_break(
+            &uuid,
+            "minecraft:overworld",
+            [2, 64, 0],
+            "minecraft:diamond_ore",
+        )
+    })
+    .unwrap();
+    assert!(!allowed, "the mod cancels breaking diamond ore");
+    assert_eq!(
+        horizon_jvm::events::take_actions(),
+        vec![Action::Tell {
+            uuid: uuid.clone(),
+            text: "[events] no diamonds for you".into()
+        }]
+    );
+
     let started = std::time::Instant::now();
     let mut counted = Vec::new();
     for n in 3..=100 {

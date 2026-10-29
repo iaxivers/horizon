@@ -48,6 +48,9 @@ impl Game<'_> {
         false
     }
     pub(super) fn apply_mod_block_writes(&mut self) {}
+    pub(super) fn java_before_break(&mut self, _pos: [i32; 3], _state: BlockStateId) -> bool {
+        true
+    }
 }
 
 #[cfg(feature = "mods")]
@@ -190,6 +193,27 @@ mod run {
                 .map_err(|e| format!("{state}: {e}"))
         }
     }
+
+    /// Horizon's levels as Java mods read them during a call (crate horizon-jvm's `world`):
+    /// borrowed, not lent, so nothing moves.
+    #[cfg(feature = "java-mods")]
+    struct JavaBlocks<'a> {
+        registry: &'static BlockRegistry,
+        dims: Vec<(&'static str, &'a ChunkMap)>,
+    }
+    #[cfg(feature = "java-mods")]
+    impl horizon_jvm::world::Blocks for JavaBlocks<'_> {
+        fn block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
+            let (_, chunks) = self.dims.iter().find(|(d, _)| *d == dimension)?;
+            let chunk = chunks.get(&(x >> 4, z >> 4))?;
+            Some(state_string(self.registry, chunk.block(x & 15, y, z & 15)))
+        }
+    }
+
+    /// Items Java mods dropped, by dimension, made when their level is in place.
+    #[cfg(feature = "java-mods")]
+    static JAVA_DROPS: std::sync::Mutex<Vec<(String, horizon_jvm::events::Action)>> =
+        std::sync::Mutex::new(Vec::new());
 
     /// Server mods' commands as a root of the commands report
     /// (`lan::commands`): a literal per command, then its arguments in a
@@ -495,13 +519,11 @@ mod run {
                 self.options.execution_role,
                 crate::game::execution_role::ExecutionRole::DedicatedServer
             );
-            if let Err(e) = horizon_jvm::events::server_tick(
-                self.ticks as i64,
-                dedicated,
-                &self.save.root,
-                &players,
-                events,
-            ) {
+            let (ticks, root) = (self.ticks as i64, self.save.root.clone());
+            let ticked = self.with_java_world(|| {
+                horizon_jvm::events::server_tick(ticks, dedicated, &root, &players, events)
+            });
+            if let Err(e) = ticked {
                 log::warn!("Java mods: a tick failed: {e}");
             }
             self.apply_java_actions(None);
@@ -511,7 +533,13 @@ mod run {
         /// everyone. `host` is the hub when it is out of `self.lan`.
         #[cfg(feature = "java-mods")]
         fn apply_java_actions(&mut self, mut host: Option<&mut LanHost>) {
+            let mut wrote = false;
             for action in horizon_jvm::events::take_actions() {
+                wrote |= matches!(
+                    action,
+                    horizon_jvm::events::Action::SetBlock { .. }
+                        | horizon_jvm::events::Action::DropItem { .. }
+                );
                 match action {
                     horizon_jvm::events::Action::Tell { uuid, text } => {
                         self.tell_server_player(host.as_deref_mut(), &uuid, Text::literal(text));
@@ -584,6 +612,33 @@ mod run {
                             self.lan = Some(lan);
                         }
                     }
+                    horizon_jvm::events::Action::SetBlock {
+                        dimension,
+                        position: [x, y, z],
+                        state,
+                    } => {
+                        let queued = &mut self.mods.block_writes;
+                        queued.push((dimension, horizon_mods::BlockChange { x, y, z, state }));
+                        if queued.len() > MAX_QUEUED_WRITES {
+                            let over = queued.len() - MAX_QUEUED_WRITES;
+                            queued.drain(..over);
+                            log::warn!(
+                                "Java mods: more blocks set than wait for their level: {over} dropped"
+                            );
+                        }
+                    }
+                    drop @ (horizon_jvm::events::Action::DropItem { .. }
+                    | horizon_jvm::events::Action::LevelEvent { .. }) => {
+                        let (horizon_jvm::events::Action::DropItem { dimension, .. }
+                        | horizon_jvm::events::Action::LevelEvent { dimension, .. }) = &drop
+                        else {
+                            continue;
+                        };
+                        let mut drops = JAVA_DROPS.lock().unwrap_or_else(|e| e.into_inner());
+                        if drops.len() < 4096 {
+                            drops.push((dimension.clone(), drop));
+                        }
+                    }
                     horizon_jvm::events::Action::Broadcast { text } => {
                         if self.options.dedicated.is_some() {
                             super::super::dedicated::log("INFO", &text);
@@ -599,6 +654,10 @@ mod run {
                         }
                     }
                 }
+            }
+            // The level in place gets the mods' blocks and drops now; the others' wait.
+            if wrote {
+                self.apply_mod_block_writes();
             }
         }
 
@@ -792,7 +851,7 @@ mod run {
             }
             #[cfg(feature = "java-mods")]
             {
-                match horizon_jvm::events::run_command(uuid, line) {
+                match self.with_java_world(|| horizon_jvm::events::run_command(uuid, line)) {
                     Ok(true) => {}
                     Ok(false) => return false,
                     Err(e) => {
@@ -807,6 +866,54 @@ mod run {
             {
                 let _ = (host, uuid);
                 false
+            }
+        }
+
+        /// Runs `f`, a call into Java, with the levels as what Java mods read of the world.
+        #[cfg(feature = "java-mods")]
+        fn with_java_world<R>(&mut self, f: impl FnOnce() -> R) -> R {
+            let registry = self.pack.assets.registry;
+            let mut dims: Vec<(&'static str, &ChunkMap)> =
+                vec![(self.dim.id(), &self.world.chunks)];
+            for (dim, chunks) in self.levels.parked_chunks() {
+                dims.push((dim.id(), &*chunks));
+            }
+            horizon_jvm::world::with_blocks(&JavaBlocks { registry, dims }, f)
+        }
+
+        /// `PlayerBlockBreakEvents.BEFORE` for the player acting now, who is about to break
+        /// `state` at `pos`: false when a Java mod cancels the break. What the mods change
+        /// (a tree feller's logs) is made with this tick's other actions.
+        pub(in crate::game) fn java_before_break(
+            &mut self,
+            pos: [i32; 3],
+            state: BlockStateId,
+        ) -> bool {
+            #[cfg(feature = "java-mods")]
+            {
+                if !java_mods_on() || !self.hears_players() {
+                    return true;
+                }
+                let uuid = self
+                    .lan_acting_uuid
+                    .map(uuid_string)
+                    .unwrap_or_else(|| self.player_uuid_string());
+                let state = state_string(self.pack.assets.registry, state);
+                let dim = self.dim.id();
+                match self
+                    .with_java_world(|| horizon_jvm::events::before_break(&uuid, dim, pos, &state))
+                {
+                    Ok(allowed) => allowed,
+                    Err(e) => {
+                        log::warn!("Java mods: a block break failed: {e}");
+                        true
+                    }
+                }
+            }
+            #[cfg(not(feature = "java-mods"))]
+            {
+                let _ = (pos, state);
+                true
             }
         }
 
@@ -852,6 +959,8 @@ mod run {
         /// Makes the blocks server mods set in the level in place, in order,
         /// as `/setblock` does. Those of other dimensions wait for their level.
         pub(in crate::game) fn apply_mod_block_writes(&mut self) {
+            #[cfg(feature = "java-mods")]
+            self.apply_java_drops();
             if self.mods.block_writes.is_empty() {
                 return;
             }
@@ -877,6 +986,66 @@ mod run {
                         b.z
                     );
                 }
+            }
+        }
+
+        /// The items Java mods dropped and the level events they made in the level in place: Horizon's item entities, with
+        /// the motion the mod gave them and vanilla's pickup delay (`ItemEntity.setDefaultPickUpDelay`).
+        #[cfg(feature = "java-mods")]
+        fn apply_java_drops(&mut self) {
+            let dim = self.dim.id();
+            let now: Vec<horizon_jvm::events::Action> = {
+                let mut drops = JAVA_DROPS.lock().unwrap_or_else(|e| e.into_inner());
+                if drops.is_empty() {
+                    return;
+                }
+                let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut *drops)
+                    .into_iter()
+                    .partition(|(d, _)| d == dim);
+                *drops = later;
+                now.into_iter().map(|(_, a)| a).collect()
+            };
+            for drop in now {
+                if let horizon_jvm::events::Action::LevelEvent {
+                    id,
+                    position,
+                    data,
+                    state,
+                    ..
+                } = &drop
+                {
+                    // The state a 2001 names, by name: Horizon's own id for it.
+                    let data = match state {
+                        Some(state) => {
+                            match crate::game::render_control::parse_state(
+                                self.pack.assets.registry,
+                                state,
+                            ) {
+                                Ok(state) => state.0 as i32,
+                                Err(_) => continue,
+                            }
+                        }
+                        None => *data,
+                    };
+                    self.level_event_at(*id, *position, data);
+                    continue;
+                }
+                let horizon_jvm::events::Action::DropItem {
+                    position,
+                    velocity,
+                    item,
+                    count,
+                    ..
+                } = drop
+                else {
+                    continue;
+                };
+                if self.res.items().get(&item).is_none() || count <= 0 {
+                    log::debug!("Java mods: a mod dropped {count} {item}, not an item here");
+                    continue;
+                }
+                let stack = horizon_client::items::ItemStack::new(&item, count as u32);
+                self.spawn_item(stack, position, velocity, 10);
             }
         }
 

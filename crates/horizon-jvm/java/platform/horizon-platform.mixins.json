@@ -13,6 +13,7 @@
     "PlayerListMixin",
     "MinecraftServerMixin",
     "ServerLevelMixin",
+    "LevelMixin",
     "DedicatedServerMixin",
     "IntegratedServerMixin",
     "PacketListenerMixin",

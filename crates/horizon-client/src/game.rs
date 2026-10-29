@@ -4003,9 +4003,14 @@ impl Game<'_> {
         {
             return Ok(());
         }
-        self.pad_rumble(horizon_client::gamepad::Rumble::BlockBroken);
         // ServerPlayerGameMode.destroyBlock.
         let state = self.world.block(pos[0], pos[1], pos[2]);
+        // PlayerBlockBreakEvents.BEFORE (Fabric API's hook at its head): a Java mod may stop
+        // the break; the client puts the block back on the server's acknowledgement.
+        if !self.java_before_break(pos, state) {
+            return Ok(());
+        }
+        self.pad_rumble(horizon_client::gamepad::Rumble::BlockBroken);
         let broken = state;
         let facts = self.res.facts().get(state).clone();
         let state = self.crack_mined_pot(pos, state);

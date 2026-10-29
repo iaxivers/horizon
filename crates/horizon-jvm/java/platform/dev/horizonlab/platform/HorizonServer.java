@@ -278,6 +278,10 @@ public final class HorizonServer {
         }
 
         closeForwarded();
+        // Horizon made last tick's writes: its world answers again.
+        synchronized (WRITTEN) {
+            WRITTEN.clear();
+        }
 
         // Mirror the players: those still on, as Horizon gives them.
         Map<UUID, ServerPlayer> now = new LinkedHashMap<>();
@@ -435,6 +439,8 @@ public final class HorizonServer {
 
     public static void dropped(Object packet) {
         if (syncing) return;
+        // Horizon sends its own blocks: a mod's resync (a cancelled break) is already done.
+        if (packet instanceof net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket) return;
         String type = packet.getClass().getSimpleName();
         if (DROPPED.merge(type, 1, Integer::sum) == 1) {
             Natives.log("A mod sent a player a " + type + "; Horizon doesn't send those yet");
@@ -567,5 +573,102 @@ public final class HorizonServer {
             // The plain text, if the component won't encode.
             return new com.google.gson.JsonPrimitive(component.getString()).toString();
         }
+    }
+
+    // ---- Blocks ---------------------------------------------------------------------------
+
+    /** Block states by their names, parsed once (BlockStateParser). */
+    private static final Map<String, BlockState> STATES = new ConcurrentHashMap<>();
+    /** Per level: what mods set since Horizon last had the world, so they read their writes. */
+    private static final Map<ServerLevel, Map<Long, BlockState>> WRITTEN = new IdentityHashMap<>();
+
+    private static String dimensionOf(Level level) {
+        return level.dimension().identifier().toString();
+    }
+
+    /** {@code minecraft:oak_log[axis=y]} as a BlockState; null if it isn't one. */
+    public static BlockState parseState(String name) {
+        if (name == null) return null;
+        BlockState known = STATES.get(name);
+        if (known != null) return known;
+        try {
+            BlockState state = net.minecraft.commands.arguments.blocks.BlockStateParser
+                    .parseForBlock(net.minecraft.core.registries.BuiltInRegistries.BLOCK, name, false).blockState();
+            if (STATES.size() < 65536) STATES.put(name, state);
+            return state;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** A mirrored level's block: the call's own write, else Horizon's, else air (unloaded). */
+    public static BlockState blockState(Level level, BlockPos pos) {
+        synchronized (WRITTEN) {
+            Map<Long, BlockState> written = WRITTEN.get(level);
+            if (written != null) {
+                BlockState mine = written.get(pos.asLong());
+                if (mine != null) return mine;
+            }
+        }
+        BlockState state = parseState(Natives.blockState(dimensionOf(level), pos.getX(), pos.getY(), pos.getZ()));
+        return state != null ? state : net.minecraft.world.level.block.Blocks.AIR.defaultBlockState();
+    }
+
+    /** A mod's Level.setBlock on a mirrored level: Horizon makes it; reads see it at once. */
+    public static boolean setBlock(Level level, BlockPos pos, BlockState state) {
+        if (level.isOutsideBuildHeight(pos)) return false;
+        synchronized (WRITTEN) {
+            WRITTEN.computeIfAbsent((ServerLevel) level, l -> new java.util.HashMap<>()).put(pos.asLong(), state);
+        }
+        Natives.setBlock(dimensionOf(level), pos.getX(), pos.getY(), pos.getZ(),
+                net.minecraft.commands.arguments.blocks.BlockStateParser.serialize(state));
+        return true;
+    }
+
+    /** A mod spawned an entity in a mirrored level: items become Horizon's; the rest, not yet. */
+    public static boolean addEntity(Level level, net.minecraft.world.entity.Entity entity) {
+        if (entity instanceof net.minecraft.world.entity.item.ItemEntity item && !item.getItem().isEmpty()) {
+            var motion = item.getDeltaMovement();
+            Natives.dropItem(dimensionOf(level), item.getX(), item.getY(), item.getZ(),
+                    motion.x, motion.y, motion.z,
+                    net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(item.getItem().getItem()).toString(),
+                    item.getItem().getCount());
+            return true;
+        }
+        dropped(entity);
+        return false;
+    }
+
+    /** A level event of a mirrored level: Horizon plays it. 2001's data is a state, sent by name. */
+    public static void levelEvent(ServerLevel level, int type, BlockPos pos, int data) {
+        String state = null;
+        if (type == 2001) { // LevelEvent.PARTICLES_DESTROY_BLOCK: data is Block.getId(state)
+            state = net.minecraft.commands.arguments.blocks.BlockStateParser.serialize(
+                    net.minecraft.world.level.block.Block.stateById(data));
+        }
+        Natives.levelEvent(dimensionOf(level), type, pos.getX(), pos.getY(), pos.getZ(), data, state);
+    }
+
+    /**
+     * PlayerBlockBreakEvents.BEFORE, called by Horizon before a player breaks a block: false
+     * when a mod cancels the break.
+     */
+    public static boolean beforeBreak(String uuid, String dimension, int x, int y, int z, String stateName) {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        ServerPlayer player = BY_UUID.get(UUID.fromString(uuid));
+        BlockState state = parseState(stateName);
+        if (player == null || state == null) return true;
+        ServerLevel level = level(dimension);
+        BlockPos pos = new BlockPos(x, y, z);
+        boolean[] allowed = {true};
+        fire("PlayerBlockBreakEvents.BEFORE", () -> allowed[0] =
+                net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents.BEFORE.invoker()
+                        .beforeBlockBreak(level, player, pos, state, null));
+        if (!allowed[0]) {
+            fire("PlayerBlockBreakEvents.CANCELED", () ->
+                    net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents.CANCELED.invoker()
+                            .onBlockBreakCanceled(level, player, pos, state, null));
+        }
+        return allowed[0];
     }
 }
