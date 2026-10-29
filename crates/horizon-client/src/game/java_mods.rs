@@ -22,10 +22,7 @@ impl Game<'_> {
         if jars.is_empty() {
             return;
         }
-        // The checkout (or install) holding research-lock.json and the prepared jars.
-        let root = std::env::var_os("HORIZON_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let root = checkout();
         let side = match self.options.execution_role {
             ExecutionRole::DedicatedServer => horizon_jvm::Side::Server,
             _ => horizon_jvm::Side::Client,
@@ -34,15 +31,71 @@ impl Game<'_> {
         let _ = horizon_client::health::HURT_HOOK.set(super::server_mods::java_hurt);
         let spawned = std::thread::Builder::new()
             .name("Java mods".into())
-            .spawn(move || start(&root, &dir, jars, side));
+            .spawn(move || {
+                start(&root, &dir, jars, side);
+            });
         if let Err(e) = spawned {
             log::warn!("Java mods: no thread to start them on: {e}");
         }
     }
 }
 
-/// Starts the JVM and Fabric, then logs what loaded. Runs on the "Java mods" thread.
-fn start(root: &Path, dir: &Path, jars: Vec<PathBuf>, side: horizon_jvm::Side) {
+/// The checkout (or install) holding research-lock.json and the prepared jars.
+fn checkout() -> PathBuf {
+    std::env::var_os("HORIZON_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+}
+
+/// The content mods made from the Java mods in `mods-java/` (their blocks, items and assets,
+/// horizon-jvm's `content`), for the game's content root over `base` (the prepared tables):
+/// read back from the cache when the jars are the ones they were made from, else made now,
+/// with Java and Fabric started for it (they stay up for the game).
+pub(super) fn java_content(base: &Path) -> Vec<PathBuf> {
+    let dir = Game::options_path().with_file_name(horizon_jvm::DIR);
+    let jars = horizon_jvm::jars(&dir);
+    if jars.is_empty() {
+        return Vec::new();
+    }
+    let cache = std::env::current_dir()
+        .unwrap_or_default()
+        .join(".horizon-cache/java-content");
+    if let Some(folders) = horizon_jvm::content::cached(&jars, &cache) {
+        return folders;
+    }
+    let started = std::time::Instant::now();
+    log::info!("Java mods: making their content (once for this set of mods)");
+    let side = if std::env::args().any(|a| a == "--dedicated") {
+        horizon_jvm::Side::Server
+    } else {
+        horizon_jvm::Side::Client
+    };
+    if !start(&checkout(), &dir, jars.clone(), side) {
+        return Vec::new();
+    }
+    match horizon_jvm::content::build(&jars, base, &cache, &|l| log::info!("{l}")) {
+        Ok(folders) => {
+            log::info!(
+                "Java mods: {} content mod(s) made in {} ms",
+                folders.len(),
+                started.elapsed().as_millis()
+            );
+            folders
+        }
+        Err(e) => {
+            log::warn!("Java mods: their content was not made: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// Starts the JVM and Fabric (once: again, the running one), then logs what loaded. Runs on
+/// the "Java mods" thread, or before the resources load when the mods' content is made. Whether
+/// they run.
+fn start(root: &Path, dir: &Path, jars: Vec<PathBuf>, side: horizon_jvm::Side) -> bool {
+    if horizon_jvm::get().is_some() {
+        return true;
+    }
     let started = std::time::Instant::now();
     let work = root.join(".local/bridge");
     let fabric = fabric(root, dir, &work, &jars, side);
@@ -65,7 +118,7 @@ fn start(root: &Path, dir: &Path, jars: Vec<PathBuf>, side: horizon_jvm::Side) {
             Ok(bridge) => bridge,
             Err(e) => {
                 log::warn!("Java mods: not started: {e}");
-                return;
+                return false;
             }
         };
     log::info!(
@@ -95,6 +148,7 @@ fn start(root: &Path, dir: &Path, jars: Vec<PathBuf>, side: horizon_jvm::Side) {
             }
         }
     }
+    true
 }
 
 /// Fabric's part of the config: the prepared game jar and libraries, and Fabric API unless

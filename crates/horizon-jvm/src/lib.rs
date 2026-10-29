@@ -17,6 +17,7 @@
 //! A JVM can be created once per process (JNI allows no second one after a destroy), so
 //! [`start`] is idempotent: later calls return the running bridge.
 
+pub mod content;
 pub mod events;
 pub mod facade;
 pub mod libs;

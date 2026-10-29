@@ -1505,6 +1505,7 @@ dependencies = [
 name = "horizon-jvm"
 version = "0.1.0"
 dependencies = [
+ "horizon-port-pack",
  "horizon-prepare",
  "jni 0.21.1",
  "libloading",

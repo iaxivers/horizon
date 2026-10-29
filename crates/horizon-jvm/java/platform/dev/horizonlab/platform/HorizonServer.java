@@ -176,7 +176,18 @@ public final class HorizonServer {
         }
     }
 
-    private static ServerLevel level(String dimension) {
+    /** The mirrored server, made now if no tick made it yet (a single player's, until one does). */
+    static synchronized void ensureServer() {
+        if (server != null) return;
+        try {
+            setUp(false);
+        } catch (ClassNotFoundException e) {
+            throw new IllegalStateException(e);
+        }
+        HorizonHooks.scan();
+    }
+
+    static ServerLevel level(String dimension) {
         ResourceKey<Level> key = ResourceKey.create(Registries.DIMENSION, Identifier.parse(dimension));
         return LEVELS.computeIfAbsent(key, k -> {
             ServerLevel level = allocate(ServerLevel.class);

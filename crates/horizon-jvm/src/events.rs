@@ -11,7 +11,7 @@
 //! `Natives.broadcast`), queued here and taken by the game with [`take_actions`] after the
 //! call, on the server thread, where it applies them as server mods' output.
 
-use jni::objects::{GlobalRef, JClass, JObject, JValue};
+use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 use jni::{JNIEnv, sys};
 use std::sync::{Mutex, OnceLock};
 
@@ -555,4 +555,41 @@ pub fn hurt(uuid: &str, damage_type: &str, amount: f32) -> Result<Option<f32>, S
         Some(a) => Some(a),
         None => Some(amount),
     })
+}
+
+/// Writes the oracle facts of the Java mods' blocks and items (and vanilla's, for templates)
+/// to `out` (`HorizonContent.exportFacts`): the namespaces the mods register in.
+pub fn export_facts(out: &std::path::Path) -> Result<Vec<String>, String> {
+    let bridge = crate::get().ok_or("the JVM is not running")?;
+    let mut env = bridge
+        .vm()
+        .attach_current_thread_permanently()
+        .map_err(|e| format!("attach: {e}"))?;
+    let result = env.with_local_frame(16, |env| -> jni::errors::Result<String> {
+        let name = env.new_string("dev.horizonlab.platform.HorizonContent")?;
+        let class = env
+            .call_static_method(
+                "dev/horizonlab/bridge/fabric/FabricBoot",
+                "gameClass",
+                "(Ljava/lang/String;)Ljava/lang/Class;",
+                &[JValue::Object(&name)],
+            )?
+            .l()?;
+        let out = env.new_string(out.to_string_lossy())?;
+        let namespaces = env
+            .call_static_method(
+                JClass::from(class),
+                "exportFacts",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                &[JValue::Object(&out)],
+            )?
+            .l()?;
+        Ok(env.get_string(&JString::from(namespaces))?.into())
+    });
+    let namespaces = result.map_err(|e| crate::describe(&mut env, e))?;
+    Ok(namespaces
+        .split(',')
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
+        .collect())
 }

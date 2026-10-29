@@ -202,6 +202,10 @@ pub(super) fn content_root(
     use horizon_client::mod_content::{self, ContentMod};
     use horizon_mods::{Capability, Content, Package};
     let here = std::env::current_dir().unwrap_or_default();
+    // The Java mods' content mods are always on, as dev mods are (the jars in mods-java/ are
+    // what turns them on and off).
+    #[cfg(feature = "java-mods")]
+    let dev = &[dev, super::java_mods::java_content(root).as_slice()].concat();
     let mut paths = horizon_mods::find(&here.join(mod_list::DIR));
     paths.retain(|p| !dev.contains(p));
     paths.extend(dev.iter().cloned());
