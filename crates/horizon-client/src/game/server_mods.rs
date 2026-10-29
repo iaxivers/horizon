@@ -42,6 +42,32 @@ pub(super) fn set_java_actor(actor: Option<String>) -> Option<String> {
     JAVA_ACTOR.with(|a| a.replace(actor))
 }
 
+/// Random ticks that reached a block only a Java mod knows, for the mods at the end of the
+/// level's block tick (Game::java_random_ticks).
+#[cfg(feature = "java-mods")]
+static JAVA_RANDOM_TICKS: std::sync::Mutex<Vec<horizon_core::position::BlockPos>> =
+    std::sync::Mutex::new(Vec::new());
+/// Which states are a Java mod's (not vanilla's), by state id: made with the first random tick.
+#[cfg(feature = "java-mods")]
+static JAVA_STATES: std::sync::OnceLock<Vec<bool>> = std::sync::OnceLock::new();
+
+/// horizon-world's RANDOM_TICK_HOOK: a random tick of a Java mod's block is kept for the mods.
+#[cfg(feature = "java-mods")]
+pub(super) fn java_random_tick(
+    pos: horizon_core::position::BlockPos,
+    state: horizon_world::registry::BlockStateId,
+) {
+    let Some(states) = JAVA_STATES.get() else {
+        return;
+    };
+    if states.get(state.0 as usize).copied().unwrap_or(false) {
+        let mut ticks = JAVA_RANDOM_TICKS.lock().unwrap_or_else(|e| e.into_inner());
+        if ticks.len() < 65_536 {
+            ticks.push(pos);
+        }
+    }
+}
+
 /// The hook at the head of the player's hurtServer (`horizon_client::health::HURT_HOOK`): Java
 /// mods' injections there and Fabric API's ALLOW_DAMAGE, for the player acting now.
 #[cfg(feature = "java-mods")]
@@ -91,6 +117,7 @@ impl Game<'_> {
     ) -> Option<bool> {
         None
     }
+    pub(super) fn java_random_ticks(&mut self) {}
     pub(super) fn java_menu_click(
         &mut self,
         _host: &mut LanHost,
@@ -270,6 +297,10 @@ mod run {
             let (_, chunks) = self.dims.iter().find(|(d, _)| *d == dimension)?;
             let chunk = chunks.get(&(x >> 4, z >> 4))?;
             Some(state_string(self.registry, chunk.block(x & 15, y, z & 15)))
+        }
+        fn light(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<u8> {
+            let (_, chunks) = self.dims.iter().find(|(d, _)| *d == dimension)?;
+            Some(chunks.get(&(x >> 4, z >> 4))?.light(x & 15, y, z & 15))
         }
     }
 
@@ -1346,6 +1377,43 @@ mod run {
             {
                 let _ = (pos, face, point, off_hand);
                 None
+            }
+        }
+
+        /// The random ticks this level's blocks of Java mods got: the mods run them
+        /// (`BlockState.randomTick`), on the world as it is now.
+        pub(in crate::game) fn java_random_ticks(&mut self) {
+            #[cfg(feature = "java-mods")]
+            {
+                if !java_mods_on() {
+                    return;
+                }
+                if super::JAVA_STATES.get().is_none() {
+                    let registry = self.pack.assets.registry;
+                    let states = (0..registry.len() as u32)
+                        .map(|id| {
+                            registry
+                                .state(BlockStateId(id))
+                                .is_some_and(|s| !s.name.starts_with("minecraft:"))
+                        })
+                        .collect();
+                    let _ = super::JAVA_STATES.set(states);
+                }
+                let ticks = std::mem::take(
+                    &mut *super::JAVA_RANDOM_TICKS
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()),
+                );
+                if ticks.is_empty() {
+                    return;
+                }
+                let positions: Vec<[i32; 3]> = ticks.iter().map(|p| [p.x, p.y, p.z]).collect();
+                let dim = self.dim.id();
+                let ran =
+                    self.with_java_world(|| horizon_jvm::events::random_ticks(dim, &positions));
+                if let Err(e) = ran {
+                    log::warn!("Java mods: random ticks failed: {e}");
+                }
             }
         }
 

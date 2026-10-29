@@ -67,6 +67,9 @@ pub struct State {
     pub hardness: f32,
     pub emission: u8,
     pub requires_tool: bool,
+    /// `BlockState.isRandomlyTicking` (exporters that write it).
+    #[serde(default)]
+    pub random_ticks: bool,
     pub map_color_id: u8,
     pub sound: Value,
     pub outline: Value,
@@ -391,6 +394,9 @@ impl Facts {
             let mut v = json!({"properties": properties, "shape": shape});
             if st.emission != default_light {
                 v["light"] = json!(st.emission);
+            }
+            if st.random_ticks {
+                v["random_ticks"] = json!(true);
             }
             if key == default {
                 v["default"] = json!(true);

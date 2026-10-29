@@ -31,6 +31,12 @@ public final class Natives {
      */
     public static native void openMenu(String uuid, String menu, String title);
 
+    /**
+     * Horizon's light at x y z of dimension: sky light in the high four bits, block light in
+     * the low; -1 where no chunk is loaded (or outside a call that lent the world).
+     */
+    public static native int light(String dimension, int x, int y, int z);
+
     /** A mod changed a player's food (FoodData): its food level and saturation now. */
     public static native void setFood(String uuid, int food, float saturation);
 

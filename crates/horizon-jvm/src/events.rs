@@ -556,6 +556,25 @@ pub fn use_block(
     })
 }
 
+/// Random ticks that reached Java mods' blocks in `dimension` (`ServerLevel.tickChunk`'s):
+/// each still a mod's block that ticks randomly runs `BlockState.randomTick`.
+pub fn random_ticks(dimension: &str, positions: &[[i32; 3]]) -> Result<(), String> {
+    let flat: Vec<i32> = positions.iter().flatten().copied().collect();
+    with_server(|env, class| {
+        let dimension = env.new_string(dimension)?;
+        let array = env.new_int_array(flat.len() as sys::jsize)?;
+        env.set_int_array_region(&array, 0, &flat)?;
+        env.call_static_method(
+            class,
+            "randomTicks",
+            "(Ljava/lang/String;[I)V",
+            &[JValue::Object(&dimension), JValue::Object(&array)],
+        )?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
 /// A click in the window of a mod's menu ([`Action::MenuContent`]): `ServerboundContainerClickPacket`'s
 /// slot, button and input, run by the menu.
 pub fn menu_click(uuid: &str, slot: i32, button: i32, input: i32) -> Result<(), String> {

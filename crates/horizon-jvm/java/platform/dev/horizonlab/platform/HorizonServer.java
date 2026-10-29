@@ -1137,6 +1137,30 @@ public final class HorizonServer {
         };
     }
 
+    /**
+     * Random ticks Horizon's level gave mods' blocks (ServerLevel.tickChunk's): each still a
+     * mod's block that ticks randomly grows as its mod says (BlockState.randomTick).
+     */
+    public static void randomTicks(String dimension, int[] positions) {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        if (server == null) return;
+        ServerLevel level = level(dimension);
+        for (int i = 0; i + 2 < positions.length; i += 3) {
+            BlockPos pos = new BlockPos(positions[i], positions[i + 1], positions[i + 2]);
+            BlockState state = level.getBlockState(pos);
+            if (!HorizonBlockEntities.modded(state) || !state.isRandomlyTicking()) continue;
+            fire("BlockState.randomTick", () -> state.randomTick(level, pos, level.getRandom()));
+        }
+        syncInventories();
+    }
+
+    private static final Map<Level, HorizonLight> LIGHT = new IdentityHashMap<>();
+
+    /** A mirrored level's light: Horizon's (HorizonLight). */
+    public static synchronized HorizonLight light(Level level) {
+        return LIGHT.computeIfAbsent(level, HorizonLight::new);
+    }
+
     /** A mod's item (not vanilla's). */
     public static boolean moddedItem(ItemStack stack) {
         return !stack.isEmpty()

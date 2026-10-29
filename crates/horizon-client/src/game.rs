@@ -3204,6 +3204,8 @@ impl Game<'_> {
             b.run_block_events(level, ticks);
             b.tick_block_entities(level, ticks);
         });
+        // Random ticks of blocks only Java mods know (their crops), run by the mods.
+        self.java_random_ticks();
         // `PistonMovingBlockEntity.tick` pushes what its block just ran into,
         // with the progress it is about to take.
         let pushes = std::mem::take(&mut self.block_ticks.piston_pushes);

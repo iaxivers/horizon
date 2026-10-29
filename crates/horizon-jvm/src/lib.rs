@@ -397,6 +397,11 @@ fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
                 fn_ptr: native_open_menu as *mut c_void,
             },
             NativeMethod {
+                name: "light".into(),
+                sig: "(Ljava/lang/String;III)I".into(),
+                fn_ptr: native_light as *mut c_void,
+            },
+            NativeMethod {
                 name: "setFood".into(),
                 sig: "(Ljava/lang/String;IF)V".into(),
                 fn_ptr: native_set_food as *mut c_void,
@@ -683,6 +688,24 @@ extern "system" fn native_open_menu(
         };
         events::push(events::Action::OpenMenu { uuid, menu, title });
     }));
+}
+
+/// `Natives.light(String dimension, int x, int y, int z)`: -1 where no chunk is loaded.
+extern "system" fn native_light(
+    mut env: JNIEnv,
+    _class: JClass,
+    dimension: JString,
+    x: jni::sys::jint,
+    y: jni::sys::jint,
+    z: jni::sys::jint,
+) -> jni::sys::jint {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Ok(dimension) = env.get_string(&dimension).map(String::from) else {
+            return -1;
+        };
+        world::light(&dimension, x, y, z).map_or(-1, i32::from)
+    }))
+    .unwrap_or(-1)
 }
 
 /// `Natives.setFood(String uuid, int food, float saturation)`.

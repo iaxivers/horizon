@@ -29,6 +29,7 @@ impl Game<'_> {
         };
         // The head of the players' hurtServer asks the Java mods.
         let _ = horizon_client::health::HURT_HOOK.set(super::server_mods::java_hurt);
+        let _ = horizon_world::level::RANDOM_TICK_HOOK.set(super::server_mods::java_random_tick);
         let spawned = std::thread::Builder::new()
             .name("Java mods".into())
             .spawn(move || {

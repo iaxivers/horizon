@@ -101,6 +101,9 @@ pub struct State {
     /// Light emitted, 0 to 15; unset, the block's.
     #[serde(default)]
     pub light: Option<u8>,
+    /// Random ticks reach it (a crop's growth, run by its Java mod); unset, the template's.
+    #[serde(default)]
+    pub random_ticks: Option<bool>,
     /// The block's default state (else the first).
     #[serde(default)]
     pub default: bool,

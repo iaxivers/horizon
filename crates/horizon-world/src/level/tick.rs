@@ -7,6 +7,12 @@ use super::{
     update::{HORIZONTAL, above, below, rel},
 };
 use crate::{fluid::FluidKind, registry::BlockStateId};
+
+/// Called for each randomly ticking state a random tick reaches, after Horizon's own
+/// behaviour: what Horizon knows of a block only from a content mod (a Java mod's crop) grows
+/// there (horizon-client's Java mods).
+pub static RANDOM_TICK_HOOK: std::sync::OnceLock<fn(BlockPos, BlockStateId)> =
+    std::sync::OnceLock::new();
 use horizon_core::{
     geometry::Direction,
     position::{BlockPos, ChunkPos},
@@ -218,6 +224,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let state = self.state(pos);
         if self.b.is_randomly_ticking(state) {
             self.random_tick_block(state, pos);
+            if let Some(hook) = RANDOM_TICK_HOOK.get() {
+                hook(pos, state);
+            }
         }
         // Only lava's fluid state ticks randomly. A lava block is ticked twice
         // (LiquidBlock.randomTick, then FluidState.randomTick), as in vanilla.

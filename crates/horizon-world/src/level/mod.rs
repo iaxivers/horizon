@@ -125,6 +125,7 @@ mod signals;
 mod speleothem;
 mod survive;
 mod tick;
+pub use tick::RANDOM_TICK_HOOK;
 mod timeline;
 mod update;
 mod weather;

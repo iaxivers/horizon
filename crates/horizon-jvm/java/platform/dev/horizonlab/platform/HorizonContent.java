@@ -168,9 +168,9 @@ public final class HorizonContent {
                     json.name("hardness").value(state.getDestroySpeed(EmptyBlockGetter.INSTANCE, BlockPos.ZERO));
                     json.name("emission").value(state.getLightEmission());
                     json.name("requires_tool").value(state.requiresCorrectToolForDrops());
+                    json.name("random_ticks").value(state.isRandomlyTicking());
                     json.name("can_occlude").value(state.canOcclude());
                     json.name("replaceable").value(state.canBeReplaced());
-                    json.name("random_ticks").value(state.isRandomlyTicking());
                     var color = state.getMapColor(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
                     json.name("map_color").value(color.col);
                     json.name("map_color_id").value(color.id);

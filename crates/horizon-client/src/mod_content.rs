@@ -238,6 +238,7 @@ struct OwnState {
     /// The vanilla state whose shapes it has.
     shape: u32,
     light: Option<u8>,
+    random_ticks: Option<bool>,
 }
 impl NewBlock<'_> {
     /// How many states it adds.
@@ -432,6 +433,7 @@ impl<'a> Plan<'a> {
                                 .collect(),
                             shape,
                             light: st.light,
+                            random_ticks: st.random_ticks,
                         });
                     }
                 }
@@ -624,6 +626,9 @@ impl<'a> Plan<'a> {
                     self.override_gameplay(b, &mut row);
                     if let Some(l) = own.and_then(|o| b.own[o].light) {
                         row.set("emission", J::Num(l.into()));
+                    }
+                    if let Some(r) = own.and_then(|o| b.own[o].random_ticks) {
+                        row.set("random_ticks", J::Bool(r));
                     }
                 }
                 list.push(row);

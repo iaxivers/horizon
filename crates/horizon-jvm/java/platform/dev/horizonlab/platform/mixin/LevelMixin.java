@@ -64,6 +64,12 @@ public abstract class LevelMixin {
         if (HorizonServer.isMirror(this)) ci.cancel();
     }
 
+    /** Horizon's light, read where a mod asks (the level has no chunk source). */
+    @Inject(method = "getLightEngine", at = @At("HEAD"), cancellable = true)
+    private void horizon$lightEngine(CallbackInfoReturnable<net.minecraft.world.level.lighting.LevelLightEngine> cir) {
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.light((Level) (Object) this));
+    }
+
     @Inject(method = "isLoaded", at = @At("HEAD"), cancellable = true)
     private void horizon$loaded(BlockPos pos, CallbackInfoReturnable<Boolean> cir) {
         if (HorizonServer.isMirror(this)) {

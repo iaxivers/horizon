@@ -11,6 +11,11 @@ pub trait Blocks {
     /// The block state at `x y z` of `dimension` (`minecraft:overworld`), with its
     /// properties: `minecraft:oak_log[axis=y]`. None where no chunk is loaded.
     fn block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String>;
+    /// The light at `x y z`: sky light in the high four bits, block light in the low. None
+    /// where no chunk is loaded.
+    fn light(&self, _dimension: &str, _x: i32, _y: i32, _z: i32) -> Option<u8> {
+        None
+    }
 }
 
 type View = *const (dyn Blocks + 'static);
@@ -33,6 +38,13 @@ pub fn with_blocks<R>(blocks: &dyn Blocks, f: impl FnOnce() -> R) -> R {
     let view: View = unsafe { std::mem::transmute(view) };
     let _reset = Reset(VIEW.replace(Some(view)));
     f()
+}
+
+/// The light a mod reads, from the view of this thread's call; None outside one.
+pub(crate) fn light(dimension: &str, x: i32, y: i32, z: i32) -> Option<u8> {
+    // SAFETY: a view in VIEW is alive (with_blocks).
+    VIEW.get()
+        .and_then(|view| unsafe { (*view).light(dimension, x, y, z) })
 }
 
 /// The block a mod reads, from the view of this thread's call; None outside one.
