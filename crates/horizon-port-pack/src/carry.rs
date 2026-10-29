@@ -971,17 +971,27 @@ pub fn carry(
             let Some(b) = full.strip_prefix(&prefix) else {
                 break;
             };
-            let Some(choice) = facts.template(full, allowed) else {
-                let props: Vec<&str> = block.properties.keys().map(String::as_str).collect();
-                let why = format!(
-                    "no vanilla {} with properties [{}]",
-                    block.vanilla_class().rsplit('.').next().unwrap_or(""),
-                    props.join(", ")
-                );
-                report.blocks_unknown.insert(b.to_owned(), why);
-                continue;
+            let (choice, own) = match facts.template(full, allowed) {
+                Some(choice) => (choice, None),
+                None => match facts.own_states(full, allowed) {
+                    Some((choice, states)) => (choice, Some(states)),
+                    None => {
+                        let props: Vec<&str> =
+                            block.properties.keys().map(String::as_str).collect();
+                        let why = format!(
+                            "no vanilla {} with properties [{}]",
+                            block.vanilla_class().rsplit('.').next().unwrap_or(""),
+                            props.join(", ")
+                        );
+                        report.blocks_unknown.insert(b.to_owned(), why);
+                        continue;
+                    }
+                },
             };
             let mut v = json!({"template": choice.template, "properties": choice.properties});
+            if let Some(states) = own {
+                v["states"] = states;
+            }
             if block.item == "minecraft:air" {
                 v["item"] = json!(false);
             } else if block.item != *full {

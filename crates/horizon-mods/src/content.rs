@@ -11,7 +11,7 @@
 use crate::manifest::{Capability, MANIFEST, Manifest};
 use serde::Deserialize;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     io::Read,
     path::{Path, PathBuf},
 };
@@ -83,6 +83,27 @@ struct BlockFile {
     properties: BlockProperties,
     #[serde(default = "yes")]
     item: bool,
+    #[serde(default)]
+    states: Vec<State>,
+}
+
+/// One of a block's own states, for a block whose properties no vanilla block has (a
+/// cooking pot's `facing` and `support`): the template (a block without properties) gives
+/// its behaviour, `shape` its collision, outline and occlusion.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct State {
+    pub properties: BTreeMap<String, String>,
+    /// A vanilla state with this state's shapes: `minecraft:cake[bites=1]`; unset, the
+    /// template's.
+    #[serde(default)]
+    pub shape: Option<String>,
+    /// Light emitted, 0 to 15; unset, the block's.
+    #[serde(default)]
+    pub light: Option<u8>,
+    /// The block's default state (else the first).
+    #[serde(default)]
+    pub default: bool,
 }
 fn yes() -> bool {
     true
@@ -99,6 +120,8 @@ pub struct Block {
     pub properties: BlockProperties,
     /// Also add a block item with the same id.
     pub item: bool,
+    /// Its own states, in order (empty: the template's).
+    pub states: Vec<State>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -335,6 +358,7 @@ impl Content {
                 template: file.template,
                 properties: file.properties,
                 item: file.item,
+                states: file.states,
             });
         }
         for (item, name) in items {
@@ -398,6 +422,30 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
     }
     if p.sounds.as_deref().is_some_and(|s| !vanilla_id(s)) {
         return Err("sounds names a vanilla block (minecraft:...)".into());
+    }
+    if let Some(first) = file.states.first() {
+        let mut seen = BTreeSet::new();
+        for s in &file.states {
+            if s.properties.keys().ne(first.properties.keys()) {
+                return Err("states: every state has the same properties".into());
+            }
+            if !seen.insert(&s.properties) {
+                return Err("states: a state is listed twice".into());
+            }
+            if s
+                .shape
+                .as_deref()
+                .is_some_and(|v| !vanilla_id(v.split('[').next().unwrap_or(v)))
+            {
+                return Err("states: shape names a vanilla state (minecraft:...)".into());
+            }
+            if s.light.is_some_and(|l| l > 15) {
+                return Err("states: light is 0 to 15".into());
+            }
+        }
+        if file.states.iter().filter(|s| s.default).count() > 1 {
+            return Err("states: one default".into());
+        }
     }
     Ok(())
 }
@@ -489,6 +537,7 @@ capabilities = ["registries"]
                     ..BlockProperties::default()
                 },
                 item: true,
+                states: Vec::new(),
             }]
         );
         assert_eq!(content.items[0].id, "ruby:ruby");
