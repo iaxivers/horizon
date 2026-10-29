@@ -530,3 +530,29 @@ pub fn use_block(
         _ => UseResult::Pass,
     })
 }
+
+/// The head of a player's `hurtServer`: Fabric API's `ALLOW_DAMAGE`, then the mods'
+/// injections at the heads of `ServerPlayer`, `Player` and `LivingEntity.hurtServer`. The
+/// amount to hurt by, or None when a mod stops the hit.
+pub fn hurt(uuid: &str, damage_type: &str, amount: f32) -> Result<Option<f32>, String> {
+    let result = with_server(|env, class| {
+        let uuid = env.new_string(uuid)?;
+        let damage_type = env.new_string(damage_type)?;
+        env.call_static_method(
+            class,
+            "hurt",
+            "(Ljava/lang/String;Ljava/lang/String;F)F",
+            &[
+                JValue::Object(&uuid),
+                JValue::Object(&damage_type),
+                JValue::Float(amount),
+            ],
+        )?
+        .f()
+    })?;
+    Ok(match result {
+        Some(a) if a < 0.0 => None,
+        Some(a) => Some(a),
+        None => Some(amount),
+    })
+}

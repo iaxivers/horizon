@@ -224,6 +224,49 @@ public final class HorizonServer {
         return player;
     }
 
+    // ---- Damage --------------------------------------------------------------------------
+
+    /**
+     * The head of a player's hurtServer, called by Horizon before it hurts the player:
+     * Fabric's ALLOW_DAMAGE, then the mods' injections at the heads of ServerPlayer, Player and
+     * LivingEntity.hurtServer (vanilla's calls, in that order). The amount, or -1 when a mod
+     * stops the hit.
+     */
+    public static float hurt(String uuid, String damageType, float amount) {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        ServerPlayer player = BY_UUID.get(UUID.fromString(uuid));
+        if (player == null) return amount;
+        ServerLevel level = (ServerLevel) player.level();
+        net.minecraft.world.damagesource.DamageSource source = damageSource(level, damageType);
+        boolean[] allowed = {true};
+        fire("ServerLivingEntityEvents.ALLOW_DAMAGE", () -> allowed[0] =
+                net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.ALLOW_DAMAGE.invoker()
+                        .allowDamage(player, source, amount));
+        if (!allowed[0]) return -1;
+        Object[] args = {level, source, amount};
+        String desc = "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/damagesource/DamageSource;F)Z";
+        for (Class<?> owner : new Class<?>[] {ServerPlayer.class, net.minecraft.world.entity.player.Player.class,
+                net.minecraft.world.entity.LivingEntity.class}) {
+            if (!HorizonHooks.hooked(owner.getName().replace('.', '/'), "hurtServer")) continue;
+            HorizonHooks.Result r = HorizonHooks.fire(player, owner, "hurtServer", desc, "HEAD", args, true, false);
+            if (r.cancelled() && Boolean.FALSE.equals(r.returnValue())) return -1;
+            if (r.cancelled()) return amount;
+        }
+        syncInventories();
+        return amount;
+    }
+
+    /** A damage type by id as a DamageSource (generic if it isn't one). */
+    private static net.minecraft.world.damagesource.DamageSource damageSource(ServerLevel level, String type) {
+        try {
+            var key = net.minecraft.resources.ResourceKey.create(Registries.DAMAGE_TYPE, Identifier.parse(type));
+            return new net.minecraft.world.damagesource.DamageSource(
+                    level.registryAccess().lookupOrThrow(Registries.DAMAGE_TYPE).getOrThrow(key));
+        } catch (Throwable t) {
+            return level.damageSources().generic();
+        }
+    }
+
     // ---- Death and respawn ----------------------------------------------------------------
 
     /**

@@ -30,6 +30,8 @@ impl Game<'_> {
             ExecutionRole::DedicatedServer => horizon_jvm::Side::Server,
             _ => horizon_jvm::Side::Client,
         };
+        // The head of the players' hurtServer asks the Java mods.
+        let _ = horizon_client::health::HURT_HOOK.set(super::server_mods::java_hurt);
         let spawned = std::thread::Builder::new()
             .name("Java mods".into())
             .spawn(move || start(&root, &dir, jars, side));

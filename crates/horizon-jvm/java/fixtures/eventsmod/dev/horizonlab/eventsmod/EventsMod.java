@@ -135,6 +135,9 @@ public class EventsMod implements ModInitializer {
             if (felled > 0) player.sendSystemMessage(Component.literal("[events] felled " + felled + " logs"));
             return true;
         });
+        // Magma blocks don't hurt (Fabric API's ALLOW_DAMAGE).
+        net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.ALLOW_DAMAGE.register((entity, source, amount) ->
+                !source.is(net.minecraft.world.damagesource.DamageTypes.HOT_FLOOR));
         net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents.AFTER_RESPAWN.register((old, now, alive) ->
                 now.sendSystemMessage(Component.literal("[events] welcome back " + now.getName().getString())));
         PlayerBlockBreakEvents.AFTER.register((level, player, pos, state, blockEntity) ->

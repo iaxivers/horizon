@@ -474,6 +474,19 @@ fn fabric_api_and_a_mod_on_the_real_game() {
         }]
     );
 
+    // Damage: the Mixin at the head of hurtServer stops cactus, ALLOW_DAMAGE magma blocks.
+    let hurt = |t: &str| horizon_jvm::events::hurt(&uuid, t, 3.0).unwrap();
+    assert_eq!(hurt("minecraft:fall"), Some(3.0));
+    assert_eq!(hurt("minecraft:cactus"), None);
+    assert_eq!(hurt("minecraft:hot_floor"), None);
+    assert_eq!(
+        horizon_jvm::events::take_actions(),
+        vec![Action::Tell {
+            uuid: uuid.clone(),
+            text: "[events] no cactus for you".into()
+        }]
+    );
+
     // Death and respawn, from Steve's health: the Mixin at the head of LivingEntity.die, then
     // Fabric's AFTER_RESPAWN.
     let mut dying = steve.clone();

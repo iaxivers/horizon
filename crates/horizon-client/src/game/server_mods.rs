@@ -31,6 +31,35 @@ pub(super) enum ModEvent {
     },
 }
 
+thread_local! {
+    /// The player a server turn acts for now (`as_guest`), by UUID: whom a hook from inside
+    /// the game's own code (the head of hurtServer) is about.
+    static JAVA_ACTOR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Sets the player acting now (None: no one); the one before, to put back.
+pub(super) fn set_java_actor(actor: Option<String>) -> Option<String> {
+    JAVA_ACTOR.with(|a| a.replace(actor))
+}
+
+/// The hook at the head of the player's hurtServer (`horizon_client::health::HURT_HOOK`): Java
+/// mods' injections there and Fabric API's ALLOW_DAMAGE, for the player acting now.
+#[cfg(feature = "java-mods")]
+pub(super) fn java_hurt(damage_type: &str, amount: f32) -> horizon_client::health::HurtHook {
+    use horizon_client::health::HurtHook;
+    let Some(uuid) = JAVA_ACTOR.with(|a| a.borrow().clone()) else {
+        return HurtHook::Damage(amount);
+    };
+    match horizon_jvm::events::hurt(&uuid, damage_type, amount) {
+        Ok(Some(a)) => HurtHook::Damage(a),
+        Ok(None) => HurtHook::Cancel,
+        Err(e) => {
+            log::warn!("Java mods: a hit failed: {e}");
+            HurtHook::Damage(amount)
+        }
+    }
+}
+
 #[cfg(not(feature = "mods"))]
 impl Game<'_> {
     pub(super) fn tick_server_mods(&mut self) {}
@@ -52,7 +81,6 @@ impl Game<'_> {
         true
     }
     pub(super) fn note_java_death(&mut self) {}
-    pub(super) fn note_java_death_of(&mut self, _key: &str) {}
     pub(super) fn note_java_death_cause(&mut self, _key: &str, _cause: Option<String>) {}
     pub(super) fn java_use_block(
         &mut self,

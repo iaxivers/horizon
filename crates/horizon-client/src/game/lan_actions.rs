@@ -174,6 +174,8 @@ pub(super) struct GuestSwap {
     combat: super::combat::CombatTracker,
     /// The guest whose turn this one nests in, if any.
     acting: (Option<u32>, Option<String>, Option<u128>),
+    /// The player Java mods' hooks were about before this turn (`set_java_actor`).
+    java_actor: Option<String>,
     /// The packets queued for that guest.
     packets: Vec<play::Clientbound>,
     /// The entity events queued for that guest.
@@ -406,6 +408,8 @@ impl Game<'_> {
             self.lan_acting_name.replace(g.name.clone()),
             self.lan_acting_uuid.replace(g.uuid),
         );
+        let java_actor =
+            super::server_mods::set_java_actor(Some(horizon_protocol::crypto::uuid_string(g.uuid)));
         let packets = std::mem::take(&mut self.guest_packets);
         let entity_events = std::mem::take(&mut self.guest_entity_events);
         let swings = self.swings_started;
@@ -474,6 +478,7 @@ impl Game<'_> {
             levitation,
             death_cause,
             acting,
+            java_actor,
             packets,
             entity_events,
             swings,
@@ -535,6 +540,7 @@ impl Game<'_> {
             death_cause,
             combat,
             acting,
+            java_actor,
             packets,
             entity_events,
             swings,
@@ -580,6 +586,7 @@ impl Game<'_> {
             );
         }
         (self.lan_acting, self.lan_acting_name, self.lan_acting_uuid) = acting;
+        super::server_mods::set_java_actor(java_actor);
         play.death_cause = std::mem::replace(&mut self.ui.death_cause, death_cause);
         // An ender chest the guest opened: the menu shows their inventory
         // itself (lan_open_container), not a stand-in block entity.

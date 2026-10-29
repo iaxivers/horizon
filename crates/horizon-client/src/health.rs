@@ -291,6 +291,20 @@ impl PlayerHealth {
         }
     }
 }
+/// What a hook at the head of the player's `hurtServer` decided (a server mod's
+/// `LivingEntity.hurtServer` injection, Fabric API's `ALLOW_DAMAGE`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HurtHook {
+    /// Go on with this amount.
+    Damage(f32),
+    /// The hit doesn't land (`hurtServer` returns false).
+    Cancel,
+}
+
+/// The game's hook at the head of the player's `hurtServer`: the damage type's name and the
+/// amount, for the player acting now. None until the game sets one (no server mods).
+pub static HURT_HOOK: std::sync::OnceLock<fn(&str, f32) -> HurtHook> = std::sync::OnceLock::new();
+
 impl PlayerMotion {
     pub fn hurt(
         &mut self,
@@ -327,6 +341,16 @@ impl PlayerMotion {
     ) -> Result<BlockOutcome> {
         if self.client_side {
             return Ok(BlockOutcome::default());
+        }
+        // The head of hurtServer: a server mod may stop the hit or change its amount.
+        let mut amount = amount;
+        if let Some(hook) = HURT_HOOK.get()
+            && let Some(d) = resources.damage.definition(source)
+        {
+            match hook(&d.name, amount) {
+                HurtHook::Damage(a) => amount = a,
+                HurtHook::Cancel => return Ok(BlockOutcome::default()),
+            }
         }
         let source = resources
             .damage
