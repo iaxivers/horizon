@@ -83,6 +83,33 @@ public class EventsMod implements ModInitializer {
                             context.getSource().sendSuccess(() -> Component.literal("[events] here's your kit"), false);
                             return 1;
                         }))
+                        // A vanilla chest's block entity, as storage mods use it: what it
+                        // holds is read, and three emeralds go in its first empty slot.
+                        .then(Commands.literal("chest")
+                                .then(Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
+                                        .executes(context -> {
+                                            var pos = net.minecraft.commands.arguments.coordinates.BlockPosArgument
+                                                    .getLoadedBlockPos(context, "pos");
+                                            var level = context.getSource().getLevel();
+                                            if (!(level.getBlockEntity(pos) instanceof net.minecraft.world.Container chest)) {
+                                                context.getSource().sendSuccess(() -> Component.literal("[events] no container"), false);
+                                                return 0;
+                                            }
+                                            int stacks = 0;
+                                            for (int i = 0; i < chest.getContainerSize(); i++) {
+                                                if (!chest.getItem(i).isEmpty()) stacks++;
+                                            }
+                                            for (int i = 0; i < chest.getContainerSize(); i++) {
+                                                if (chest.getItem(i).isEmpty()) {
+                                                    chest.setItem(i, new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.EMERALD, 3));
+                                                    break;
+                                                }
+                                            }
+                                            chest.setChanged();
+                                            int held = stacks;
+                                            context.getSource().sendSuccess(() -> Component.literal("[events] the chest held " + held + " stacks"), false);
+                                            return 1;
+                                        })))
                         .then(Commands.literal("take").executes(context -> {
                             ServerPlayer player = context.getSource().getPlayerOrException();
                             var inventory = player.getInventory();

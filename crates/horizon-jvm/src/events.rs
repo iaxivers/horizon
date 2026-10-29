@@ -126,6 +126,13 @@ pub enum Action {
         items: Option<Vec<Option<String>>>,
         carried: Option<String>,
     },
+    /// A mod changed a vanilla block's block entity (a storage mod took from a chest): it is
+    /// now this, as vanilla saves it (`saveWithFullMetadata`), in SNBT.
+    SetBlockEntity {
+        dimension: String,
+        position: [i32; 3],
+        snbt: String,
+    },
     /// A mod fed (or starved) a player: its `FoodData` now (a pie's slice).
     Food {
         uuid: String,

@@ -64,6 +64,10 @@ public final class HorizonBlockEntities {
         long key = pos.asLong();
         BlockEntity be = live.get(key);
         BlockState state = HorizonServer.blockState(level, pos);
+        if (!modded(state) && state.hasBlockEntity()) {
+            if (be != null) remove(level, live, key, be, true);
+            return vanilla(level, pos, state);
+        }
         if (!(state.getBlock() instanceof EntityBlock entityBlock) || !modded(state)) {
             if (be != null) remove(level, live, key, be, true);
             return null;
@@ -110,8 +114,65 @@ public final class HorizonBlockEntities {
     }
 
     /** Level.blockEntityChanged (BlockEntity.setChanged). */
-    public static synchronized void changed() {
+    public static synchronized void changed(Level level, BlockPos pos) {
         dirty = true;
+        Map<Long, BlockEntity> call = CALL.get((ServerLevel) level);
+        if (call != null && call.containsKey(pos.asLong())) {
+            CHANGED.computeIfAbsent((ServerLevel) level, l -> new java.util.HashSet<>()).add(pos.asLong());
+        }
+    }
+
+    // ---- Vanilla blocks' block entities: Horizon's ------------------------------------------
+
+    /** This call's copies of Horizon's block entities (a chest's), made as mods ask. */
+    private static final Map<ServerLevel, Map<Long, BlockEntity>> CALL = new IdentityHashMap<>();
+    private static final Map<ServerLevel, java.util.Set<Long>> CHANGED = new IdentityHashMap<>();
+
+    /** Horizon's block entity at {@code pos}, as a vanilla one Java's mods can use. */
+    private static BlockEntity vanilla(Level level, BlockPos pos, BlockState state) {
+        Map<Long, BlockEntity> call = CALL.computeIfAbsent((ServerLevel) level, l -> new HashMap<>());
+        BlockEntity be = call.get(pos.asLong());
+        if (be != null) return be;
+        String dimension = level.dimension().identifier().toString();
+        String snbt = Natives.blockEntity(dimension, pos.getX(), pos.getY(), pos.getZ());
+        if (snbt == null) return null;
+        try {
+            CompoundTag tag = net.minecraft.nbt.TagParser.parseCompoundFully(snbt);
+            be = BlockEntity.loadStatic(pos.immutable(), state, tag, level.registryAccess());
+        } catch (Throwable t) {
+            Natives.log("Java mods: Horizon's block entity at " + pos + " could not be read: " + t);
+            return null;
+        }
+        if (be == null) return null;
+        be.setLevel(level);
+        call.put(pos.asLong(), be);
+        return be;
+    }
+
+    /**
+     * The end of a call: what mods changed of Horizon's block entities goes back to Horizon,
+     * and the copies go (the next call reads Horizon's again).
+     */
+    public static synchronized void flushVanilla() {
+        for (Map.Entry<ServerLevel, java.util.Set<Long>> e : CHANGED.entrySet()) {
+            ServerLevel level = e.getKey();
+            Map<Long, BlockEntity> call = CALL.get(level);
+            if (call == null) continue;
+            String dimension = level.dimension().identifier().toString();
+            for (long key : e.getValue()) {
+                BlockEntity be = call.get(key);
+                if (be == null) continue;
+                try {
+                    CompoundTag tag = be.saveWithFullMetadata(level.registryAccess());
+                    BlockPos pos = be.getBlockPos();
+                    Natives.setBlockEntity(dimension, pos.getX(), pos.getY(), pos.getZ(), tag.toString());
+                } catch (Throwable t) {
+                    Natives.log("Java mods: a block entity at " + be.getBlockPos() + " could not be saved: " + t);
+                }
+            }
+        }
+        CHANGED.clear();
+        CALL.clear();
     }
 
     /** Each server tick: the tickers run; gone blocks drop, unloaded ones are put away. */

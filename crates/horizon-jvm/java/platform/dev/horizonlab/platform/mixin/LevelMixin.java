@@ -20,6 +20,18 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  */
 @Mixin(Level.class)
 public abstract class LevelMixin {
+    /**
+     * LevelAccessor.hasChunk (a default method, which nothing can inject into: overridden
+     * here, as vanilla's for other levels): a mirrored level holds the chunks Horizon has.
+     */
+    public boolean hasChunk(int x, int z) {
+        if (HorizonServer.isMirror(this)) {
+            Level level = (Level) (Object) this;
+            return Natives.blockState(level.dimension().identifier().toString(), x << 4, 64, z << 4) != null;
+        }
+        return ((net.minecraft.world.level.LevelAccessor) (Object) this).getChunkSource().hasChunk(x, z);
+    }
+
     @Inject(method = "getBlockState", at = @At("HEAD"), cancellable = true)
     private void horizon$blockState(BlockPos pos, CallbackInfoReturnable<BlockState> cir) {
         if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.blockState((Level) (Object) this, pos));
@@ -55,7 +67,7 @@ public abstract class LevelMixin {
     private void horizon$blockEntityChanged(BlockPos pos, CallbackInfo ci) {
         if (!HorizonServer.isMirror(this)) return;
         ci.cancel();
-        HorizonBlockEntities.changed();
+        HorizonBlockEntities.changed((Level) (Object) this, pos);
     }
 
     /** Comparators are Horizon's. */

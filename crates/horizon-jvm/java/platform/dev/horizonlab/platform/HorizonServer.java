@@ -1256,6 +1256,7 @@ public final class HorizonServer {
     private static final Map<UUID, float[]> FOOD_SEEN = new ConcurrentHashMap<>();
 
     private static void syncInventories() {
+        HorizonBlockEntities.flushVanilla();
         syncMenus();
         for (ServerPlayer player : new ArrayList<>(BY_UUID.values())) {
             float[] seen = FOOD_SEEN.get(player.getUUID());

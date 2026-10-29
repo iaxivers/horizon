@@ -37,6 +37,12 @@ public final class Natives {
      */
     public static native int light(String dimension, int x, int y, int z);
 
+    /** Horizon's block entity at x y z (a chest's), as vanilla saves it, in SNBT; else null. */
+    public static native String blockEntity(String dimension, int x, int y, int z);
+
+    /** A mod changed a vanilla block's block entity: Horizon's is now this (SNBT). */
+    public static native void setBlockEntity(String dimension, int x, int y, int z, String snbt);
+
     /** A mod changed a player's food (FoodData): its food level and saturation now. */
     public static native void setFood(String uuid, int food, float saturation);
 

@@ -397,6 +397,16 @@ fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
                 fn_ptr: native_open_menu as *mut c_void,
             },
             NativeMethod {
+                name: "blockEntity".into(),
+                sig: "(Ljava/lang/String;III)Ljava/lang/String;".into(),
+                fn_ptr: native_block_entity as *mut c_void,
+            },
+            NativeMethod {
+                name: "setBlockEntity".into(),
+                sig: "(Ljava/lang/String;IIILjava/lang/String;)V".into(),
+                fn_ptr: native_set_block_entity as *mut c_void,
+            },
+            NativeMethod {
                 name: "light".into(),
                 sig: "(Ljava/lang/String;III)I".into(),
                 fn_ptr: native_light as *mut c_void,
@@ -687,6 +697,51 @@ extern "system" fn native_open_menu(
             env.get_string(&title).ok().map(String::from)
         };
         events::push(events::Action::OpenMenu { uuid, menu, title });
+    }));
+}
+
+/// `Natives.blockEntity(String dimension, int x, int y, int z)`: SNBT, or null.
+extern "system" fn native_block_entity<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    dimension: JString<'local>,
+    x: jni::sys::jint,
+    y: jni::sys::jint,
+    z: jni::sys::jint,
+) -> JString<'local> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Ok(dimension) = env.get_string(&dimension).map(String::from) else {
+            return JString::from(JObject::null());
+        };
+        match world::block_entity(&dimension, x, y, z) {
+            Some(snbt) => env
+                .new_string(snbt)
+                .unwrap_or_else(|_| JString::from(JObject::null())),
+            None => JString::from(JObject::null()),
+        }
+    }))
+    .unwrap_or_else(|_| JString::from(JObject::null()))
+}
+
+/// `Natives.setBlockEntity(String dimension, int x, int y, int z, String snbt)`.
+extern "system" fn native_set_block_entity(
+    mut env: JNIEnv,
+    _class: JClass,
+    dimension: JString,
+    x: jni::sys::jint,
+    y: jni::sys::jint,
+    z: jni::sys::jint,
+    snbt: JString,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (Ok(dimension), Ok(snbt)) = (env.get_string(&dimension), env.get_string(&snbt)) else {
+            return;
+        };
+        events::push(events::Action::SetBlockEntity {
+            dimension: dimension.into(),
+            position: [x, y, z],
+            snbt: snbt.into(),
+        });
     }));
 }
 

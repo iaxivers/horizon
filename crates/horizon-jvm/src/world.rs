@@ -16,6 +16,11 @@ pub trait Blocks {
     fn light(&self, _dimension: &str, _x: i32, _y: i32, _z: i32) -> Option<u8> {
         None
     }
+    /// The block entity at `x y z` as vanilla saves it (`saveWithFullMetadata`), in SNBT:
+    /// a chest's items, for a mod that reads them. None where there is none.
+    fn block_entity(&self, _dimension: &str, _x: i32, _y: i32, _z: i32) -> Option<String> {
+        None
+    }
 }
 
 type View = *const (dyn Blocks + 'static);
@@ -45,6 +50,13 @@ pub(crate) fn light(dimension: &str, x: i32, y: i32, z: i32) -> Option<u8> {
     // SAFETY: a view in VIEW is alive (with_blocks).
     VIEW.get()
         .and_then(|view| unsafe { (*view).light(dimension, x, y, z) })
+}
+
+/// The block entity a mod reads, from the view of this thread's call; None outside one.
+pub(crate) fn block_entity(dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
+    // SAFETY: a view in VIEW is alive (with_blocks).
+    VIEW.get()
+        .and_then(|view| unsafe { (*view).block_entity(dimension, x, y, z) })
 }
 
 /// The block a mod reads, from the view of this thread's call; None outside one.

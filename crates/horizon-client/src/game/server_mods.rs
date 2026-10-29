@@ -290,6 +290,8 @@ mod run {
     struct JavaBlocks<'a> {
         registry: &'static BlockRegistry,
         dims: Vec<(&'static str, &'a ChunkMap)>,
+        /// The level running now (the first of `dims`) and its block entities.
+        entities: &'a horizon_client::block_entities::BlockEntities,
     }
     #[cfg(feature = "java-mods")]
     impl horizon_jvm::world::Blocks for JavaBlocks<'_> {
@@ -297,6 +299,21 @@ mod run {
             let (_, chunks) = self.dims.iter().find(|(d, _)| *d == dimension)?;
             let chunk = chunks.get(&(x >> 4, z >> 4))?;
             Some(state_string(self.registry, chunk.block(x & 15, y, z & 15)))
+        }
+        fn block_entity(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
+            let (current, chunks) = self.dims.first()?;
+            if *current != dimension {
+                return None;
+            }
+            let e = self.entities.get(&(x, y, z))?;
+            let state = chunks.get(&(x >> 4, z >> 4))?.block(x & 15, y, z & 15);
+            let name = self.registry.state(state)?.name.clone();
+            // BlockEntity.saveWithFullMetadata: no chunk-only keepPacked.
+            let mut tag = horizon_client::save::encode_block_entity((x, y, z), e, &name);
+            if let horizon_world::nbt::Tag::Compound(c) = &mut tag {
+                c.remove(&"keepPacked".into());
+            }
+            Some(horizon_client::snbt::to_snbt(&tag))
         }
         fn light(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<u8> {
             let (_, chunks) = self.dims.iter().find(|(d, _)| *d == dimension)?;
@@ -854,6 +871,11 @@ mod run {
                             self.lan = Some(lan);
                         }
                     }
+                    horizon_jvm::events::Action::SetBlockEntity {
+                        dimension,
+                        position,
+                        snbt,
+                    } => self.set_java_block_entity(&dimension, position, &snbt),
                     horizon_jvm::events::Action::Food {
                         uuid,
                         food,
@@ -1222,7 +1244,15 @@ mod run {
             for (dim, chunks) in self.levels.parked_chunks() {
                 dims.push((dim.id(), &*chunks));
             }
-            horizon_jvm::world::with_blocks(&JavaBlocks { registry, dims }, f)
+            let entities = &self.world.block_entities;
+            horizon_jvm::world::with_blocks(
+                &JavaBlocks {
+                    registry,
+                    dims,
+                    entities,
+                },
+                f,
+            )
         }
 
         /// The slot changes Java mods made to the player acting now, made at once in the
@@ -1232,6 +1262,16 @@ mod run {
         fn apply_java_actor_slots(&mut self, uuid: &str) {
             let mut later = Vec::new();
             for action in horizon_jvm::events::take_actions() {
+                if let horizon_jvm::events::Action::SetBlockEntity {
+                    dimension,
+                    position,
+                    snbt,
+                } = &action
+                {
+                    // At once: the next call reads it.
+                    self.set_java_block_entity(dimension, *position, snbt);
+                    continue;
+                }
                 if let horizon_jvm::events::Action::Food {
                     uuid: of,
                     food,
@@ -1377,6 +1417,28 @@ mod run {
             {
                 let _ = (pos, face, point, off_hand);
                 None
+            }
+        }
+
+        /// A Java mod's change to a vanilla block entity (a storage mod took from a chest): the
+        /// block entity there is now what the mod saved, in the level running now.
+        #[cfg(feature = "java-mods")]
+        fn set_java_block_entity(&mut self, dimension: &str, [x, y, z]: [i32; 3], snbt: &str) {
+            if dimension != self.dim.id() {
+                return;
+            }
+            let tag = match horizon_world::nbt::parse_snbt(snbt) {
+                Ok((tag, _)) => tag,
+                Err(e) => {
+                    log::warn!("Java mods: a block entity at {x} {y} {z}: {e}");
+                    return;
+                }
+            };
+            if let Some((_, entity)) = horizon_client::save::decode_block_entity(&tag) {
+                self.world.block_entities.insert((x, y, z), entity);
+                // Redraw and resend what shows it.
+                let state = self.world.block(x, y, z);
+                let _ = self.world.set(x, y, z, state);
             }
         }
 
