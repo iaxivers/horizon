@@ -992,7 +992,8 @@ pub fn carry(
             if let Some(states) = own {
                 v["states"] = states;
             }
-            if block.item == "minecraft:air" {
+            let template_item = facts.blocks.get(&choice.template).map(|t| t.item.as_str());
+            if block.item == "minecraft:air" || template_item == Some("minecraft:air") {
                 v["item"] = json!(false);
             } else if block.item != *full {
                 v["item"] = json!(false);

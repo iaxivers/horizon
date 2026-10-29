@@ -494,9 +494,15 @@ impl<'a> Plan<'a> {
                 _ => None,
             };
             if b.decl.item {
-                let item = b.item.as_deref().ok_or_else(|| {
-                    format!("{}: template {} has no item", b.decl.id, b.decl.template)
-                })?;
+                // A template without an item (a fluid's): the block comes without one.
+                let Some(item) = b.item.as_deref() else {
+                    log::warn!(
+                        "Horizon: {}: template {} has no item, so neither has it",
+                        b.decl.id,
+                        b.decl.template
+                    );
+                    continue;
+                };
                 items.push(NewItem {
                     rename: Rename::new(item, &b.decl.id),
                     max_stack_size: None,

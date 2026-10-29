@@ -5,7 +5,6 @@
 //! bootstraps the game's registries and runs the mods' entrypoints.
 
 use super::Game;
-use super::execution_role::ExecutionRole;
 use std::path::{Path, PathBuf};
 
 /// Game and Fabric API classes loaded once through Fabric, to check the setup works.
@@ -23,10 +22,7 @@ impl Game<'_> {
             return;
         }
         let root = checkout();
-        let side = match self.options.execution_role {
-            ExecutionRole::DedicatedServer => horizon_jvm::Side::Server,
-            _ => horizon_jvm::Side::Client,
-        };
+        let side = bridge_side();
         // The head of the players' hurtServer asks the Java mods.
         let _ = horizon_client::health::HURT_HOOK.set(super::server_mods::java_hurt);
         let _ = horizon_world::level::RANDOM_TICK_HOOK.set(super::server_mods::java_random_tick);
@@ -39,6 +35,13 @@ impl Game<'_> {
             log::warn!("Java mods: no thread to start them on: {e}");
         }
     }
+}
+
+/// The side Fabric runs as: the server's, always. The bridge mirrors Horizon's server (its
+/// levels and players): mods' client entrypoints (key bindings, renderers) would need a
+/// Minecraft client there is none of, and fail the whole start.
+fn bridge_side() -> horizon_jvm::Side {
+    horizon_jvm::Side::Server
 }
 
 /// The checkout (or install) holding research-lock.json and the prepared jars.
@@ -66,12 +69,7 @@ pub(super) fn java_content(base: &Path) -> Vec<PathBuf> {
     }
     let started = std::time::Instant::now();
     log::info!("Java mods: making their content (once for this set of mods)");
-    let side = if std::env::args().any(|a| a == "--dedicated") {
-        horizon_jvm::Side::Server
-    } else {
-        horizon_jvm::Side::Client
-    };
-    if !start(&checkout(), &dir, jars.clone(), side) {
+    if !start(&checkout(), &dir, jars.clone(), bridge_side()) {
         return Vec::new();
     }
     match horizon_jvm::content::build(&jars, base, &cache, &|l| log::info!("{l}")) {
@@ -96,6 +94,11 @@ pub(super) fn java_content(base: &Path) -> Vec<PathBuf> {
 fn start(root: &Path, dir: &Path, jars: Vec<PathBuf>, side: horizon_jvm::Side) -> bool {
     if horizon_jvm::get().is_some() {
         return true;
+    }
+    // One JVM a process: after a failed start, another can't be made.
+    static TRIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if TRIED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return false;
     }
     let started = std::time::Instant::now();
     let work = root.join(".local/bridge");
