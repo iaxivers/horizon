@@ -29,6 +29,9 @@ pub struct Player {
     /// Vanilla's game mode ids: 0 survival, 1 creative, 2 adventure, 3 spectator.
     pub game_mode: i32,
     pub health: f32,
+    /// `FoodData`'s food level and saturation.
+    pub food: i32,
+    pub saturation: f32,
     /// Vanilla's permission level, 0 (everyone) to 4 (owner): what the player's commands may do.
     pub permission: u8,
     /// The inventory, when it changed since the last tick (None: as it was): the
@@ -122,6 +125,12 @@ pub enum Action {
         open: Option<(String, Option<String>)>,
         items: Option<Vec<Option<String>>>,
         carried: Option<String>,
+    },
+    /// A mod fed (or starved) a player: its `FoodData` now (a pie's slice).
+    Food {
+        uuid: String,
+        food: i32,
+        saturation: f32,
     },
     /// `Level.setBlock` on a mirrored level: the block is to be that state (`/setblock`).
     SetBlock {
@@ -290,6 +299,10 @@ fn call_tick(
     }
     let modes: Vec<i32> = players.iter().map(|p| p.game_mode).collect();
     let health: Vec<f32> = players.iter().map(|p| p.health).collect();
+    let food: Vec<f32> = players
+        .iter()
+        .flat_map(|p| [p.food as f32, p.saturation])
+        .collect();
     let permissions: Vec<i32> = players.iter().map(|p| i32::from(p.permission)).collect();
     // INVENTORY_SLOTS per player; nulls for a player whose inventory didn't change.
     let mut inventories: Vec<Option<&str>> = Vec::with_capacity(players.len() * INVENTORY_SLOTS);
@@ -337,6 +350,8 @@ fn call_tick(
     env.set_int_array_region(&modes_array, 0, &modes)?;
     let health_array = env.new_float_array(health.len() as sys::jsize)?;
     env.set_float_array_region(&health_array, 0, &health)?;
+    let food_array = env.new_float_array(food.len() as sys::jsize)?;
+    env.set_float_array_region(&food_array, 0, &food)?;
     let permissions_array = env.new_int_array(permissions.len() as sys::jsize)?;
     env.set_int_array_region(&permissions_array, 0, &permissions)?;
     let kinds_array = env.new_int_array(kinds.len() as sys::jsize)?;
@@ -351,7 +366,7 @@ fn call_tick(
     env.call_static_method(
         class,
         "tick",
-        "(JZLjava/lang/String;[Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;[D[I[F[I[I[Ljava/lang/String;[Ljava/lang/String;[I[Ljava/lang/String;)V",
+        "(JZLjava/lang/String;[Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;[D[I[F[F[I[I[Ljava/lang/String;[Ljava/lang/String;[I[Ljava/lang/String;)V",
         &[
             JValue::Long(tick),
             JValue::Bool(dedicated.into()),
@@ -362,6 +377,7 @@ fn call_tick(
             JValue::Object(&motion_array),
             JValue::Object(&modes_array),
             JValue::Object(&health_array),
+            JValue::Object(&food_array),
             JValue::Object(&permissions_array),
             JValue::Object(&kinds_array),
             JValue::Object(&who),

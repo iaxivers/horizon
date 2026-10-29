@@ -625,6 +625,20 @@ mod run {
                     .find(|g| uuid_string(g.uuid) == id)
                     .map_or([self.yaw, self.pitch], |g| [g.yaw, g.pitch])
             };
+            // A connection's food, or the window's own player's in-frame.
+            let food = |id: &str| -> (i32, f32) {
+                self.lan
+                    .iter()
+                    .flat_map(|h| &h.hub.guests)
+                    .find(|g| uuid_string(g.uuid) == id)
+                    .map(|g| (g.food, g.saturation))
+                    .or_else(|| {
+                        self.player
+                            .as_ref()
+                            .map(|p| (p.health.food.food, p.health.food.saturation))
+                    })
+                    .unwrap_or((20, 5.0))
+            };
             let players: Vec<horizon_jvm::events::Player> = players
                 .iter()
                 .map(|p| horizon_jvm::events::Player {
@@ -641,6 +655,8 @@ mod run {
                         GameMode::Spectator => 3,
                     },
                     health: p.health,
+                    food: food(&p.id).0,
+                    saturation: food(&p.id).1,
                     // A connection's level (ops, the LAN host's grant); the window's own player
                     // in-frame owns its world.
                     permission: self
@@ -805,6 +821,27 @@ mod run {
                         } else if let Some(mut lan) = self.lan.take() {
                             self.java_open_menu(&mut lan, &uuid, &menu, title.as_deref());
                             self.lan = Some(lan);
+                        }
+                    }
+                    horizon_jvm::events::Action::Food {
+                        uuid,
+                        food,
+                        saturation,
+                    } => {
+                        let guest = host.as_deref_mut().or(self.lan.as_mut()).and_then(|h| {
+                            h.hub
+                                .guests
+                                .iter_mut()
+                                .find(|g| uuid_string(g.uuid) == uuid)
+                        });
+                        if let Some(g) = guest {
+                            g.food = food.clamp(0, 20);
+                            g.saturation = saturation.max(0.0);
+                        } else if uuid == self.player_uuid_string()
+                            && let Some(p) = self.player.as_mut()
+                        {
+                            p.health.food.food = food.clamp(0, 20);
+                            p.health.food.saturation = saturation.max(0.0);
                         }
                     }
                     horizon_jvm::events::Action::MenuContent {
@@ -1164,6 +1201,19 @@ mod run {
         fn apply_java_actor_slots(&mut self, uuid: &str) {
             let mut later = Vec::new();
             for action in horizon_jvm::events::take_actions() {
+                if let horizon_jvm::events::Action::Food {
+                    uuid: of,
+                    food,
+                    saturation,
+                } = &action
+                    && of == uuid
+                    && let Some(p) = self.player.as_mut()
+                {
+                    // The acting player's food is in `self.player` for the call.
+                    p.health.food.food = (*food).clamp(0, 20);
+                    p.health.food.saturation = saturation.max(0.0);
+                    continue;
+                }
                 let horizon_jvm::events::Action::SetSlot {
                     uuid: of,
                     slot,

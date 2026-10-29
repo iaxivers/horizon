@@ -348,6 +348,22 @@ public final class HorizonContent {
                     json.name(BuiltInRegistries.DATA_COMPONENT_TYPE.getKey(component.type()).toString());
                     json.jsonValue(GSON.toJson(encoded));
                 }
+                // A food's crafting remainder (a stew's bowl) is what its mod gives back on
+                // eating (Farmer's Delight's ConsumableItem): Horizon's use_remainder.
+                var remainder = item.getCraftingRemainder();
+                if (remainder != null && stack.has(net.minecraft.core.component.DataComponents.FOOD)
+                        && !stack.has(net.minecraft.core.component.DataComponents.USE_REMAINDER)) {
+                    var use = new net.minecraft.world.item.component.UseRemainder(remainder);
+                    net.minecraft.core.component.DataComponents.USE_REMAINDER.codecOrThrow()
+                            .encodeStart(ops, use).result().ifPresent(e -> {
+                                try {
+                                    json.name("minecraft:use_remainder");
+                                    json.jsonValue(GSON.toJson(e));
+                                } catch (IOException io) {
+                                    throw new java.io.UncheckedIOException(io);
+                                }
+                            });
+                }
                 json.endObject();
                 json.endObject();
             }

@@ -88,6 +88,8 @@ fn real_mods_in_a_scripted_session() {
         dimension: "minecraft:overworld".into(),
         game_mode: 0,
         health: 20.0,
+        food: 20,
+        saturation: 5.0,
         permission: 4,
         // An iron axe in hand (FallingTree fells with an axe), the rest empty.
         // HORIZON_TEST_EMPTY=1: nothing at all (a first join, for kit mods).

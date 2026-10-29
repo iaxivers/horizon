@@ -31,6 +31,9 @@ public final class Natives {
      */
     public static native void openMenu(String uuid, String menu, String title);
 
+    /** A mod changed a player's food (FoodData): its food level and saturation now. */
+    public static native void setFood(String uuid, int food, float saturation);
+
     /**
      * A mod's menu a player has open, shown by Horizon and run by Java: on opening, the menu
      * type the player's game draws and its title (else null); the shown slots' items as SNBT

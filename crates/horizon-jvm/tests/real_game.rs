@@ -184,6 +184,8 @@ fn fabric_api_and_a_mod_on_the_real_game() {
         dimension: "minecraft:overworld".into(),
         game_mode: 0,
         health: 17.0,
+        food: 20,
+        saturation: 5.0,
         permission: 0,
         inventory: None,
     };

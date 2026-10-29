@@ -397,6 +397,11 @@ fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
                 fn_ptr: native_open_menu as *mut c_void,
             },
             NativeMethod {
+                name: "setFood".into(),
+                sig: "(Ljava/lang/String;IF)V".into(),
+                fn_ptr: native_set_food as *mut c_void,
+            },
+            NativeMethod {
                 name: "menuContent".into(),
                 sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)V"
                     .into(),
@@ -677,6 +682,25 @@ extern "system" fn native_open_menu(
             env.get_string(&title).ok().map(String::from)
         };
         events::push(events::Action::OpenMenu { uuid, menu, title });
+    }));
+}
+
+/// `Natives.setFood(String uuid, int food, float saturation)`.
+extern "system" fn native_set_food(
+    mut env: JNIEnv,
+    _class: JClass,
+    uuid: JString,
+    food: jni::sys::jint,
+    saturation: jni::sys::jfloat,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Ok(uuid) = env.get_string(&uuid).map(String::from) {
+            events::push(events::Action::Food {
+                uuid,
+                food,
+                saturation,
+            });
+        }
     }));
 }
 

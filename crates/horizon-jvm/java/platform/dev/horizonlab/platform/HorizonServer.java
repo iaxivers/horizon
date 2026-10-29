@@ -421,7 +421,7 @@ public final class HorizonServer {
      *     for a player whose inventory didn't change
      */
     public static void tick(long tick, boolean dedicated, String world, String[] ids, String[] names, String[] dimensions,
-                            double[] motion, int[] modes, float[] health, int[] permissions,
+                            double[] motion, int[] modes, float[] health, float[] food, int[] permissions,
                             int[] kinds, String[] who, String[] texts, int[] positions,
                             String[] inventories) {
         Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
@@ -478,12 +478,20 @@ public final class HorizonServer {
                 HorizonServices.known(uuid, names[i]);
                 if (player.level() != level) ((EntityAccess) player).horizon$setLevel(level);
                 player.setPosRaw(motion[i * 5], motion[i * 5 + 1], motion[i * 5 + 2]);
+                // Its box follows (setPosRaw leaves it): mods find players by it (a cabinet's viewers).
+                player.setBoundingBox(player.getDimensions(player.getPose()).makeBoundingBox(player.position()));
                 player.setYRot((float) motion[i * 5 + 3]);
                 player.setXRot((float) motion[i * 5 + 4]);
                 // A player's head and body face where Horizon's player looks.
                 player.setYHeadRot((float) motion[i * 5 + 3]);
                 player.setYBodyRot((float) motion[i * 5 + 3]);
                 player.setHealth(health[i]);
+                if (food != null && food.length >= (i + 1) * 2) {
+                    var data = player.getFoodData();
+                    data.setFoodLevel((int) food[i * 2]);
+                    data.setSaturation(food[i * 2 + 1]);
+                    FOOD_SEEN.put(uuid, new float[] {food[i * 2], food[i * 2 + 1]});
+                }
                 MODES.put(uuid, modes[i]);
                 // Horizon's game mode, so mods see it (ServerPlayer.setGameMode: abilities
                 // follow, and a mod that grants flight hears of the change).
@@ -1220,8 +1228,21 @@ public final class HorizonServer {
     }
 
     /** After mods ran: each slot a mod changed (given, taken, counted down) goes to Horizon. */
+    /** Each player's food as Horizon last gave it, to send back what mods change. */
+    private static final Map<UUID, float[]> FOOD_SEEN = new ConcurrentHashMap<>();
+
     private static void syncInventories() {
         syncMenus();
+        for (ServerPlayer player : new ArrayList<>(BY_UUID.values())) {
+            float[] seen = FOOD_SEEN.get(player.getUUID());
+            if (seen == null) continue;
+            var data = player.getFoodData();
+            if (data.getFoodLevel() != (int) seen[0] || data.getSaturationLevel() != seen[1]) {
+                seen[0] = data.getFoodLevel();
+                seen[1] = data.getSaturationLevel();
+                Natives.setFood(player.getStringUUID(), data.getFoodLevel(), data.getSaturationLevel());
+            }
+        }
         for (ServerPlayer player : new ArrayList<>(BY_UUID.values())) {
             ItemStack[] seen = SEEN.get(player.getUUID());
             if (seen == null) continue;
