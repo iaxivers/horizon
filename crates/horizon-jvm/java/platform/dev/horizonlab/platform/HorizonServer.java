@@ -693,6 +693,8 @@ public final class HorizonServer {
     private static final Map<UUID, Opening> OPENING = new ConcurrentHashMap<>();
     private static final Map<UUID, Shown> SHOWN = new ConcurrentHashMap<>();
     private static final Map<UUID, String> SHOWN_CONTENT = new ConcurrentHashMap<>();
+    /** Players whose window is sent again whole, changed or not (a click the menu refused). */
+    private static final Set<UUID> RESEND = ConcurrentHashMap.newKeySet();
 
     /** ClientboundOpenScreenPacket of a mod's menu: shown once the menu is the player's. */
     public static void menuOpened(ServerPlayer player, int containerId, String type, String title) {
@@ -770,7 +772,7 @@ public final class HorizonServer {
             String carried = snbt(menu.getCarried());
             all.append(carried);
             String now = all.toString();
-            if (now.equals(SHOWN_CONTENT.get(id))) continue;
+            if (now.equals(SHOWN_CONTENT.get(id)) && !RESEND.remove(id)) continue;
             boolean first = !SHOWN_CONTENT.containsKey(id);
             SHOWN_CONTENT.put(id, now);
             Natives.menuContent(player.getStringUUID(), first ? shown.type : null, first ? shown.title : null,
@@ -794,6 +796,9 @@ public final class HorizonServer {
             SHOWN_CONTENT.remove(player.getUUID()); // the window has it wrong: send it again
         } else if (input >= 0 && input < net.minecraft.world.inventory.ContainerInput.values().length) {
             var type = net.minecraft.world.inventory.ContainerInput.values()[input];
+            // The player's game guessed the click's result: whatever the menu made of it (a
+            // slot it refuses, a cooking pot's meal), the window is sent again as it is.
+            RESEND.add(player.getUUID());
             fire("AbstractContainerMenu.clicked", () -> {
                 if (menu.stillValid(player)) {
                     menu.clicked(at, button, type, player);
