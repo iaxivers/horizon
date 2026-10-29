@@ -52,7 +52,7 @@ public abstract class PacketListenerMixin {
                 HorizonServer.forwarded(game.player, open.getContainerId());
             } else {
                 // The mod's own menu (a cabinet's): Horizon shows it, Java runs it.
-                HorizonServer.menuOpened(game.player, open.getContainerId(), name, title);
+                HorizonServer.menuOpened(game.player, open.getContainerId(), name, title, open.getTitle());
             }
             return;
         }

@@ -688,7 +688,7 @@ public final class HorizonServer {
      */
     private record Shown(int containerId, String type, String title, int[] slots) {}
 
-    private record Opening(int containerId, String type, String title) {}
+    private record Opening(int containerId, String type, String title, net.minecraft.network.chat.Component text) {}
 
     private static final Map<UUID, Opening> OPENING = new ConcurrentHashMap<>();
     private static final Map<UUID, Shown> SHOWN = new ConcurrentHashMap<>();
@@ -698,7 +698,12 @@ public final class HorizonServer {
 
     /** ClientboundOpenScreenPacket of a mod's menu: shown once the menu is the player's. */
     public static void menuOpened(ServerPlayer player, int containerId, String type, String title) {
-        OPENING.put(player.getUUID(), new Opening(containerId, type, title));
+        menuOpened(player, containerId, type, title, net.minecraft.network.chat.Component.empty());
+    }
+
+    public static void menuOpened(ServerPlayer player, int containerId, String type, String title,
+                                  net.minecraft.network.chat.Component text) {
+        OPENING.put(player.getUUID(), new Opening(containerId, type, title, text));
     }
 
     public static boolean isShown(ServerPlayer player, int containerId) {
@@ -752,6 +757,12 @@ public final class HorizonServer {
                 OPENING.remove(id);
                 Shown shown = layout(menu, opening);
                 SHOWN.put(id, shown);
+                // The mod's own screen, in Horizon's headless client: its first frame, logged.
+                if (HorizonClient.openScreen(player, menu, opening.text())) {
+                    String frame = HorizonClient.frame(id, 0, 0);
+                    Natives.log("Horizon's client: " + opening.type() + "'s own screen opened ("
+                            + (frame == null ? 0 : frame.length()) + " bytes a frame)");
+                }
                 SHOWN_CONTENT.remove(id);
             }
             Shown shown = SHOWN.get(id);
@@ -840,7 +851,7 @@ public final class HorizonServer {
                 int containerId = (int) c.getMethod("containerId").invoke(payload);
                 Object title = c.getMethod("title").invoke(payload);
                 menuOpened(player, containerId, String.valueOf(type),
-                        json((net.minecraft.network.chat.Component) title));
+                        json((net.minecraft.network.chat.Component) title), (net.minecraft.network.chat.Component) title);
                 return;
             } catch (ReflectiveOperationException e) {
                 Natives.log("Java mods: a menu's opening could not be read: " + e);
