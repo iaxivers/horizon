@@ -154,6 +154,11 @@ pub(crate) fn push(action: Action) {
 }
 
 /// The actions mods asked for since the last call, oldest first.
+/// Queues an action again (one the game took but leaves for later).
+pub fn push_action(action: Action) {
+    push(action);
+}
+
 pub fn take_actions() -> Vec<Action> {
     std::mem::take(&mut *ACTIONS.lock().unwrap_or_else(|e| e.into_inner()))
 }
@@ -456,4 +461,60 @@ pub fn before_break(
         .z()
     })?;
     Ok(allowed.unwrap_or(true))
+}
+
+/// What mods made of a player's use of a block ([`use_block`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UseResult {
+    /// No mod took the click: the game uses the block.
+    Pass,
+    /// A mod took it (UseBlockCallback's SUCCESS, FAIL, ...): the game does nothing more.
+    Taken,
+    /// A mod took it, and the player's arm swings.
+    TakenSwing,
+}
+
+/// A player uses (right-clicks) a block: vanilla's `ServerPlayerGameMode.useItemOn` up to the
+/// end of the mods' injections at its head (Fabric API's `UseBlockCallback`). `face` is
+/// vanilla's `Direction` id (0 down, 1 up, 2 north, 3 south, 4 west, 5 east), `hand` 0 main,
+/// 1 off, `selected` the hotbar slot. Run it inside [`crate::world::with_blocks`].
+#[allow(clippy::too_many_arguments)]
+pub fn use_block(
+    uuid: &str,
+    dimension: &str,
+    position: [i32; 3],
+    face: i32,
+    hit: [f64; 3],
+    hand: i32,
+    selected: i32,
+) -> Result<UseResult, String> {
+    let [x, y, z] = position;
+    let result = with_server(|env, class| {
+        let uuid = env.new_string(uuid)?;
+        let dimension = env.new_string(dimension)?;
+        env.call_static_method(
+            class,
+            "useBlock",
+            "(Ljava/lang/String;Ljava/lang/String;IIIIDDDII)I",
+            &[
+                JValue::Object(&uuid),
+                JValue::Object(&dimension),
+                JValue::Int(x),
+                JValue::Int(y),
+                JValue::Int(z),
+                JValue::Int(face),
+                JValue::Double(hit[0]),
+                JValue::Double(hit[1]),
+                JValue::Double(hit[2]),
+                JValue::Int(hand),
+                JValue::Int(selected),
+            ],
+        )?
+        .i()
+    })?;
+    Ok(match result {
+        Some(2) => UseResult::TakenSwing,
+        Some(1) => UseResult::Taken,
+        _ => UseResult::Pass,
+    })
 }

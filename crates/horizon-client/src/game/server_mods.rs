@@ -51,6 +51,15 @@ impl Game<'_> {
     pub(super) fn java_before_break(&mut self, _pos: [i32; 3], _state: BlockStateId) -> bool {
         true
     }
+    pub(super) fn java_use_block(
+        &mut self,
+        _pos: [i32; 3],
+        _face: i32,
+        _point: [f64; 3],
+        _off_hand: bool,
+    ) -> Option<bool> {
+        None
+    }
 }
 
 #[cfg(feature = "mods")]
@@ -957,6 +966,98 @@ mod run {
             horizon_jvm::world::with_blocks(&JavaBlocks { registry, dims }, f)
         }
 
+        /// The slot changes Java mods made to the player acting now, made at once in the
+        /// inventory in place (a guest's is swapped into the game for its turn, and put back
+        /// after it): what the game then does to it (an axe's wear for the break) adds to them.
+        #[cfg(feature = "java-mods")]
+        fn apply_java_actor_slots(&mut self, uuid: &str) {
+            let mut later = Vec::new();
+            for action in horizon_jvm::events::take_actions() {
+                let horizon_jvm::events::Action::SetSlot {
+                    uuid: of,
+                    slot,
+                    item,
+                } = &action
+                else {
+                    later.push(action);
+                    continue;
+                };
+                if of != uuid {
+                    later.push(action);
+                    continue;
+                }
+                let stack = match item {
+                    Some(snbt) => match horizon_world::nbt::parse_snbt(snbt) {
+                        Ok((tag, _)) => horizon_items::item_nbt::item_from_nbt(&tag),
+                        Err(_) => continue,
+                    },
+                    None => None,
+                };
+                let at = match *slot {
+                    0..=35 => self.inventory.get_mut(*slot),
+                    36..=39 => self.armor.get_mut(39 - *slot),
+                    40 => Some(&mut self.offhand),
+                    _ => None,
+                };
+                if let Some(at) = at {
+                    *at = stack;
+                }
+            }
+            for action in later {
+                horizon_jvm::events::push_action(action);
+            }
+        }
+
+        /// The player acting now uses (right-clicks) the block `pos` on `face` (vanilla's
+        /// `Direction` id) at `point`: vanilla's `useItemOn` head for Java mods (Fabric API's
+        /// `UseBlockCallback`, library events). Some(swing) when a mod took the click, so the
+        /// game does nothing more.
+        pub(in crate::game) fn java_use_block(
+            &mut self,
+            pos: [i32; 3],
+            face: i32,
+            point: [f64; 3],
+            off_hand: bool,
+        ) -> Option<bool> {
+            #[cfg(feature = "java-mods")]
+            {
+                if !java_mods_on() || !self.hears_players() {
+                    return None;
+                }
+                let uuid = self
+                    .lan_acting_uuid
+                    .map(uuid_string)
+                    .unwrap_or_else(|| self.player_uuid_string());
+                let (dim, selected) = (self.dim.id(), self.selected as i32);
+                let used = self.with_java_world(|| {
+                    horizon_jvm::events::use_block(
+                        &uuid,
+                        dim,
+                        pos,
+                        face,
+                        point,
+                        i32::from(off_hand),
+                        selected,
+                    )
+                });
+                self.apply_java_actor_slots(&uuid);
+                match used {
+                    Ok(horizon_jvm::events::UseResult::Pass) => None,
+                    Ok(horizon_jvm::events::UseResult::Taken) => Some(false),
+                    Ok(horizon_jvm::events::UseResult::TakenSwing) => Some(true),
+                    Err(e) => {
+                        log::warn!("Java mods: using a block failed: {e}");
+                        None
+                    }
+                }
+            }
+            #[cfg(not(feature = "java-mods"))]
+            {
+                let _ = (pos, face, point, off_hand);
+                None
+            }
+        }
+
         /// `PlayerBlockBreakEvents.BEFORE` for the player acting now, who is about to break
         /// `state` at `pos`: false when a Java mod cancels the break. What the mods change
         /// (a tree feller's logs) is made with this tick's other actions.
@@ -976,9 +1077,10 @@ mod run {
                     .unwrap_or_else(|| self.player_uuid_string());
                 let state = state_string(self.pack.assets.registry, state);
                 let dim = self.dim.id();
-                match self
-                    .with_java_world(|| horizon_jvm::events::before_break(&uuid, dim, pos, &state))
-                {
+                let allowed = self
+                    .with_java_world(|| horizon_jvm::events::before_break(&uuid, dim, pos, &state));
+                self.apply_java_actor_slots(&uuid);
+                match allowed {
                     Ok(allowed) => allowed,
                     Err(e) => {
                         log::warn!("Java mods: a block break failed: {e}");

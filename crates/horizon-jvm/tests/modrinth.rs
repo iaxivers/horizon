@@ -5,6 +5,9 @@
 //! - `/command args`: Steve types it;
 //! - `ticks N`: N server ticks pass;
 //! - `move x y z`: Steve is now there (Horizon moved him);
+//! - `break x y z state`: Steve breaks that block (PlayerBlockBreakEvents.BEFORE, then
+//!   AFTER if no mod cancelled), in a world of an oak tree at 0 64 0 (logs to 69, leaves);
+//! - `clear`: Steve's inventory is now empty (Horizon emptied it);
 //! - `mode N`: Steve's game mode is now N (0 survival, 1 creative, 2 adventure, 3 spectator);
 //! - `say text`: Steve chats.
 //!
@@ -86,10 +89,41 @@ fn real_mods_in_a_scripted_session() {
         game_mode: 0,
         health: 20.0,
         permission: 4,
-        inventory: None,
+        // An iron axe in hand (FallingTree fells with an axe), the rest empty.
+        // HORIZON_TEST_EMPTY=1: nothing at all (a first join, for kit mods).
+        inventory: Some(
+            std::iter::once(if std::env::var_os("HORIZON_TEST_EMPTY").is_some() {
+                String::new()
+            } else {
+                r#"{id:"minecraft:iron_axe",count:1}"#.to_string()
+            })
+            .chain(std::iter::repeat_n(
+                String::new(),
+                horizon_jvm::events::INVENTORY_SLOTS - 1,
+            ))
+            .collect(),
+        ),
     };
     let uuid = steve.uuid.clone();
     let world = dir.join("world");
+    // The world mods read: an oak tree on grass, its trunk at 0 64..=69 0 under leaves.
+    struct Tree;
+    impl horizon_jvm::world::Blocks for Tree {
+        fn block(&self, _: &str, x: i32, y: i32, z: i32) -> Option<String> {
+            Some(
+                match (x, y, z) {
+                    (0, 64..=69, 0) => "minecraft:oak_log[axis=y]",
+                    (-2..=2, 67..=70, -2..=2) => {
+                        "minecraft:oak_leaves[distance=1,persistent=false,waterlogged=false]"
+                    }
+                    (_, ..=63, _) => "minecraft:grass_block[snowy=false]",
+                    _ => "minecraft:air",
+                }
+                .into(),
+            )
+        }
+    }
+    let world_view = Tree;
     let mut tick = 0i64;
     let step = |steve: &Player, events: &[Event], tick: &mut i64| {
         *tick += 1;
@@ -125,6 +159,30 @@ fn real_mods_in_a_scripted_session() {
             let v: Vec<f64> = xyz.split_whitespace().map(|v| v.parse().unwrap()).collect();
             steve.position = [v[0], v[1], v[2]];
             show(line, step(&steve, &[], &mut tick));
+        } else if let Some(rest) = line.strip_prefix("break ") {
+            let mut words = rest.split_whitespace();
+            let mut n = || words.next().unwrap().parse::<i32>().unwrap();
+            let position = [n(), n(), n()];
+            let state = words.next().unwrap_or("minecraft:stone").to_string();
+            let allowed = horizon_jvm::world::with_blocks(&world_view, || {
+                horizon_jvm::events::before_break(&uuid, "minecraft:overworld", position, &state)
+            })
+            .unwrap();
+            let mut actions = horizon_jvm::events::take_actions();
+            let broke = Event::Block {
+                uuid: uuid.clone(),
+                position,
+                state,
+                placed: false,
+            };
+            if allowed {
+                actions.extend(step(&steve, &[broke], &mut tick));
+            }
+            show(&format!("{line} (allowed: {allowed})"), actions);
+        } else if line == "clear" {
+            steve.inventory = Some(vec![String::new(); horizon_jvm::events::INVENTORY_SLOTS]);
+            show(line, step(&steve, &[], &mut tick));
+            steve.inventory = None;
         } else if let Some(mode) = line.strip_prefix("mode ") {
             steve.game_mode = mode.parse().unwrap();
             show(line, step(&steve, &[], &mut tick));

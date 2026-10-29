@@ -36,4 +36,8 @@ public interface MinecraftServerAccess {
     @Mutable
     @Accessor("levels")
     void horizon$setLevels(Map<ResourceKey<Level>, ServerLevel> levels);
+
+    /** The server's tick count (MinecraftServer.getTickCount): Horizon's ticks. */
+    @Accessor("tickCount")
+    void horizon$setTickCount(int ticks);
 }

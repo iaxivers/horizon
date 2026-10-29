@@ -1185,6 +1185,12 @@ impl Game<'_> {
                     let logged = self.world.block_log.as_ref().map_or(0, Vec::len);
                     let heard = self.audio.capture.as_ref().map_or(0, Vec::len);
                     let swung = self.as_guest(host, conn, |g| {
+                        // ServerPlayerGameMode.useItemOn's head: a Java mod may take the click.
+                        if let Some(swing) =
+                            g.java_use_block(hit.pos, p.face, hit.point, hand == Hand::Off)
+                        {
+                            return swing;
+                        }
                         g.forced_hit = Some(hit);
                         g.guest_use = Some(GuestUse::OnBlock(hand));
                         let swings = g.swings_started;

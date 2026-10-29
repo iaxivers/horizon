@@ -17,7 +17,7 @@ import net.minecraft.server.level.ServerPlayer;
 /**
  * A server-side Fabric mod written the usual way, against vanilla and Fabric API only: it
  * greets players who join, answers chat, reports broken blocks, counts ticks and has a
- * command, /events (whoami, add a b, echo text, count, kit, take); breaking a log fells the logs above it, and
+ * command, /events (whoami, add a b, echo text, count, kit, take); breaking a birch log fells the birch logs above it, and
  * diamond ore can't be broken. It knows
  * nothing about Horizon; the bridge's tests (tests/real_game.rs) and players run it as it is.
  */
@@ -106,6 +106,16 @@ public class EventsMod implements ModInitializer {
                                             + StringArgumentType.getString(context, "text")), false);
                                     return 1;
                                 })))));
+        // Right-clicking a bell rings it the mod's way (the game does nothing more); other
+        // blocks are the game's.
+        net.fabricmc.fabric.api.event.player.UseBlockCallback.EVENT.register((player, level, hand, hit) -> {
+            if (level.isClientSide() || !level.getBlockState(hit.getBlockPos()).is(net.minecraft.world.level.block.Blocks.BELL)) {
+                return net.minecraft.world.InteractionResult.PASS;
+            }
+            player.sendSystemMessage(Component.literal("[events] ding, with "
+                    + BuiltInRegistries.ITEM.getKey(player.getItemInHand(hand).getItem()) + " in hand"));
+            return net.minecraft.world.InteractionResult.SUCCESS;
+        });
         // A tree feller, as FallingTree does it: breaking a log breaks the logs above it, with
         // their drops. And diamond ore can't be broken.
         PlayerBlockBreakEvents.BEFORE.register((level, player, pos, state, blockEntity) -> {
@@ -113,10 +123,11 @@ public class EventsMod implements ModInitializer {
                 player.sendSystemMessage(Component.literal("[events] no diamonds for you"));
                 return false;
             }
-            if (!state.is(net.minecraft.tags.BlockTags.LOGS)) return true;
+            // Birch only: real tree mods (FallingTree) take the others.
+            if (!state.is(net.minecraft.world.level.block.Blocks.BIRCH_LOG)) return true;
             int felled = 0;
             net.minecraft.core.BlockPos above = pos.above();
-            while (level.isLoaded(above) && level.getBlockState(above).is(net.minecraft.tags.BlockTags.LOGS) && felled < 64) {
+            while (level.isLoaded(above) && level.getBlockState(above).is(net.minecraft.world.level.block.Blocks.BIRCH_LOG) && felled < 64) {
                 level.destroyBlock(above, true, player);
                 felled++;
                 above = above.above();

@@ -109,12 +109,20 @@ public final class HorizonServer {
 
     /** A player's stats: none kept yet (Horizon keeps its own). */
     public static net.minecraft.stats.ServerStatsCounter stats(net.minecraft.world.entity.player.Player player) {
-        return STATS.computeIfAbsent(player.getUUID(), u -> allocate(net.minecraft.stats.ServerStatsCounter.class));
+        // The real counter (mods award stats), on a file that isn't there: Horizon keeps the
+        // player's statistics, this one is never read or saved.
+        return STATS.computeIfAbsent(player.getUUID(), u -> new net.minecraft.stats.ServerStatsCounter(server,
+                java.nio.file.Paths.get(System.getProperty("java.io.tmpdir"), "horizon-mirror", u + ".json")));
     }
 
     /** A player's advancements: none kept yet (Horizon keeps its own). */
     public static net.minecraft.server.PlayerAdvancements advancements(ServerPlayer player) {
-        return ADVANCEMENTS.computeIfAbsent(player.getUUID(), u -> allocate(net.minecraft.server.PlayerAdvancements.class));
+        return ADVANCEMENTS.computeIfAbsent(player.getUUID(), u -> {
+            var advancements = allocate(net.minecraft.server.PlayerAdvancements.class);
+            // No trigger listens (Horizon awards the real advancements): triggers find none.
+            ((dev.horizonlab.platform.mixin.PlayerAdvancementsAccess) advancements).horizon$setActiveTriggers(new java.util.HashMap<>());
+            return advancements;
+        });
     }
 
     /** The mirrored server, once Horizon's first tick made it. */
@@ -216,6 +224,11 @@ public final class HorizonServer {
         return player;
     }
 
+    /** A packet sender that sends nothing (Fabric networking to a client with no mod channels). */
+    public static PacketSender noPackets() {
+        return NO_PACKETS;
+    }
+
     private static final PacketSender NO_PACKETS = (PacketSender) Proxy.newProxyInstance(
             PacketSender.class.getClassLoader(),
             new Class<?>[] {PacketSender.class},
@@ -262,6 +275,7 @@ public final class HorizonServer {
                             int[] kinds, String[] who, String[] texts, int[] positions,
                             String[] inventories) {
         Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        serverThread = Thread.currentThread();
         try {
             if (server == null) setUp(dedicated);
         } catch (Throwable t) {
@@ -271,6 +285,8 @@ public final class HorizonServer {
         }
         MinecraftServer server = HorizonServer.server;
         if (world != null && !world.isEmpty()) worldDir = java.nio.file.Paths.get(world).toAbsolutePath();
+        // The server's tick count follows Horizon's (mods time their tasks with it).
+        ((MinecraftServerAccess) server).horizon$setTickCount((int) tick);
         if (!started) {
             started = true;
             fire("ServerLifecycleEvents.SERVER_STARTING", () -> ServerLifecycleEvents.SERVER_STARTING.invoker().onServerStarting(server));
@@ -385,6 +401,7 @@ public final class HorizonServer {
             fire("ServerTickEvents.END_LEVEL_TICK", () -> ServerTickEvents.END_LEVEL_TICK.invoker().onEndTick(level));
         }
         fire("ServerTickEvents.END_SERVER_TICK", () -> ServerTickEvents.END_SERVER_TICK.invoker().onEndTick(server));
+        runTasks();
         syncInventories();
     }
 
@@ -657,6 +674,30 @@ public final class HorizonServer {
     }
 
     /**
+     * A player uses a block (right-click), called by Horizon before it does: vanilla's
+     * ServerPlayerGameMode.useItemOn runs on the mirrored player up to the end of the mods'
+     * injections at its head (GameModeMixin). 0: no mod took the click (Horizon uses the
+     * block); 1: a mod took it; 2: a mod took it and the arm swings.
+     */
+    public static int useBlock(String uuid, String dimension, int x, int y, int z, int face,
+                               double hitX, double hitY, double hitZ, int hand, int selected) {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        ServerPlayer player = BY_UUID.get(UUID.fromString(uuid));
+        if (player == null) return 0;
+        ServerLevel level = level(dimension);
+        if (selected >= 0 && selected < 9) player.getInventory().setSelectedSlot(selected);
+        var interaction = hand == 1 ? net.minecraft.world.InteractionHand.OFF_HAND : net.minecraft.world.InteractionHand.MAIN_HAND;
+        var hit = new net.minecraft.world.phys.BlockHitResult(new net.minecraft.world.phys.Vec3(hitX, hitY, hitZ),
+                net.minecraft.core.Direction.from3DDataValue(face), new BlockPos(x, y, z), false);
+        net.minecraft.world.InteractionResult[] result = {net.minecraft.world.InteractionResult.PASS};
+        fire("ServerPlayerGameMode.useItemOn", () -> result[0] =
+                player.gameMode.useItemOn(player, level, player.getItemInHand(interaction), interaction, hit));
+        syncInventories();
+        if (!result[0].consumesAction() && !(result[0] instanceof net.minecraft.world.InteractionResult.Fail)) return 0;
+        return result[0] instanceof net.minecraft.world.InteractionResult.Success success && success.shouldSwing() ? 2 : 1;
+    }
+
+    /**
      * PlayerBlockBreakEvents.BEFORE, called by Horizon before a player breaks a block: false
      * when a mod cancels the break.
      */
@@ -738,6 +779,30 @@ public final class HorizonServer {
                 Natives.setSlot(player.getStringUUID(), slot, snbt(now));
                 seen[slot] = now.copy();
             }
+        }
+    }
+
+    // ---- The server's tasks ---------------------------------------------------------------
+
+    /** What mods scheduled on the server (server.execute), run at the end of the tick. */
+    private static final java.util.concurrent.ConcurrentLinkedQueue<Runnable> TASKS = new java.util.concurrent.ConcurrentLinkedQueue<>();
+    /** The thread Horizon calls in on: the mirrored server's thread, to mods. */
+    private static volatile Thread serverThread;
+
+    public static void schedule(Runnable task) {
+        if (TASKS.size() < 65536) TASKS.add(task);
+    }
+
+    public static boolean onServerThread() {
+        return Thread.currentThread() == serverThread;
+    }
+
+    /** Runs the tasks mods scheduled (those they schedule meanwhile wait for the next tick). */
+    private static void runTasks() {
+        for (int n = TASKS.size(); n > 0; n--) {
+            Runnable task = TASKS.poll();
+            if (task == null) break;
+            fire("a scheduled server task", task);
         }
     }
 }

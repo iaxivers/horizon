@@ -352,7 +352,7 @@ fn fabric_api_and_a_mod_on_the_real_game() {
         "{actions:?}"
     );
 
-    // Horizon's world, as mods read it: a three-log tree at 0 64..=66 0 on grass, diamond
+    // Horizon's world, as mods read it: a three-log birch at 0 64..=66 0 on grass, diamond
     // ore beside it.
     struct World;
     impl horizon_jvm::world::Blocks for World {
@@ -360,9 +360,10 @@ fn fabric_api_and_a_mod_on_the_real_game() {
             assert_eq!(dimension, "minecraft:overworld");
             Some(
                 match (x, y, z) {
-                    (0, 64..=66, 0) => "minecraft:oak_log[axis=y]",
+                    (0, 64..=66, 0) => "minecraft:birch_log[axis=y]",
                     (0, 63, 0) => "minecraft:grass_block[snowy=false]",
                     (2, 64, 0) => "minecraft:diamond_ore",
+                    (3, 64, 0) => "minecraft:bell[attachment=floor,facing=north,powered=false]",
                     _ => "minecraft:air",
                 }
                 .into(),
@@ -374,7 +375,7 @@ fn fabric_api_and_a_mod_on_the_real_game() {
             &uuid,
             "minecraft:overworld",
             [0, 64, 0],
-            "minecraft:oak_log[axis=y]",
+            "minecraft:birch_log[axis=y]",
         )
     })
     .unwrap();
@@ -405,13 +406,42 @@ fn fabric_api_and_a_mod_on_the_real_game() {
         .collect();
     assert_eq!(
         drops,
-        vec![("minecraft:oak_log", 1, 65), ("minecraft:oak_log", 1, 66)],
+        vec![
+            ("minecraft:birch_log", 1, 65),
+            ("minecraft:birch_log", 1, 66)
+        ],
         "{actions:?}"
     );
     assert!(actions.contains(&Action::Tell {
         uuid: uuid.clone(),
         text: "[events] felled 2 logs".into()
     }));
+    // Using blocks: the bell is the mod's (UseBlockCallback, at the head of useItemOn), the
+    // log the game's.
+    let used = |at: [i32; 3]| {
+        horizon_jvm::world::with_blocks(&World, || {
+            horizon_jvm::events::use_block(
+                &uuid,
+                "minecraft:overworld",
+                at,
+                1,
+                [0.5, 1.0, 0.5],
+                0,
+                0,
+            )
+        })
+        .unwrap()
+    };
+    assert_eq!(used([3, 64, 0]), horizon_jvm::events::UseResult::TakenSwing);
+    assert_eq!(
+        horizon_jvm::events::take_actions(),
+        vec![Action::Tell {
+            uuid: uuid.clone(),
+            text: "[events] ding, with minecraft:stone in hand".into()
+        }]
+    );
+    assert_eq!(used([0, 64, 0]), horizon_jvm::events::UseResult::Pass);
+    assert!(horizon_jvm::events::take_actions().is_empty());
     let allowed = horizon_jvm::world::with_blocks(&World, || {
         horizon_jvm::events::before_break(
             &uuid,
