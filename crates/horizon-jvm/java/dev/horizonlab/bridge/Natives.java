@@ -25,6 +25,12 @@ public final class Natives {
      */
     public static native void tabName(String uuid, String json);
 
+    /**
+     * A mod opened a menu for a player (ServerPlayer.openMenu): its MenuType's id
+     * ("minecraft:crafting") and title as a JSON text component. Horizon opens its own.
+     */
+    public static native void openMenu(String uuid, String menu, String title);
+
     /** A system message to every player on the server, and its log. */
     public static native void broadcast(String text);
 

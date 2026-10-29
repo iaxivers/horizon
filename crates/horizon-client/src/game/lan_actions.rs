@@ -32,6 +32,9 @@ use winit::keyboard::KeyCode;
 /// Per-guest state of the gameplay code that lives outside `Guest`.
 #[derive(Default)]
 pub(super) struct GuestPlay {
+    /// The window of a menu a server mod opened (a Java mod's `/workbench`): no block
+    /// behind it, so it stays valid wherever the guest goes (the mod's `stillValid`).
+    pub(super) mod_window: Option<i32>,
     /// The sign this guest may write on (`SignBlockEntity.playerWhoMayEdit`).
     pub(super) sign_editing: Option<[i32; 3]>,
     mining: Option<Mining>,

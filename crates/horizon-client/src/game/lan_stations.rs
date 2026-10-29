@@ -587,6 +587,10 @@ impl Game<'_> {
             let Some(gs) = host.play.get(&conn).and_then(|p| p.station.as_ref()) else {
                 continue;
             };
+            // A server mod's station menu has no block behind it.
+            if host.play.get(&conn).and_then(|p| p.mod_window) == Some(gs.window) {
+                continue;
+            }
             let [x, y, z] = gs.pos;
             let name = &self.res.facts().get(self.world.block(x, y, z)).name;
             let block = StationKind::from_block(name) == Some(gs.kind);

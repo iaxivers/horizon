@@ -211,6 +211,31 @@ impl Hub {
         slots: Slots,
         items: Vec<Option<ItemStack>>,
     ) {
+        self.open_container_at(conn, menu_kind, title, Some(pos), slots, items);
+    }
+
+    /// Open a container with no block in the world (a server mod's `/enderchest`): valid
+    /// wherever the guest goes.
+    pub fn open_unplaced_container(
+        &mut self,
+        conn: u32,
+        menu_kind: &str,
+        title: Tag,
+        slots: Slots,
+        items: Vec<Option<ItemStack>>,
+    ) {
+        self.open_container_at(conn, menu_kind, title, None, slots, items);
+    }
+
+    fn open_container_at(
+        &mut self,
+        conn: u32,
+        menu_kind: &str,
+        title: Tag,
+        pos: Option<(i32, i32, i32)>,
+        slots: Slots,
+        items: Vec<Option<ItemStack>>,
+    ) {
         let Some(kind) = self
             .sync
             .builtin
@@ -234,7 +259,7 @@ impl Hub {
         g.menu = Some(Menu {
             window,
             kind,
-            pos: Some(pos),
+            pos,
             slots,
             size: items.len(),
             state: 0,

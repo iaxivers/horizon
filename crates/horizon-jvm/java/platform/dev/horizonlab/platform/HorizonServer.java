@@ -277,6 +277,8 @@ public final class HorizonServer {
             fire("ServerTickEvents.START_LEVEL_TICK", () -> ServerTickEvents.START_LEVEL_TICK.invoker().onStartTick(level));
         }
 
+        closeForwarded();
+
         // Mirror the players: those still on, as Horizon gives them.
         Map<UUID, ServerPlayer> now = new LinkedHashMap<>();
         for (int i = 0; i < ids.length; i++) {
@@ -394,6 +396,40 @@ public final class HorizonServer {
     private static final Map<String, Integer> DROPPED = new ConcurrentHashMap<>();
 
     /** A packet a mod sent a mirrored player that Horizon doesn't take yet: logged once per type. */
+    /** Per player: the window of a menu a mod opened that Horizon now shows instead. */
+    private static final Map<UUID, Integer> FORWARDED = new ConcurrentHashMap<>();
+
+    /** A mod's menu for {@code player} (window {@code containerId}) went to Horizon. */
+    public static void forwarded(ServerPlayer player, int containerId) {
+        FORWARDED.put(player.getUUID(), containerId);
+    }
+
+    public static boolean isForwarded(ServerPlayer player, int containerId) {
+        Integer window = FORWARDED.get(player.getUUID());
+        return window != null && containerId >= 0 && window == containerId;
+    }
+
+    /**
+     * Closes the mirror's copies of the menus Horizon shows (AbstractContainerMenu.removed),
+     * so the next menu a mod opens starts from the player's inventory, as vanilla's do.
+     */
+    private static void closeForwarded() {
+        for (var entry : new ArrayList<>(FORWARDED.entrySet())) {
+            ServerPlayer player = KNOWN.get(entry.getKey());
+            FORWARDED.remove(entry.getKey());
+            if (player == null || player.containerMenu == player.inventoryMenu) continue;
+            if (player.containerMenu.containerId != entry.getValue()) continue;
+            syncing = true;
+            try {
+                player.doCloseContainer();
+            } catch (Throwable t) {
+                Natives.log("Closing a mod's menu failed: " + t);
+            } finally {
+                syncing = false;
+            }
+        }
+    }
+
     /** True while Horizon's own state is copied in: the packets that sends are Horizon's already. */
     private static boolean syncing;
 

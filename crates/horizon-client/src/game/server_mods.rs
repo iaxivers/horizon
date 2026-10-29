@@ -576,6 +576,14 @@ mod run {
                             });
                         host.hub.set_tab_name(id, name);
                     }
+                    horizon_jvm::events::Action::OpenMenu { uuid, menu, title } => {
+                        if let Some(h) = host.as_deref_mut() {
+                            self.java_open_menu(h, &uuid, &menu, title.as_deref());
+                        } else if let Some(mut lan) = self.lan.take() {
+                            self.java_open_menu(&mut lan, &uuid, &menu, title.as_deref());
+                            self.lan = Some(lan);
+                        }
+                    }
                     horizon_jvm::events::Action::Broadcast { text } => {
                         if self.options.dedicated.is_some() {
                             super::super::dedicated::log("INFO", &text);
@@ -592,6 +600,74 @@ mod run {
                     }
                 }
             }
+        }
+
+        /// Opens Horizon's own menu for one a Java mod opened (`ServerPlayer.openMenu`):
+        /// a crafting grid, the player's ender chest, a stonecutter, grindstone, loom,
+        /// cartography or smithing table, with no block behind it (`/workbench`). Other
+        /// menus are the mod's own; Horizon can't show those yet.
+        #[cfg(feature = "java-mods")]
+        fn java_open_menu(
+            &mut self,
+            host: &mut LanHost,
+            uuid: &str,
+            menu: &str,
+            title: Option<&str>,
+        ) {
+            use super::super::stations::{Kind, Station};
+            let Some(g) = host.hub.guests.iter().find(|g| uuid_string(g.uuid) == uuid) else {
+                return;
+            };
+            let conn = g.conn;
+            let at = g.position.map(|v| v.floor() as i32);
+            let ender_items = g.ender_items.clone();
+            let title_json = title
+                .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+                .unwrap_or(serde_json::Value::Null);
+            let station = match menu {
+                "minecraft:stonecutter" => Some(Kind::Stonecutter),
+                "minecraft:grindstone" => Some(Kind::Grindstone),
+                "minecraft:loom" => Some(Kind::Loom),
+                "minecraft:cartography_table" => Some(Kind::Cartography),
+                "minecraft:smithing" => Some(Kind::Smithing),
+                _ => None,
+            };
+            if menu == "minecraft:crafting" {
+                self.lan_open_crafting(host, conn, at);
+            } else if let Some(kind) = station {
+                self.lan_open_station(host, conn, &Station::new(kind, at));
+            } else if menu == "minecraft:generic_9x3"
+                && title_json.to_string().contains("container.enderchest")
+            {
+                // PlayerEnderChestContainer: the guest's own ender chest items.
+                self.guest_container_closed(host, conn);
+                self.lan_station_closed(host, conn, None);
+                self.lan_crafting_closed(host, conn, None);
+                host.hub.open_unplaced_container(
+                    conn,
+                    menu,
+                    horizon_client::lan::data::component_nbt(&title_json),
+                    horizon_client::lan::menu::Slots::Ender,
+                    ender_items,
+                );
+            } else {
+                static TOLD: std::sync::OnceLock<
+                    std::sync::Mutex<std::collections::HashSet<String>>,
+                > = std::sync::OnceLock::new();
+                let told = TOLD.get_or_init(Default::default);
+                if told
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(menu.to_string())
+                {
+                    log::info!(
+                        "Java mods: a mod opened a {menu} menu; Horizon shows only vanilla's own menus yet"
+                    );
+                }
+                return;
+            }
+            let window = host.hub.guest(conn).map(|g| g.next_window);
+            host.play.entry(conn).or_default().mod_window = window;
         }
 
         /// UUIDs in a component (a hover's `show_entity`) as vanilla's NBT has them: int arrays

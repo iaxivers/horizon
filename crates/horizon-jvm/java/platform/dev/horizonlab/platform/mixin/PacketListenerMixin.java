@@ -4,6 +4,7 @@ import dev.horizonlab.bridge.Natives;
 import dev.horizonlab.platform.HorizonServer;
 import io.netty.channel.ChannelFutureListener;
 import net.minecraft.network.protocol.Packet;
+import net.minecraft.network.protocol.game.ClientboundOpenScreenPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerAbilitiesPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket;
 import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
@@ -40,6 +41,19 @@ public abstract class PacketListenerMixin {
             Natives.tell(game.player.getStringUUID(), chat.content().getString());
             return;
         }
+        if (packet instanceof ClientboundOpenScreenPacket open && self instanceof ServerGamePacketListenerImpl game
+                && game.player != null) {
+            var type = net.minecraft.core.registries.BuiltInRegistries.MENU.getKey(open.getType());
+            Natives.openMenu(game.player.getStringUUID(), type == null ? "" : type.toString(),
+                    HorizonServer.json(open.getTitle()));
+            HorizonServer.forwarded(game.player, open.getContainerId());
+            return;
+        }
+        if (self instanceof ServerGamePacketListenerImpl game && game.player != null
+                && HorizonServer.isForwarded(game.player, containerId(packet))) {
+            // The forwarded menu's content: Horizon's menu has its own.
+            return;
+        }
         if (packet instanceof ClientboundPlayerAbilitiesPacket abilities && self instanceof ServerGamePacketListenerImpl game
                 && game.player != null) {
             int flags = (abilities.isInvulnerable() ? 1 : 0) | (abilities.isFlying() ? 2 : 0)
@@ -56,5 +70,14 @@ public abstract class PacketListenerMixin {
             if (info.actions().size() == 1) return;
         }
         HorizonServer.dropped(packet);
+    }
+
+    /** The window a container packet is for, or -1. */
+    private static int containerId(Packet<?> packet) {
+        if (packet instanceof net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket p) return p.containerId();
+        if (packet instanceof net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket p) return p.getContainerId();
+        if (packet instanceof net.minecraft.network.protocol.game.ClientboundContainerSetDataPacket p) return p.getContainerId();
+        if (packet instanceof net.minecraft.network.protocol.game.ClientboundContainerClosePacket p) return p.getContainerId();
+        return -1;
     }
 }

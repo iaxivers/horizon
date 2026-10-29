@@ -87,6 +87,15 @@ pub enum Action {
     /// the tab list (`ServerPlayer.getTabListDisplayName`), as a JSON text component; None
     /// for the player's own name.
     TabName { uuid: String, json: Option<String> },
+    /// `ServerPlayer.openMenu`: a mod opened a menu for the player (`/workbench`). Horizon
+    /// opens its own menu of that type, when it has one.
+    OpenMenu {
+        uuid: String,
+        /// The `MenuType`'s id, `minecraft:crafting`, ...
+        menu: String,
+        /// The title, a JSON text component.
+        title: Option<String>,
+    },
 }
 
 static ACTIONS: Mutex<Vec<Action>> = Mutex::new(Vec::new());

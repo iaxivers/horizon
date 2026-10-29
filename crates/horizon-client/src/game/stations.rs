@@ -159,7 +159,7 @@ pub(super) struct Station {
     pub(super) loom: super::loom::LoomState,
 }
 impl Station {
-    fn new(kind: Kind, pos: [i32; 3]) -> Self {
+    pub(super) fn new(kind: Kind, pos: [i32; 3]) -> Self {
         Self {
             kind,
             pos,

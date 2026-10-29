@@ -390,6 +390,11 @@ fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
                 fn_ptr: native_tab_name as *mut c_void,
             },
             NativeMethod {
+                name: "openMenu".into(),
+                sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V".into(),
+                fn_ptr: native_open_menu as *mut c_void,
+            },
+            NativeMethod {
                 name: "broadcast".into(),
                 sig: "(Ljava/lang/String;)V".into(),
                 fn_ptr: native_broadcast as *mut c_void,
@@ -617,6 +622,28 @@ extern "system" fn native_tab_name(mut env: JNIEnv, _class: JClass, uuid: JStrin
             env.get_string(&json).ok().map(String::from)
         };
         events::push(events::Action::TabName { uuid, json });
+    }));
+}
+
+/// `Natives.openMenu(String uuid, String menu, String title)`: title may be null.
+extern "system" fn native_open_menu(
+    mut env: JNIEnv,
+    _class: JClass,
+    uuid: JString,
+    menu: JString,
+    title: JString,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (Ok(uuid), Ok(menu)) = (env.get_string(&uuid), env.get_string(&menu)) else {
+            return;
+        };
+        let (uuid, menu) = (String::from(uuid), String::from(menu));
+        let title = if title.is_null() {
+            None
+        } else {
+            env.get_string(&title).ok().map(String::from)
+        };
+        events::push(events::Action::OpenMenu { uuid, menu, title });
     }));
 }
 

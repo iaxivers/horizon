@@ -456,10 +456,11 @@ impl Game<'_> {
         else {
             return false;
         };
+        let modded = play.mod_window == Some(window);
         // A table that is no longer valid takes no clicks (handleContainerClick).
         if let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn)
             && !host.hub.guests[gi].spectator()
-            && self.lan_table_valid(&host.hub.guests[gi], pos)
+            && (modded || self.lan_table_valid(&host.hub.guests[gi], pos))
         {
             self.guest_menu_op(host, gi, &mut menu, |menu, env| {
                 let _ = menu.click(env, i32::from(p.slot), i32::from(p.button), input(p.input));
@@ -488,6 +489,8 @@ impl Game<'_> {
             .play
             .iter()
             .filter_map(|(c, p)| p.crafting.table.as_ref().map(|t| (*c, t.0, t.3)))
+            // A server mod's crafting menu has no table behind it.
+            .filter(|&(c, window, _)| host.play.get(&c).and_then(|p| p.mod_window) != Some(window))
             .filter(|&(c, _, pos)| {
                 host.hub
                     .guests
