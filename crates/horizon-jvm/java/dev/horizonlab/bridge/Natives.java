@@ -50,6 +50,12 @@ public final class Natives {
      */
     public static native void levelEvent(String dimension, int type, int x, int y, int z, int data, String state);
 
+    /**
+     * A mod changed a player's inventory slot (vanilla's Inventory order): the stack as SNBT
+     * (ItemStack.CODEC), or null for empty.
+     */
+    public static native void setSlot(String uuid, int slot, String item);
+
     /** A system message to every player on the server, and its log. */
     public static native void broadcast(String text);
 

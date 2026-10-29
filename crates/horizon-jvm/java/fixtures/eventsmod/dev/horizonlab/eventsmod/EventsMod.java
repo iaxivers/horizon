@@ -17,7 +17,7 @@ import net.minecraft.server.level.ServerPlayer;
 /**
  * A server-side Fabric mod written the usual way, against vanilla and Fabric API only: it
  * greets players who join, answers chat, reports broken blocks, counts ticks and has a
- * command, /events (whoami, add a b, echo text); breaking a log fells the logs above it, and
+ * command, /events (whoami, add a b, echo text, count, kit, take); breaking a log fells the logs above it, and
  * diamond ore can't be broken. It knows
  * nothing about Horizon; the bridge's tests (tests/real_game.rs) and players run it as it is.
  */
@@ -61,6 +61,39 @@ public class EventsMod implements ModInitializer {
                                             context.getSource().sendSuccess(() -> Component.literal("[events] " + sum), false);
                                             return sum;
                                         }))))
+                        .then(Commands.literal("count").executes(context -> {
+                            ServerPlayer player = context.getSource().getPlayerOrException();
+                            var inventory = player.getInventory();
+                            int items = 0;
+                            for (int slot = 0; slot < 36; slot++) items += inventory.getItem(slot).getCount();
+                            var head = player.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.HEAD);
+                            int total = items;
+                            context.getSource().sendSuccess(() -> Component.literal("[events] you carry " + total
+                                    + " items, wearing " + BuiltInRegistries.ITEM.getKey(head.getItem())), false);
+                            return items;
+                        }))
+                        .then(Commands.literal("kit").executes(context -> {
+                            ServerPlayer player = context.getSource().getPlayerOrException();
+                            var registries = context.getSource().registryAccess();
+                            var sword = new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.DIAMOND_SWORD);
+                            sword.enchant(registries.lookupOrThrow(net.minecraft.core.registries.Registries.ENCHANTMENT)
+                                    .getOrThrow(net.minecraft.world.item.enchantment.Enchantments.SHARPNESS), 3);
+                            player.getInventory().add(sword);
+                            player.getInventory().add(new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.BREAD, 16));
+                            context.getSource().sendSuccess(() -> Component.literal("[events] here's your kit"), false);
+                            return 1;
+                        }))
+                        .then(Commands.literal("take").executes(context -> {
+                            ServerPlayer player = context.getSource().getPlayerOrException();
+                            var inventory = player.getInventory();
+                            for (int slot = 0; slot < 36; slot++) {
+                                if (inventory.getItem(slot).is(net.minecraft.world.item.Items.BREAD)) {
+                                    inventory.getItem(slot).shrink(1);
+                                    break;
+                                }
+                            }
+                            return 1;
+                        }))
                         .then(Commands.literal("secret")
                                 .requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
                                 .executes(context -> {

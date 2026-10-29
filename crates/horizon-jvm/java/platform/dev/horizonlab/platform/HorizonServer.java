@@ -38,6 +38,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.server.players.PlayerList;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -253,10 +254,13 @@ public final class HorizonServer {
      * @param who per event: the player's UUID
      * @param texts per event: the chat line, or the block state ("minecraft:oak_log[axis=y]")
      * @param positions three per event: the block's x, y, z
+     * @param inventories 41 per player, vanilla's Inventory slots as SNBT ("" empty), all null
+     *     for a player whose inventory didn't change
      */
     public static void tick(long tick, boolean dedicated, String world, String[] ids, String[] names, String[] dimensions,
                             double[] motion, int[] modes, float[] health, int[] permissions,
-                            int[] kinds, String[] who, String[] texts, int[] positions) {
+                            int[] kinds, String[] who, String[] texts, int[] positions,
+                            String[] inventories) {
         Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
         try {
             if (server == null) setUp(dedicated);
@@ -311,6 +315,7 @@ public final class HorizonServer {
                     }
                 }
                 PERMISSIONS.put(uuid, permissions[i]);
+                mirrorInventory(player, inventories, i);
                 now.put(uuid, player);
             } catch (Throwable t) {
                 if (FAILURES.merge("mirroring players", 1, Integer::sum) <= 10) {
@@ -380,6 +385,7 @@ public final class HorizonServer {
             fire("ServerTickEvents.END_LEVEL_TICK", () -> ServerTickEvents.END_LEVEL_TICK.invoker().onEndTick(level));
         }
         fire("ServerTickEvents.END_SERVER_TICK", () -> ServerTickEvents.END_SERVER_TICK.invoker().onEndTick(server));
+        syncInventories();
     }
 
     /**
@@ -529,6 +535,7 @@ public final class HorizonServer {
             Natives.tell(uuid, "An error occurred while running /" + line + ": " + t);
             fire("command /" + line, () -> { throw new RuntimeException(t); });
         }
+        syncInventories();
         return true;
     }
 
@@ -669,6 +676,68 @@ public final class HorizonServer {
                     net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents.CANCELED.invoker()
                             .onBlockBreakCanceled(level, player, pos, state, null));
         }
+        syncInventories();
         return allowed[0];
+    }
+
+    // ---- Inventories ----------------------------------------------------------------------
+
+    /** Vanilla's Inventory slots Horizon mirrors: 36 + armour 36-39 + the off hand 40. */
+    private static final int SLOTS = 41;
+    /** Per player: each slot as Horizon last had it, to find what the mods changed. */
+    private static final Map<UUID, ItemStack[]> SEEN = new ConcurrentHashMap<>();
+
+    private static com.mojang.serialization.DynamicOps<net.minecraft.nbt.Tag> nbtOps() {
+        return server.registryAccess().createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE);
+    }
+
+    /** An item stack from SNBT as ItemStack.CODEC reads it; empty for "" or what won't read. */
+    static ItemStack item(String snbt) {
+        if (snbt == null || snbt.isEmpty()) return ItemStack.EMPTY;
+        try {
+            var tag = net.minecraft.nbt.TagParser.parseCompoundFully(snbt);
+            return ItemStack.CODEC.parse(nbtOps(), tag).result().orElse(ItemStack.EMPTY);
+        } catch (Throwable t) {
+            return ItemStack.EMPTY;
+        }
+    }
+
+    /** An item stack as SNBT (ItemStack.CODEC); null when empty. */
+    static String snbt(ItemStack stack) {
+        if (stack.isEmpty()) return null;
+        return ItemStack.CODEC.encodeStart(nbtOps(), stack).result().map(Object::toString).orElse(null);
+    }
+
+    /** Horizon's inventory, when it changed, into the mirrored player. */
+    private static void mirrorInventory(ServerPlayer player, String[] inventories, int i) {
+        if (inventories == null || inventories.length < (i + 1) * SLOTS || inventories[i * SLOTS] == null) return;
+        ItemStack[] seen = new ItemStack[SLOTS];
+        var inventory = player.getInventory();
+        syncing = true;
+        try {
+            for (int slot = 0; slot < SLOTS; slot++) {
+                ItemStack stack = item(inventories[i * SLOTS + slot]);
+                inventory.setItem(slot, stack);
+                seen[slot] = stack.copy();
+            }
+        } finally {
+            syncing = false;
+        }
+        SEEN.put(player.getUUID(), seen);
+    }
+
+    /** After mods ran: each slot a mod changed (given, taken, counted down) goes to Horizon. */
+    private static void syncInventories() {
+        for (ServerPlayer player : new ArrayList<>(BY_UUID.values())) {
+            ItemStack[] seen = SEEN.get(player.getUUID());
+            if (seen == null) continue;
+            var inventory = player.getInventory();
+            for (int slot = 0; slot < SLOTS; slot++) {
+                ItemStack now = inventory.getItem(slot);
+                if (ItemStack.matches(now, seen[slot])) continue;
+                Natives.setSlot(player.getStringUUID(), slot, snbt(now));
+                seen[slot] = now.copy();
+            }
+        }
     }
 }

@@ -179,6 +179,7 @@ fn fabric_api_and_a_mod_on_the_real_game() {
         game_mode: 0,
         health: 17.0,
         permission: 0,
+        inventory: None,
     };
     let uuid = steve.uuid.clone();
     // HORIZON_TEST_DEDICATED=1: mirror a dedicated server instead of single player's.
@@ -308,6 +309,48 @@ fn fabric_api_and_a_mod_on_the_real_game() {
     let actions = horizon_jvm::events::take_actions();
     println!("/events add two: {actions:?}");
     assert!(!actions.is_empty(), "an error comes back");
+
+    // Inventories: Horizon's, as mods read it (a stone in hand, an iron helmet on), and what
+    // mods give and take, slot by slot.
+    let mut inventory = vec![String::new(); horizon_jvm::events::INVENTORY_SLOTS];
+    inventory[0] = r#"{id:"minecraft:stone",count:1}"#.into();
+    inventory[39] = r#"{id:"minecraft:iron_helmet",count:1}"#.into();
+    let mut stocked = steve.clone();
+    stocked.inventory = Some(inventory);
+    assert!(tick(2, std::slice::from_ref(&stocked), &[]).is_empty());
+    assert!(horizon_jvm::events::run_command(&uuid, "events count").unwrap());
+    assert_eq!(
+        horizon_jvm::events::take_actions(),
+        vec![Action::Tell {
+            uuid: uuid.clone(),
+            text: "[events] you carry 1 items, wearing minecraft:iron_helmet".into()
+        }]
+    );
+    assert!(horizon_jvm::events::run_command(&uuid, "events kit").unwrap());
+    let actions = horizon_jvm::events::take_actions();
+    println!("/events kit: {actions:?}");
+    let slot = |n: usize| {
+        actions.iter().find_map(|a| match a {
+            Action::SetSlot { slot, item, .. } if *slot == n => Some(item.clone()),
+            _ => None,
+        })
+    };
+    let sword = slot(1).flatten().expect("the sword in slot 1");
+    assert!(
+        sword.contains("minecraft:diamond_sword") && sword.contains("minecraft:sharpness"),
+        "{sword}"
+    );
+    let bread = slot(2).flatten().expect("the bread in slot 2");
+    assert!(
+        bread.contains("minecraft:bread") && bread.contains("count:16"),
+        "{bread}"
+    );
+    assert!(horizon_jvm::events::run_command(&uuid, "events take").unwrap());
+    let actions = horizon_jvm::events::take_actions();
+    assert!(
+        matches!(&actions[..], [Action::SetSlot { slot: 2, item: Some(b), .. }] if b.contains("count:15")),
+        "{actions:?}"
+    );
 
     // Horizon's world, as mods read it: a three-log tree at 0 64..=66 0 on grass, diamond
     // ore beside it.

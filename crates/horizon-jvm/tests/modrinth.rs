@@ -86,6 +86,7 @@ fn real_mods_in_a_scripted_session() {
         game_mode: 0,
         health: 20.0,
         permission: 4,
+        inventory: None,
     };
     let uuid = steve.uuid.clone();
     let world = dir.join("world");

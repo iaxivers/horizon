@@ -210,6 +210,51 @@ mod run {
         }
     }
 
+    /// A guest's item in vanilla's `Inventory` slot `slot`: 0-35 the inventory, 36 feet to
+    /// 39 head (Horizon keeps the armour head first), 40 the off hand.
+    #[cfg(feature = "java-mods")]
+    fn guest_slot(
+        g: &mut horizon_client::lan::guest::Guest,
+        slot: usize,
+    ) -> Option<&mut Option<horizon_client::items::ItemStack>> {
+        match slot {
+            0..=35 => g.inventory.get_mut(slot),
+            36..=39 => g.armor.get_mut(39 - slot),
+            40 => Some(&mut g.offhand),
+            _ => None,
+        }
+    }
+
+    /// The hash of each player's inventory as Java mods last had it.
+    #[cfg(feature = "java-mods")]
+    static JAVA_INVENTORIES: std::sync::Mutex<Option<std::collections::HashMap<u128, u64>>> =
+        std::sync::Mutex::new(None);
+
+    /// A guest's inventory for Java mods (vanilla's order, SNBT per slot), when it changed
+    /// since they last had it.
+    #[cfg(feature = "java-mods")]
+    fn java_inventory(g: &horizon_client::lan::guest::Guest) -> Option<Vec<String>> {
+        use std::hash::{Hash, Hasher};
+        let slots: Vec<String> = (0..horizon_jvm::events::INVENTORY_SLOTS)
+            .map(|v| {
+                let stack = match v {
+                    0..=35 => g.inventory.get(v).cloned().flatten(),
+                    36..=39 => g.armor[39 - v].clone(),
+                    _ => g.offhand.clone(),
+                };
+                stack.map_or_else(String::new, |stack| {
+                    horizon_client::snbt::to_snbt(&horizon_items::item_nbt::item_to_nbt(&stack))
+                })
+            })
+            .collect();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        slots.hash(&mut hasher);
+        let hash = hasher.finish();
+        let mut seen = JAVA_INVENTORIES.lock().unwrap_or_else(|e| e.into_inner());
+        let seen = seen.get_or_insert_with(Default::default);
+        (seen.insert(g.uuid, hash) != Some(hash)).then_some(slots)
+    }
+
     /// Items Java mods dropped, by dimension, made when their level is in place.
     #[cfg(feature = "java-mods")]
     static JAVA_DROPS: std::sync::Mutex<Vec<(String, horizon_jvm::events::Action)>> =
@@ -512,6 +557,12 @@ mod run {
                         .flat_map(|h| &h.hub.guests)
                         .find(|g| uuid_string(g.uuid) == p.id)
                         .map_or(4, |g| g.permission),
+                    inventory: self
+                        .lan
+                        .iter()
+                        .flat_map(|h| &h.hub.guests)
+                        .find(|g| uuid_string(g.uuid) == p.id)
+                        .and_then(java_inventory),
                 })
                 .collect();
             // Not `options.dedicated`: single player's server thread sets it too.
@@ -637,6 +688,31 @@ mod run {
                         let mut drops = JAVA_DROPS.lock().unwrap_or_else(|e| e.into_inner());
                         if drops.len() < 4096 {
                             drops.push((dimension.clone(), drop));
+                        }
+                    }
+                    horizon_jvm::events::Action::SetSlot { uuid, slot, item } => {
+                        let Some(host) = host.as_deref_mut().or(self.lan.as_mut()) else {
+                            continue;
+                        };
+                        let stack = match &item {
+                            Some(snbt) => match horizon_world::nbt::parse_snbt(snbt) {
+                                Ok((tag, _)) => horizon_items::item_nbt::item_from_nbt(&tag),
+                                Err(e) => {
+                                    log::warn!("Java mods: a mod's item {snbt}: {e}");
+                                    continue;
+                                }
+                            },
+                            None => None,
+                        };
+                        if let Some(g) = host
+                            .hub
+                            .guests
+                            .iter_mut()
+                            .find(|g| uuid_string(g.uuid) == uuid)
+                            && let Some(at) = guest_slot(g, slot)
+                        {
+                            // The hub sends the changed slot with the tick's other changes.
+                            *at = stack;
                         }
                     }
                     horizon_jvm::events::Action::Broadcast { text } => {

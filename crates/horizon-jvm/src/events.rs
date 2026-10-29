@@ -31,7 +31,15 @@ pub struct Player {
     pub health: f32,
     /// Vanilla's permission level, 0 (everyone) to 4 (owner): what the player's commands may do.
     pub permission: u8,
+    /// The inventory, when it changed since the last tick (None: as it was): the
+    /// [`INVENTORY_SLOTS`] slots in vanilla's `Inventory` order (hotbar 0-8, the rest 9-35,
+    /// feet, legs, chest, head 36-39, off hand 40), each an item stack as vanilla's
+    /// `ItemStack.CODEC` writes it in SNBT, `""` for an empty slot.
+    pub inventory: Option<Vec<String>>,
 }
+
+/// The slots of a player's inventory the mods see (vanilla's `Inventory`).
+pub const INVENTORY_SLOTS: usize = 41;
 
 /// Something a player did since the last tick.
 #[derive(Clone, Debug, PartialEq)]
@@ -122,6 +130,13 @@ pub enum Action {
         /// For the events whose data is a block state (2001): that state, by name.
         state: Option<String>,
     },
+    /// A mod changed slot `slot` of a player's inventory (vanilla's `Inventory` order, as in
+    /// [`Player::inventory`]): the item stack in SNBT, None for empty.
+    SetSlot {
+        uuid: String,
+        slot: usize,
+        item: Option<String>,
+    },
 }
 
 static ACTIONS: Mutex<Vec<Action>> = Mutex::new(Vec::new());
@@ -163,6 +178,25 @@ fn server_class() -> Option<&'static GlobalRef> {
             }
         })
         .as_ref()
+}
+
+fn optional_strings<'local>(
+    env: &mut JNIEnv<'local>,
+    items: &[Option<&str>],
+) -> jni::errors::Result<JObject<'local>> {
+    let array = env.new_object_array(
+        items.len() as sys::jsize,
+        "java/lang/String",
+        JObject::null(),
+    )?;
+    for (i, item) in items.iter().enumerate() {
+        if let Some(item) = item {
+            let s = env.new_string(item)?;
+            env.set_object_array_element(&array, i as sys::jsize, &s)?;
+            env.delete_local_ref(s)?;
+        }
+    }
+    Ok(array.into())
 }
 
 fn strings<'local>(
@@ -233,6 +267,16 @@ fn call_tick(
     let modes: Vec<i32> = players.iter().map(|p| p.game_mode).collect();
     let health: Vec<f32> = players.iter().map(|p| p.health).collect();
     let permissions: Vec<i32> = players.iter().map(|p| i32::from(p.permission)).collect();
+    // INVENTORY_SLOTS per player; nulls for a player whose inventory didn't change.
+    let mut inventories: Vec<Option<&str>> = Vec::with_capacity(players.len() * INVENTORY_SLOTS);
+    for p in players {
+        match &p.inventory {
+            Some(slots) => inventories.extend(
+                (0..INVENTORY_SLOTS).map(|i| Some(slots.get(i).map_or("", String::as_str))),
+            ),
+            None => inventories.extend(std::iter::repeat_n(None, INVENTORY_SLOTS)),
+        }
+    }
 
     // Events as parallel arrays: a kind per event (0 joined, 1 left, 2 chat, 3 broken,
     // 4 placed), its player, a text (chat line or block state) and a position.
@@ -275,12 +319,13 @@ fn call_tick(
     let texts = strings(env, &texts)?;
     let positions_array = env.new_int_array(positions.len() as sys::jsize)?;
     env.set_int_array_region(&positions_array, 0, &positions)?;
+    let inventories = optional_strings(env, &inventories)?;
 
     let class = <&JClass>::from(class.as_obj());
     env.call_static_method(
         class,
         "tick",
-        "(JZLjava/lang/String;[Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;[D[I[F[I[I[Ljava/lang/String;[Ljava/lang/String;[I)V",
+        "(JZLjava/lang/String;[Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;[D[I[F[I[I[Ljava/lang/String;[Ljava/lang/String;[I[Ljava/lang/String;)V",
         &[
             JValue::Long(tick),
             JValue::Bool(dedicated.into()),
@@ -296,6 +341,7 @@ fn call_tick(
             JValue::Object(&who),
             JValue::Object(&texts),
             JValue::Object(&positions_array),
+            JValue::Object(&inventories),
         ],
     )?;
     Ok(())
