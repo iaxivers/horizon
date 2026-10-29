@@ -45,6 +45,8 @@ public final class HorizonClient {
         var gui = (net.minecraft.client.gui.Gui) Natives.allocate(net.minecraft.client.gui.Gui.class);
         set(net.minecraft.client.gui.Gui.class, gui, "hud", Natives.allocate(net.minecraft.client.gui.Hud.class));
         set(Minecraft.class, mc, "gui", gui);
+        // Screens click through the game mode (handleContainerInput): GameModeClientMixin.
+        set(Minecraft.class, mc, "gameMode", Natives.allocate(net.minecraft.client.multiplayer.MultiPlayerGameMode.class));
         Natives.log("Horizon's headless client is up");
     }
 
@@ -191,9 +193,13 @@ public final class HorizonClient {
             set(net.minecraft.client.player.LocalPlayer.class, local, "minecraft", minecraft);
             set(net.minecraft.world.entity.player.Player.class, local, "inventory", player.getInventory());
             set(net.minecraft.world.entity.player.Player.class, local, "inventoryMenu", player.inventoryMenu);
+            // Its level, which tooltips ask (enabled features): the server player's.
+            set(net.minecraft.world.entity.Entity.class, local, "level", player.level());
             PLAYERS.put(player.getUUID(), local);
         }
         local.containerMenu = player.containerMenu;
+        // Its permissions (tooltips' operator warnings): the server player's.
+        set(net.minecraft.client.player.LocalPlayer.class, local, "permissions", player.permissions());
         return local;
     }
 
@@ -252,6 +258,8 @@ public final class HorizonClient {
     public static void closeScreen(java.util.UUID player) {
         SCREENS.remove(player);
         OWNERS.remove(player);
+        SENT.remove(player);
+        MOUSE.remove(player);
     }
 
     /** One frame of a player's mod screen, as Horizon draws it (HorizonGraphics' operations). */
@@ -268,5 +276,100 @@ public final class HorizonClient {
             for (StackTraceElement frame : root.getStackTrace()) Natives.log("    at " + frame);
         }
         return graphics.ops().toString();
+    }
+
+    // ---- Frames to Horizon, input from it -------------------------------------------------------
+
+    /** Each player's mouse over their screen, in GUI pixels. */
+    private static final java.util.Map<java.util.UUID, double[]> MOUSE = new java.util.concurrent.ConcurrentHashMap<>();
+    /** The last frame sent to each player. */
+    private static final java.util.Map<java.util.UUID, String> SENT = new java.util.concurrent.ConcurrentHashMap<>();
+    /** The player whose input runs now (their screen's clicks are theirs). */
+    private static net.minecraft.server.level.ServerPlayer acting;
+
+    /** Each open mod screen's frame, to its player when it changed (the server's tick end). */
+    public static void sendFrames() {
+        for (var id : new java.util.ArrayList<>(SCREENS.keySet())) send(id);
+    }
+
+    private static void send(java.util.UUID id) {
+        double[] mouse = MOUSE.getOrDefault(id, new double[] {-1, -1});
+        String frame = frame(id, (int) mouse[0], (int) mouse[1]);
+        if (frame == null || frame.equals(SENT.get(id))) return;
+        SENT.put(id, frame);
+        Natives.screenFrame(id.toString(), frame);
+    }
+
+    /**
+     * Input to a player's mod screen, from Horizon's window (JSON): {@code size} (its GUI
+     * width and height), {@code move}, {@code press}, {@code release}, {@code drag}, {@code
+     * scroll}, {@code key} and {@code char}, with the mouse in GUI pixels.
+     */
+    public static void input(String uuid, String json) {
+        Thread.currentThread().setContextClassLoader(HorizonClient.class.getClassLoader());
+        java.util.UUID id = java.util.UUID.fromString(uuid);
+        var screen = SCREENS.get(id);
+        var player = OWNERS.get(id);
+        if (screen == null || player == null) return;
+        var in = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+        String kind = in.get("kind").getAsString();
+        double x = in.has("x") ? in.get("x").getAsDouble() : MOUSE.getOrDefault(id, new double[2])[0];
+        double y = in.has("y") ? in.get("y").getAsDouble() : MOUSE.getOrDefault(id, new double[2])[1];
+        int button = in.has("button") ? in.get("button").getAsInt() : 0;
+        int mods = in.has("mods") ? in.get("mods").getAsInt() : 0;
+        MOUSE.put(id, new double[] {x, y});
+        var event = new net.minecraft.client.input.MouseButtonEvent(x, y, new net.minecraft.client.input.MouseButtonInfo(button, mods));
+        try {
+            acting = player;
+            as(player, () -> {
+                switch (kind) {
+                    case "size" -> {
+                        width = in.get("width").getAsInt();
+                        height = in.get("height").getAsInt();
+                        screen.resize(width, height);
+                    }
+                    case "move" -> screen.mouseMoved(x, y);
+                    case "press" -> screen.mouseClicked(event, in.has("double") && in.get("double").getAsBoolean());
+                    case "release" -> screen.mouseReleased(event);
+                    case "drag" -> screen.mouseDragged(event,
+                            in.has("dx") ? in.get("dx").getAsDouble() : 0, in.has("dy") ? in.get("dy").getAsDouble() : 0);
+                    case "scroll" -> screen.mouseScrolled(x, y, in.get("h").getAsDouble(), in.get("v").getAsDouble());
+                    case "key" -> screen.keyPressed(new net.minecraft.client.input.KeyEvent(
+                            in.get("key").getAsInt(), in.get("scancode").getAsInt(), mods));
+                    case "char" -> screen.charTyped(new net.minecraft.client.input.CharacterEvent(in.get("char").getAsInt()));
+                    default -> {}
+                }
+            });
+        } catch (Throwable t) {
+            Throwable root = t;
+            while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+            Natives.log("Horizon's client: a screen's " + kind + " failed: " + root);
+            for (StackTraceElement frame : root.getStackTrace()) Natives.log("    at " + frame);
+        } finally {
+            acting = null;
+        }
+        HorizonServer.afterScreenInput();
+        send(id);
+    }
+
+    /** MultiPlayerGameMode.handleContainerInput from a mod's screen: the server's menu clicked. */
+    public static void containerInput(int containerId, int slot, int button, net.minecraft.world.inventory.ContainerInput input) {
+        var player = acting;
+        if (player == null || player.containerMenu == null || player.containerMenu.containerId != containerId) return;
+        var menu = player.containerMenu;
+        if (!menu.isValidSlotIndex(slot) && slot != -999 && slot != -1) return;
+        if (menu.stillValid(player)) {
+            menu.clicked(slot, button, input, player);
+            menu.broadcastChanges();
+        } else {
+            player.closeContainer();
+        }
+    }
+
+    /** MultiPlayerGameMode.handleInventoryButtonClick: the menu's button (a stonecutter's recipe). */
+    public static void buttonClick(int containerId, int button) {
+        var player = acting;
+        if (player == null || player.containerMenu == null || player.containerMenu.containerId != containerId) return;
+        if (player.containerMenu.clickMenuButton(player, button)) player.containerMenu.broadcastChanges();
     }
 }

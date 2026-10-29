@@ -133,6 +133,9 @@ pub enum Action {
         position: [i32; 3],
         snbt: String,
     },
+    /// A frame of the player's open mod screen, drawn by the mod's own client code in the
+    /// headless client: its operations as JSON (`HorizonGraphics`), for the player's game to draw.
+    ScreenFrame { uuid: String, frame: String },
     /// A mod fed (or starved) a player: its `FoodData` now (a pie's slice).
     Food {
         uuid: String,
@@ -580,6 +583,45 @@ pub fn random_ticks(dimension: &str, positions: &[[i32; 3]]) -> Result<(), Strin
         Ok(())
     })?;
     Ok(())
+}
+
+/// Input to the player's open mod screen (JSON: `size`, `move`, `press`, `release`, `drag`,
+/// `scroll`, `key`, `char`), run by the screen's own code.
+pub fn screen_input(uuid: &str, input: &str) -> Result<(), String> {
+    let class = client_class().ok_or("no headless client")?;
+    let bridge = crate::get().ok_or("Java isn't running")?;
+    let mut env = bridge
+        .vm()
+        .attach_current_thread_permanently()
+        .map_err(|e| e.to_string())?;
+    env.with_local_frame(8, |env| -> jni::errors::Result<()> {
+        let uuid = env.new_string(uuid)?;
+        let input = env.new_string(input)?;
+        let class = <&JClass>::from(class.as_obj());
+        env.call_static_method(
+            class,
+            "input",
+            "(Ljava/lang/String;Ljava/lang/String;)V",
+            &[JValue::Object(&uuid), JValue::Object(&input)],
+        )?;
+        Ok(())
+    })
+    .map_err(|e| crate::describe(&mut env, e))
+}
+
+/// The platform's `HorizonClient` (the headless client), when Fabric runs its client side.
+fn client_class() -> Option<&'static GlobalRef> {
+    static CLIENT_CLASS: std::sync::OnceLock<Option<GlobalRef>> = std::sync::OnceLock::new();
+    CLIENT_CLASS
+        .get_or_init(|| {
+            let bridge = crate::get()?;
+            let mut env = bridge.vm().attach_current_thread_permanently().ok()?;
+            let class = bridge
+                .find_class(&mut env, "dev/horizonlab/platform/HorizonClient")
+                .ok()?;
+            env.new_global_ref(class).ok()
+        })
+        .as_ref()
 }
 
 /// A click in the window of a mod's menu ([`Action::MenuContent`]): `ServerboundContainerClickPacket`'s

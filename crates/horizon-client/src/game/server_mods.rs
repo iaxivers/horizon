@@ -134,6 +134,7 @@ impl Game<'_> {
     ) -> bool {
         false
     }
+    pub(super) fn java_screen_input(&mut self, _host: &mut LanHost, _conn: u32, _data: &[u8]) {}
 }
 
 #[cfg(feature = "mods")]
@@ -876,6 +877,19 @@ mod run {
                         position,
                         snbt,
                     } => self.set_java_block_entity(&dimension, position, &snbt),
+                    horizon_jvm::events::Action::ScreenFrame { uuid, frame } => {
+                        let Some(host) = host.as_deref_mut().or(self.lan.as_mut()) else {
+                            continue;
+                        };
+                        let window = JAVA_WINDOWS
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .get(&uuid)
+                            .copied();
+                        if let Some((conn, window)) = window {
+                            Self::send_java_screen_frame(host, conn, window, &frame);
+                        }
+                    }
                     horizon_jvm::events::Action::Food {
                         uuid,
                         food,
@@ -1506,6 +1520,36 @@ mod run {
             {
                 let _ = (host, conn, p);
                 false
+            }
+        }
+
+        /// Input to the mod screen of a player's Java window (game/java_screen.rs's INPUT): the
+        /// screen's own code runs it.
+        pub(in crate::game) fn java_screen_input(
+            &mut self,
+            host: &mut LanHost,
+            conn: u32,
+            data: &[u8],
+        ) {
+            #[cfg(feature = "java-mods")]
+            {
+                let Ok(input) = serde_json::from_slice::<Value>(data) else {
+                    return;
+                };
+                let window = input.get("window").and_then(Value::as_i64).unwrap_or(-1) as i32;
+                let Some(uuid) = java_window_of(host, conn, window) else {
+                    return;
+                };
+                let input = input.to_string();
+                let ran = self.with_java_world(|| horizon_jvm::events::screen_input(&uuid, &input));
+                if let Err(e) = ran {
+                    log::warn!("Java mods: input to a mod's screen failed: {e}");
+                }
+                self.apply_java_actions(Some(host));
+            }
+            #[cfg(not(feature = "java-mods"))]
+            {
+                let _ = (host, conn, data);
             }
         }
 

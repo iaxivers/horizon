@@ -393,18 +393,35 @@ impl HudAtlas {
         for folder in folders {
             walk(&textures.join(folder), &mut files);
         }
+        // Mods' GUI textures (Java mods' screens draw them), under `<namespace>:gui/...`.
+        let assets = root.join("assets");
+        if full && folders.contains(&"gui") {
+            for entry in fs::read_dir(&assets).into_iter().flatten().flatten() {
+                if entry.file_name() != "minecraft" {
+                    walk(&entry.path().join("textures/gui"), &mut files);
+                }
+            }
+        }
         files.retain(|p| {
             let s = p.to_string_lossy();
             !s.contains("title/background") && !s.contains("realms") && !s.contains("presets")
         });
         type Decoded = (PackedImage, Option<TextureFlags>, Option<(u32, u32)>, bool);
         let decode_one = |path: &PathBuf| -> Option<Decoded> {
-            let name = path
-                .strip_prefix(&textures)
-                .ok()?
-                .with_extension("")
-                .to_string_lossy()
-                .replace('\\', "/");
+            let name = match path.strip_prefix(&textures) {
+                Ok(rel) => rel.with_extension("").to_string_lossy().replace('\\', "/"),
+                Err(_) => {
+                    // assets/<namespace>/textures/<path>
+                    let rel = path.strip_prefix(&assets).ok()?;
+                    let mut parts = rel.components();
+                    let ns = parts.next()?.as_os_str().to_string_lossy().into_owned();
+                    let rest = parts.as_path().strip_prefix("textures").ok()?;
+                    format!(
+                        "{ns}:{}",
+                        rest.with_extension("").to_string_lossy().replace('\\', "/")
+                    )
+                }
+            };
             let (mut w, mut h, pixels) = decode(path).ok()?;
             let mcmeta = fs::read_to_string(path.with_extension("png.mcmeta")).ok();
             let animation = mcmeta

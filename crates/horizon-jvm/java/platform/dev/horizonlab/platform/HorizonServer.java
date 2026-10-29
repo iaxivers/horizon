@@ -604,6 +604,8 @@ public final class HorizonServer {
             if (level.getBlockTicks() instanceof HorizonTicks<?> ticks) ticks.run(level);
         }
         HorizonBlockEntities.tick();
+        // Mods' own screens: each changed frame to its player.
+        HorizonClient.sendFrames();
         fire("ServerTickEvents.END_SERVER_TICK", () -> ServerTickEvents.END_SERVER_TICK.invoker().onEndTick(server));
         hook(server, MinecraftServer.class, "tickServer", TICK_SERVER, "RETURN", haveTime);
         hook(server, MinecraftServer.class, "tickServer", TICK_SERVER, "TAIL", haveTime);
@@ -757,12 +759,8 @@ public final class HorizonServer {
                 OPENING.remove(id);
                 Shown shown = layout(menu, opening);
                 SHOWN.put(id, shown);
-                // The mod's own screen, in Horizon's headless client: its first frame, logged.
-                if (HorizonClient.openScreen(player, menu, opening.text())) {
-                    String frame = HorizonClient.frame(id, 0, 0);
-                    Natives.log("Horizon's client: " + opening.type() + "'s own screen opened ("
-                            + (frame == null ? 0 : frame.length()) + " bytes a frame)");
-                }
+                // The mod's own screen, in Horizon's headless client (its frames: sendFrames).
+                HorizonClient.openScreen(player, menu, opening.text());
                 SHOWN_CONTENT.remove(id);
             }
             Shown shown = SHOWN.get(id);
@@ -770,6 +768,7 @@ public final class HorizonServer {
             if (menu == null || menu == player.inventoryMenu || menu.containerId != shown.containerId) {
                 SHOWN.remove(id);
                 SHOWN_CONTENT.remove(id);
+                HorizonClient.closeScreen(id);
                 Natives.menuContent(player.getStringUUID(), null, null, null, null);
                 continue;
             }
@@ -822,6 +821,11 @@ public final class HorizonServer {
         syncInventories();
     }
 
+    /** After input to a mod's screen: what its clicks changed reaches Horizon. */
+    static void afterScreenInput() {
+        syncInventories();
+    }
+
     /** The player closed a shown menu's window (ServerboundContainerClosePacket). */
     public static void menuClose(String uuid) {
         Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
@@ -829,6 +833,7 @@ public final class HorizonServer {
         if (player == null) return;
         Shown shown = SHOWN.remove(player.getUUID());
         SHOWN_CONTENT.remove(player.getUUID());
+        HorizonClient.closeScreen(player.getUUID());
         if (shown != null && player.containerMenu != null && player.containerMenu.containerId == shown.containerId) {
             fire("ServerPlayer.doCloseContainer", player::doCloseContainer);
         }

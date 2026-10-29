@@ -854,6 +854,10 @@ impl Game<'_> {
         if self.screen == Screen::Options {
             return self.options_key(key, None);
         }
+        if self.java_screen_takes(key) {
+            self.java_screen_key(key, None);
+            return Ok(());
+        }
         if self.keys.insert(key) {
             self.key_pressed(key)?;
         }

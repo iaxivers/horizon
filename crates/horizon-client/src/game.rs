@@ -79,6 +79,7 @@ mod item_draw;
 mod item_particles;
 #[cfg(feature = "java-mods")]
 mod java_mods;
+mod java_screen;
 mod jukebox;
 mod lan;
 mod lan_actions;
@@ -1783,6 +1784,8 @@ struct Game<'a> {
     spill: spill::Spill,
     /// The recipe book of the open screen (game/recipe_book.rs).
     recipe_ui: recipe_book::RecipeUi,
+    /// The open window's Java mod screen, as its last frame drew it (game/java_screen.rs).
+    java_screen: Option<java_screen::JavaScreen>,
     /// The horse inventory (game/mount_menu.rs).
     mount_menu: mount_menu::MountMenu,
     /// The player's fishing hook.
@@ -6277,8 +6280,11 @@ impl Game<'_> {
             Screen::DialogWarning => self.draw_dialog_warning(&mut batch),
             Screen::CommandBlock => self.draw_command_block(&mut batch),
             Screen::Inventory => {
-                self.draw_inventory(&mut batch);
-                self.draw_mod_browser(&mut batch);
+                // A Java mod's own screen, when the window has one.
+                if !self.draw_java_screen(&mut batch) {
+                    self.draw_inventory(&mut batch);
+                    self.draw_mod_browser(&mut batch);
+                }
             }
             Screen::Creative => {
                 self.draw_creative(&mut batch);
@@ -7533,6 +7539,9 @@ impl Game<'_> {
     }
     /// Mouse movement while a quick craft drag is running.
     fn inventory_drag_move(&mut self) {
+        if self.java_screen_mouse("drag", false) {
+            return;
+        }
         if self.tweaks_on() && self.tweak_drag_move(self.inventory_target().0) {
             return;
         }
@@ -12906,6 +12915,8 @@ impl ApplicationHandler for Game<'_> {
                     let d = scaled(raw_y) as f32;
                     if self.dialog_open() {
                         self.dialog_scroll(d);
+                    } else if self.java_screen_scroll(scaled(raw_x), scaled(raw_y)) {
+                        // A Java mod's own screen scrolls itself.
                     } else if let Some(title) = &mut self.title
                         && self.screen != Screen::Win
                     {
@@ -13148,14 +13159,19 @@ impl ApplicationHandler for Game<'_> {
                             }
                         }
                         Screen::Inventory if pressed => {
-                            self.inventory_press(button == MouseButton::Right);
-                            if let Some(key) = self.container {
-                                self.container_changed(key);
+                            // A Java mod's own screen takes the click.
+                            if !self.java_screen_mouse("press", button == MouseButton::Right) {
+                                self.inventory_press(button == MouseButton::Right);
+                                if let Some(key) = self.container {
+                                    self.container_changed(key);
+                                }
                             }
                         }
                         Screen::Inventory => {
-                            self.inventory_mouse_release(button == MouseButton::Right);
-                            self.loom_release();
+                            if !self.java_screen_mouse("release", button == MouseButton::Right) {
+                                self.inventory_mouse_release(button == MouseButton::Right);
+                                self.loom_release();
+                            }
                         }
                         Screen::Chat if pressed && button == MouseButton::Left => self.chat_click(),
                         Screen::Creative if pressed => {
@@ -13296,6 +13312,14 @@ impl ApplicationHandler for Game<'_> {
                     } else {
                         self.creative_search_edit(event.text.as_deref());
                     }
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed
+                        && let PhysicalKey::Code(key) = event.physical_key
+                        && self.java_screen_takes(key) =>
+                {
+                    // A Java mod's own screen runs its keys.
+                    self.java_screen_key(key, event.text.as_deref());
                 }
                 WindowEvent::KeyboardInput { event, .. }
                     if self.recipe_search_focused()
@@ -14024,6 +14048,7 @@ impl<'a> Game<'a> {
             pending: Default::default(),
             spill: Default::default(),
             recipe_ui: Default::default(),
+            java_screen: None,
             mount_menu: Default::default(),
             hook: None,
             remote_hooks: Vec::new(),

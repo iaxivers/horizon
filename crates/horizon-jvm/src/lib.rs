@@ -397,6 +397,11 @@ fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
                 fn_ptr: native_open_menu as *mut c_void,
             },
             NativeMethod {
+                name: "screenFrame".into(),
+                sig: "(Ljava/lang/String;Ljava/lang/String;)V".into(),
+                fn_ptr: native_screen_frame as *mut c_void,
+            },
+            NativeMethod {
                 name: "blockEntity".into(),
                 sig: "(Ljava/lang/String;III)Ljava/lang/String;".into(),
                 fn_ptr: native_block_entity as *mut c_void,
@@ -697,6 +702,24 @@ extern "system" fn native_open_menu(
             env.get_string(&title).ok().map(String::from)
         };
         events::push(events::Action::OpenMenu { uuid, menu, title });
+    }));
+}
+
+/// `Natives.screenFrame(String uuid, String frame)`.
+extern "system" fn native_screen_frame(
+    mut env: JNIEnv,
+    _class: JClass,
+    uuid: JString,
+    frame: JString,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (Ok(uuid), Ok(frame)) = (env.get_string(&uuid), env.get_string(&frame)) else {
+            return;
+        };
+        events::push(events::Action::ScreenFrame {
+            uuid: uuid.into(),
+            frame: frame.into(),
+        });
     }));
 }
 

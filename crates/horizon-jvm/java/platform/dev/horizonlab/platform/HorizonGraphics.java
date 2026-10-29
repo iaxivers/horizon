@@ -273,7 +273,41 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
         itemDecorations(font, stack, x, y, null);
     }
 
-    // ---- Tooltips -------------------------------------------------------------------------
+    // ---- Tooltips: one operation, its lines as text components ---------------------------
+
+    private void tooltip(java.util.List<net.minecraft.network.chat.Component> lines, int x, int y) {
+        if (lines == null || lines.isEmpty()) return;
+        JsonObject o = op("tooltip");
+        JsonArray out = new JsonArray();
+        for (var line : lines) out.add(HorizonServer.json(line));
+        o.add("lines", out);
+        o.addProperty("x", x);
+        o.addProperty("y", y);
+    }
+
+    /** A styled character sequence as a component (its runs of one style). */
+    private static Component component(FormattedCharSequence text) {
+        var out = Component.empty();
+        StringBuilder run = new StringBuilder();
+        net.minecraft.network.chat.Style[] style = {null};
+        text.accept((index, s, codePoint) -> {
+            if (style[0] != null && !s.equals(style[0])) {
+                out.append(Component.literal(run.toString()).withStyle(style[0]));
+                run.setLength(0);
+            }
+            style[0] = s;
+            run.appendCodePoint(codePoint);
+            return true;
+        });
+        if (style[0] != null) out.append(Component.literal(run.toString()).withStyle(style[0]));
+        return out;
+    }
+
+    private static java.util.List<Component> components(java.util.List<? extends FormattedCharSequence> lines) {
+        java.util.List<Component> out = new java.util.ArrayList<>();
+        for (var line : lines) out.add(component(line));
+        return out;
+    }
 
     @Override
     public void setTooltipForNextFrame(Font font, ItemStack stack, int x, int y) {
@@ -285,11 +319,84 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
 
     @Override
     public void setTooltipForNextFrame(Component text, int x, int y) {
-        JsonObject o = op("tooltip");
-        JsonArray lines = new JsonArray();
-        lines.add(HorizonServer.json(text));
-        o.add("lines", lines);
-        o.addProperty("x", x);
-        o.addProperty("y", y);
+        tooltip(java.util.List.of(text), x, y);
+    }
+
+    @Override
+    public void setTooltipForNextFrame(java.util.List<FormattedCharSequence> lines, int x, int y) {
+        tooltip(components(lines), x, y);
+    }
+
+    @Override
+    public void setTooltipForNextFrame(Font font, java.util.List<Component> lines,
+                                       java.util.Optional<net.minecraft.world.inventory.tooltip.TooltipComponent> image, int x, int y) {
+        tooltip(lines, x, y);
+    }
+
+    @Override
+    public void setTooltipForNextFrame(Font font, java.util.List<Component> lines,
+                                       java.util.Optional<net.minecraft.world.inventory.tooltip.TooltipComponent> image, int x, int y,
+                                       Identifier style) {
+        tooltip(lines, x, y);
+    }
+
+    @Override
+    public void setTooltipForNextFrame(Font font, java.util.List<Component> lines,
+                                       java.util.Optional<net.minecraft.world.inventory.tooltip.TooltipComponent> image, int x, int y,
+                                       Identifier style, boolean focused) {
+        tooltip(lines, x, y);
+    }
+
+    @Override
+    public void setTooltipForNextFrame(Font font, java.util.List<FormattedCharSequence> lines,
+                                       java.util.Optional<net.minecraft.world.inventory.tooltip.TooltipComponent> image,
+                                       net.minecraft.client.gui.screens.inventory.tooltip.ClientTooltipPositioner positioner,
+                                       int x, int y, boolean focused, Identifier style) {
+        tooltip(components(lines), x, y);
+    }
+
+    @Override
+    public void setTooltipForNextFrame(Font font, Component text, int x, int y) {
+        tooltip(java.util.List.of(text), x, y);
+    }
+
+    @Override
+    public void setTooltipForNextFrame(Font font, Component text, int x, int y, Identifier style) {
+        tooltip(java.util.List.of(text), x, y);
+    }
+
+    @Override
+    public void setComponentTooltipForNextFrame(Font font, java.util.List<Component> lines, int x, int y) {
+        tooltip(lines, x, y);
+    }
+
+    @Override
+    public void setComponentTooltipForNextFrame(Font font, java.util.List<Component> lines, int x, int y, Identifier style) {
+        tooltip(lines, x, y);
+    }
+
+    @Override
+    public void setTooltipForNextFrame(Font font, java.util.List<? extends FormattedCharSequence> lines, int x, int y) {
+        tooltip(components(lines), x, y);
+    }
+
+    @Override
+    public void setTooltipForNextFrame(Font font, java.util.List<? extends FormattedCharSequence> lines, int x, int y,
+                                       Identifier style) {
+        tooltip(components(lines), x, y);
+    }
+
+    @Override
+    public void setTooltipForNextFrame(Font font, java.util.List<FormattedCharSequence> lines,
+                                       net.minecraft.client.gui.screens.inventory.tooltip.ClientTooltipPositioner positioner,
+                                       int x, int y, boolean focused) {
+        tooltip(components(lines), x, y);
+    }
+
+    /** A tooltip drawn at once: Horizon draws tooltips (the deferred ones above). */
+    @Override
+    public void tooltip(Font font, java.util.List<net.minecraft.client.gui.screens.inventory.tooltip.ClientTooltipComponent> lines,
+                        int x, int y, net.minecraft.client.gui.screens.inventory.tooltip.ClientTooltipPositioner positioner,
+                        Identifier style, boolean focused) {
     }
 }

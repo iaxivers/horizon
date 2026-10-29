@@ -1,0 +1,459 @@
+//! Java mods' own screens (Farmer's Delight's cooking pot's): the mod's client code draws them in
+//! horizon-jvm's headless client, whose frames (operations: images, GUI sprites, rectangles,
+//! text, items) reach the player's game on [`CHANNEL`]; the game draws them in place of its own
+//! container screen and sends the mouse
+//! and keys back on [`INPUT`], which the screen runs.
+use super::{Game, Screen, lan::LanHost};
+use horizon_client::hud::{HudBatch, rgba};
+use horizon_client::items::ItemStack;
+use horizon_protocol::packets::{
+    configuration::CustomPayload,
+    play::{Clientbound as C, Serverbound as S},
+};
+use serde_json::{Value, json};
+use winit::keyboard::KeyCode;
+
+/// A frame, server to client: `{"window": id, "ops": [...]}`.
+pub(super) const CHANNEL: &str = "horizon:java_screen";
+/// Input, client to server: `{"window": id, "kind": ..., ...}` (HorizonClient.input's).
+pub(super) const INPUT: &str = "horizon:java_screen_input";
+
+/// The mod screen a window shows, as its last frame drew it.
+#[derive(Default)]
+pub(super) struct JavaScreen {
+    window: i32,
+    ops: Vec<Value>,
+    /// What the server last heard: the mouse, and the GUI's size.
+    sent_mouse: Option<(i32, i32)>,
+    sent_size: Option<(i32, i32)>,
+}
+
+/// Java's ARGB as the batch's colour.
+fn argb(c: i64) -> u32 {
+    let c = c as u32;
+    rgba((c >> 16) as u8, (c >> 8) as u8, c as u8, (c >> 24) as u8)
+}
+
+fn int(o: &Value, key: &str) -> f32 {
+    o.get(key).and_then(Value::as_f64).unwrap_or(0.0) as f32
+}
+
+/// The atlas key of a texture id: `minecraft:textures/gui/x.png` is `gui/x`, another
+/// namespace's `ns:gui/x` (HudAtlas packs mods' `textures/gui/` under their namespace).
+fn texture_key(id: &str) -> String {
+    let (ns, path) = id.split_once(':').unwrap_or(("minecraft", id));
+    let path = path
+        .trim_start_matches("textures/")
+        .trim_end_matches(".png");
+    if ns == "minecraft" {
+        path.to_owned()
+    } else {
+        format!("{ns}:{path}")
+    }
+}
+
+/// A GUI sprite's key: `textures/gui/sprites/<path>` of its namespace.
+fn sprite_key(id: &str) -> String {
+    let (ns, path) = id.split_once(':').unwrap_or(("minecraft", id));
+    texture_key(&format!("{ns}:gui/sprites/{path}"))
+}
+
+fn stack(o: &Value) -> Option<ItemStack> {
+    let snbt = o.get("item")?.as_str()?;
+    let (tag, _) = horizon_world::nbt::parse_snbt(snbt).ok()?;
+    horizon_items::item_nbt::item_from_nbt(&tag)
+}
+
+impl Game<'_> {
+    // ---- The player's game ----------------------------------------------------------------
+
+    /// A frame of the open window's mod screen ([`CHANNEL`]).
+    pub(super) fn remote_java_screen(&mut self, data: &[u8]) {
+        let Ok(frame) = serde_json::from_slice::<Value>(data) else {
+            return;
+        };
+        let window = frame.get("window").and_then(Value::as_i64).unwrap_or(-1) as i32;
+        let ops = match frame.get("ops") {
+            Some(Value::Array(ops)) => ops.clone(),
+            _ => return,
+        };
+        match &mut self.java_screen {
+            Some(screen) if screen.window == window => screen.ops = ops,
+            _ => {
+                self.java_screen = Some(JavaScreen {
+                    window,
+                    ops,
+                    ..Default::default()
+                })
+            }
+        }
+    }
+
+    /// The open window's mod screen, when it has one: the window the server opened is still
+    /// the one open, and the inventory screen shows it.
+    pub(super) fn java_screen_window(&self) -> Option<i32> {
+        let screen = self.java_screen.as_ref()?;
+        let open = self.remote.as_ref()?.menu.as_ref()?.0;
+        (self.screen == Screen::Inventory && open == screen.window).then_some(screen.window)
+    }
+
+    /// Draws the open mod screen in place of the container screen: false when there is none.
+    pub(super) fn draw_java_screen(&mut self, batch: &mut HudBatch) -> bool {
+        let Some(window) = self.java_screen_window() else {
+            return false;
+        };
+        // The screen lays out in this GUI size, and hovers where the mouse is.
+        let size = (batch.width as i32, batch.height as i32);
+        let mouse = (self.cursor.0 as i32, self.cursor.1 as i32);
+        let screen = self.java_screen.as_mut().expect("checked");
+        let (send_size, send_mouse) = (
+            screen.sent_size != Some(size),
+            screen.sent_mouse != Some(mouse),
+        );
+        screen.sent_size = Some(size);
+        screen.sent_mouse = Some(mouse);
+        if send_size {
+            self.send_java_screen_input(
+                window,
+                json!({"kind": "size", "width": size.0, "height": size.1}),
+            );
+        }
+        if send_mouse {
+            self.send_java_screen_input(
+                window,
+                json!({"kind": "move", "x": mouse.0, "y": mouse.1}),
+            );
+        }
+        let ops = self
+            .java_screen
+            .as_ref()
+            .map(|s| s.ops.clone())
+            .unwrap_or_default();
+        let mut tooltip = None;
+        let mut lines_tooltip = None;
+        for o in &ops {
+            let (dx, dy) = match o.get("pose").and_then(Value::as_array) {
+                Some(p) if p.len() == 6 => (
+                    p[4].as_f64().unwrap_or(0.0) as f32,
+                    p[5].as_f64().unwrap_or(0.0) as f32,
+                ),
+                _ => (0.0, 0.0),
+            };
+            let rect = || {
+                let (x0, y0) = (int(o, "x0") + dx, int(o, "y0") + dy);
+                (x0, y0, int(o, "x1") + dx - x0, int(o, "y1") + dy - y0)
+            };
+            let atlas = &self.gui.atlas;
+            match o.get("op").and_then(Value::as_str).unwrap_or_default() {
+                "fill" => {
+                    let (x, y, w, h) = rect();
+                    let color = argb(o.get("color").and_then(Value::as_i64).unwrap_or(0));
+                    batch.fill(atlas, x, y, w, h, color);
+                }
+                "gradient" => {
+                    let top = argb(o.get("top").and_then(Value::as_i64).unwrap_or(0));
+                    let bottom = argb(o.get("bottom").and_then(Value::as_i64).unwrap_or(0));
+                    batch.fill_gradient(atlas, rect(), top, bottom);
+                }
+                kind @ ("blit" | "sprite") => {
+                    let key = if kind == "blit" {
+                        texture_key(o.get("texture").and_then(Value::as_str).unwrap_or_default())
+                    } else {
+                        sprite_key(o.get("sprite").and_then(Value::as_str).unwrap_or_default())
+                    };
+                    let Some(mut r) = atlas.sprites.get(&key).copied() else {
+                        continue;
+                    };
+                    let (u, v) = (r.u1 - r.u0, r.v1 - r.v0);
+                    let (u0, u1) = (int(o, "u0"), o.get("u1").map_or(1.0, |_| int(o, "u1")));
+                    let (v0, v1) = (int(o, "v0"), o.get("v1").map_or(1.0, |_| int(o, "v1")));
+                    let base = (r.u0, r.v0);
+                    r.u0 = base.0 + u0 * u;
+                    r.u1 = base.0 + u1 * u;
+                    r.v0 = base.1 + v0 * v;
+                    r.v1 = base.1 + v1 * v;
+                    let color = o
+                        .get("color")
+                        .and_then(Value::as_i64)
+                        .map_or(u32::MAX, argb);
+                    let (x, y, w, h) = rect();
+                    batch.rect_uv(x, y, w, h, r, color);
+                }
+                "text" => {
+                    let (x, y) = (int(o, "x") + dx, int(o, "y") + dy);
+                    let color = argb(o.get("color").and_then(Value::as_i64).unwrap_or(-1));
+                    let shadow = o.get("shadow").and_then(Value::as_bool).unwrap_or(false);
+                    if let Some(text) = o.get("text").and_then(Value::as_str) {
+                        batch.text(atlas, text, x, y, color, shadow);
+                    } else if let Some(json) = o.get("json").and_then(Value::as_str)
+                        && let Ok(value) = serde_json::from_str::<Value>(json)
+                    {
+                        let text = self.translated(horizon_client::scoreboard::comp_text(&value));
+                        batch.text_styled(atlas, &text, x, y, color, shadow);
+                    }
+                }
+                "item" => {
+                    if let Some(stack) = stack(o) {
+                        self.draw_item_model(batch, &stack, int(o, "x") + dx, int(o, "y") + dy);
+                    }
+                }
+                "decorations" => {
+                    if let Some(stack) = stack(o) {
+                        let count = o.get("count").and_then(Value::as_str).map(str::to_owned);
+                        self.draw_item_decorations(
+                            batch,
+                            &stack,
+                            int(o, "x") + dx,
+                            int(o, "y") + dy,
+                            count,
+                        );
+                    }
+                }
+                "item_tooltip" => tooltip = stack(o),
+                "tooltip" => {
+                    let lines: Vec<horizon_client::text::Text> = o
+                        .get("lines")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|l| serde_json::from_str::<Value>(l.as_str()?).ok())
+                        .map(|v| self.translated(horizon_client::scoreboard::comp_text(&v)))
+                        .collect();
+                    lines_tooltip = Some(lines);
+                }
+                _ => {}
+            }
+        }
+        if let Some(stack) = tooltip {
+            let (x, y) = self.cursor;
+            self.draw_stack_tooltip(batch, &stack, x, y);
+        }
+        if let Some(lines) = lines_tooltip {
+            horizon_client::ui::tooltip(batch, &self.gui.atlas, &lines, self.cursor);
+        }
+        true
+    }
+
+    /// A component as the screen shows it: its translations resolved in the game's language.
+    fn translated(&self, text: horizon_client::text::Text) -> horizon_client::text::Text {
+        text.resolve_legacy()
+    }
+
+    fn send_java_screen_input(&mut self, window: i32, mut input: Value) {
+        input["window"] = json!(window);
+        let data = input.to_string().into_bytes();
+        self.send(S::CustomPayload(CustomPayload {
+            channel: INPUT.into(),
+            data,
+        }));
+    }
+
+    /// Mouse and keys over the open mod screen go to it: false when none is open.
+    pub(super) fn java_screen_mouse(&mut self, kind: &str, right: bool) -> bool {
+        let Some(window) = self.java_screen_window() else {
+            return false;
+        };
+        let (x, y) = self.cursor;
+        let mods = if self.has_shift_down() { SHIFT } else { 0 };
+        self.send_java_screen_input(
+            window,
+            // 26.3's buttons count from one (InputConstants.MOUSE_BUTTON_LEFT, _RIGHT).
+            json!({"kind": kind, "x": x, "y": y, "button": if right { 3 } else { 1 }, "mods": mods}),
+        );
+        true
+    }
+
+    pub(super) fn java_screen_scroll(&mut self, h: f64, v: f64) -> bool {
+        let Some(window) = self.java_screen_window() else {
+            return false;
+        };
+        let (x, y) = self.cursor;
+        self.send_java_screen_input(
+            window,
+            json!({"kind": "scroll", "x": x, "y": y, "h": h, "v": v}),
+        );
+        true
+    }
+
+    /// A key for the open mod screen (GLFW's key code); Escape and the inventory key stay the
+    /// game's, closing the window.
+    /// Whether a mod screen takes this key: every key but Escape and the inventory key, which
+    /// stay Horizon's (they close the menu), and none while the recipe book's search is typed in.
+    pub(super) fn java_screen_takes(&self, key: KeyCode) -> bool {
+        self.java_screen.is_some()
+            && key != KeyCode::Escape
+            && self.settings.keys.translate(key) != Some(Ok(KeyCode::KeyE))
+            && !self.recipe_search_focused()
+            && self.java_screen_window().is_some()
+    }
+
+    /// A key press on a mod screen: `Screen.keyPressed` with 26.3's key code, then the
+    /// typed characters (`charTyped`), as vanilla's keyboard handler sends both.
+    pub(super) fn java_screen_key(&mut self, key: KeyCode, text: Option<&str>) -> bool {
+        let Some(window) = self.java_screen_window() else {
+            return false;
+        };
+        let mut mods = 0;
+        if self.has_shift_down() {
+            mods |= SHIFT;
+        }
+        if self.has_control_down() {
+            mods |= CONTROL;
+        }
+        if let Some(code) = sdl_key(key) {
+            self.send_java_screen_input(
+                window,
+                json!({"kind": "key", "key": code, "scancode": code, "mods": mods}),
+            );
+        }
+        for ch in text.unwrap_or("").chars().filter(|c| !c.is_control()) {
+            self.send_java_screen_input(window, json!({"kind": "char", "char": ch as u32}));
+        }
+        true
+    }
+
+    // ---- The server -----------------------------------------------------------------------
+
+    /// A frame of a player's mod screen, from Java: to their game, for their window.
+    #[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+    pub(super) fn send_java_screen_frame(host: &mut LanHost, conn: u32, window: i32, frame: &str) {
+        let data = format!("{{\"window\":{window},\"ops\":{frame}}}").into_bytes();
+        host.hub.send_to(
+            conn,
+            &C::CustomPayload(CustomPayload {
+                channel: CHANNEL.into(),
+                data,
+            }),
+        );
+    }
+}
+
+/// `InputConstants.MOD_SHIFT` and `MOD_CONTROL` (SDL3's `KMOD_SHIFT`, `KMOD_CTRL`).
+const SHIFT: i32 = 3;
+const CONTROL: i32 = 192;
+
+/// winit's key → 26.3's key code (`InputConstants.KEY_*`: SDL3 scancodes, the USB HID usage
+/// numbers), what Java screens compare against.
+fn sdl_key(key: KeyCode) -> Option<i32> {
+    use KeyCode as K;
+    let letters = [
+        K::KeyA,
+        K::KeyB,
+        K::KeyC,
+        K::KeyD,
+        K::KeyE,
+        K::KeyF,
+        K::KeyG,
+        K::KeyH,
+        K::KeyI,
+        K::KeyJ,
+        K::KeyK,
+        K::KeyL,
+        K::KeyM,
+        K::KeyN,
+        K::KeyO,
+        K::KeyP,
+        K::KeyQ,
+        K::KeyR,
+        K::KeyS,
+        K::KeyT,
+        K::KeyU,
+        K::KeyV,
+        K::KeyW,
+        K::KeyX,
+        K::KeyY,
+        K::KeyZ,
+    ];
+    let digits = [
+        K::Digit1,
+        K::Digit2,
+        K::Digit3,
+        K::Digit4,
+        K::Digit5,
+        K::Digit6,
+        K::Digit7,
+        K::Digit8,
+        K::Digit9,
+        K::Digit0,
+    ];
+    let numpad = [
+        K::Numpad1,
+        K::Numpad2,
+        K::Numpad3,
+        K::Numpad4,
+        K::Numpad5,
+        K::Numpad6,
+        K::Numpad7,
+        K::Numpad8,
+        K::Numpad9,
+        K::Numpad0,
+    ];
+    let functions = [
+        K::F1,
+        K::F2,
+        K::F3,
+        K::F4,
+        K::F5,
+        K::F6,
+        K::F7,
+        K::F8,
+        K::F9,
+        K::F10,
+        K::F11,
+        K::F12,
+    ];
+    let at =
+        |keys: &[KeyCode], base: i32| keys.iter().position(|k| *k == key).map(|i| base + i as i32);
+    if let Some(code) = at(&letters, 4)
+        .or_else(|| at(&digits, 30))
+        .or_else(|| at(&numpad, 89))
+        .or_else(|| at(&functions, 58))
+    {
+        return Some(code);
+    }
+    Some(match key {
+        K::Enter => 40,
+        K::Escape => 41,
+        K::Backspace => 42,
+        K::Tab => 43,
+        K::Space => 44,
+        K::Minus => 45,
+        K::Equal => 46,
+        K::BracketLeft => 47,
+        K::BracketRight => 48,
+        K::Backslash => 49,
+        K::Semicolon => 51,
+        K::Quote => 52,
+        K::Backquote => 53,
+        K::Comma => 54,
+        K::Period => 55,
+        K::Slash => 56,
+        K::CapsLock => 57,
+        K::Insert => 73,
+        K::Home => 74,
+        K::PageUp => 75,
+        K::Delete => 76,
+        K::End => 77,
+        K::PageDown => 78,
+        K::ArrowRight => 79,
+        K::ArrowLeft => 80,
+        K::ArrowDown => 81,
+        K::ArrowUp => 82,
+        K::NumLock => 83,
+        K::NumpadDivide => 84,
+        K::NumpadMultiply => 85,
+        K::NumpadSubtract => 86,
+        K::NumpadAdd => 87,
+        K::NumpadEnter => 88,
+        K::NumpadDecimal => 99,
+        K::ControlLeft => 224,
+        K::ShiftLeft => 225,
+        K::AltLeft => 226,
+        K::SuperLeft => 227,
+        K::ControlRight => 228,
+        K::ShiftRight => 229,
+        K::AltRight => 230,
+        K::SuperRight => 231,
+        _ => return None,
+    })
+}

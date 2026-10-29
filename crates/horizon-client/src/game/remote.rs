@@ -2688,6 +2688,9 @@ impl Game<'_> {
                 }
             }
             C::OpenScreen(p) => self.remote_open_screen(p),
+            C::CustomPayload(p) if p.channel == super::java_screen::CHANNEL => {
+                self.remote_java_screen(&p.data)
+            }
             C::MountScreenOpen(p) => self.remote_open_mount(p),
             C::RecipeBookAdd(p) => self.remote_recipe_book_add(p),
             C::RecipeBookRemove(p) => self.remote_recipe_book_remove(p),
