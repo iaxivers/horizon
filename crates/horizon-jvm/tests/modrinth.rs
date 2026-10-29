@@ -5,6 +5,7 @@
 //! - `/command args`: Steve types it;
 //! - `ticks N`: N server ticks pass;
 //! - `move x y z`: Steve is now there (Horizon moved him);
+//! - `mode N`: Steve's game mode is now N (0 survival, 1 creative, 2 adventure, 3 spectator);
 //! - `say text`: Steve chats.
 //!
 //! Every answer, teleport and failure is printed: this is how a mod's needs are found.
@@ -37,6 +38,8 @@ fn real_mods_in_a_scripted_session() {
     let _ = std::fs::remove_dir_all(&dir);
     let mods = dir.join("mods-java");
     std::fs::create_dir_all(&mods).unwrap();
+    // Mods write relative paths (./config/...) where the process runs: keep them here.
+    std::env::set_current_dir(&dir).unwrap();
     for jar in horizon_jvm::jars(&source) {
         std::fs::copy(&jar, mods.join(jar.file_name().unwrap())).unwrap();
     }
@@ -120,6 +123,9 @@ fn real_mods_in_a_scripted_session() {
         } else if let Some(xyz) = line.strip_prefix("move ") {
             let v: Vec<f64> = xyz.split_whitespace().map(|v| v.parse().unwrap()).collect();
             steve.position = [v[0], v[1], v[2]];
+            show(line, step(&steve, &[], &mut tick));
+        } else if let Some(mode) = line.strip_prefix("mode ") {
+            steve.game_mode = mode.parse().unwrap();
             show(line, step(&steve, &[], &mut tick));
         } else if let Some(text) = line.strip_prefix("say ") {
             let chat = Event::Chat {

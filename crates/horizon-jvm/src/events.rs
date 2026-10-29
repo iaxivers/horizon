@@ -72,6 +72,17 @@ pub enum Action {
         yaw: f32,
         pitch: f32,
     },
+    /// `ServerPlayer.onUpdateAbilities`: the player's abilities (`/fly`, `/invuln`), as
+    /// vanilla computed them in that game mode.
+    Abilities {
+        uuid: String,
+        /// The game mode the Java side had the player in (`GameType.getId`).
+        game_mode: i32,
+        /// invulnerable 1, flying 2, may fly 4, instabuild 8.
+        flags: i8,
+        flying_speed: f32,
+        walking_speed: f32,
+    },
 }
 
 static ACTIONS: Mutex<Vec<Action>> = Mutex::new(Vec::new());

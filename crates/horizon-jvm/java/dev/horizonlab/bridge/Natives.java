@@ -13,6 +13,12 @@ public final class Natives {
     /** Moves a player (by UUID) to a dimension ("minecraft:the_nether"), position and rotation. */
     public static native void teleport(String uuid, String dimension, double x, double y, double z, float yaw, float pitch);
 
+    /**
+     * A player's abilities (vanilla's Abilities) as computed in game mode {@code gameMode}:
+     * {@code flags} invulnerable 1, flying 2, may fly 4, instabuild 8.
+     */
+    public static native void abilities(String uuid, int gameMode, int flags, float flyingSpeed, float walkingSpeed);
+
     /** A system message to every player on the server, and its log. */
     public static native void broadcast(String text);
 

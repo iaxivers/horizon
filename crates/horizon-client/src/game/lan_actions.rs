@@ -302,11 +302,12 @@ impl Game<'_> {
         motion.yaw = g.yaw;
         motion.pitch = g.pitch;
         motion.sprinting = g.sprinting;
-        motion.may_fly = g.creative() || g.game_mode == SPECTATOR;
+        motion.may_fly = g.may_fly();
+        motion.flying_speed = g.speeds().0;
         motion.flying = g.flying;
         // FireworkRocketItem.use boosts only a gliding player.
         motion.fall_flying = g.fall_flying;
-        motion.invulnerable = motion.may_fly;
+        motion.invulnerable = g.invulnerable();
         let _ = motion.set_health(g.health, false);
         motion.health.food.food = g.food;
         motion.health.food.saturation = g.saturation;

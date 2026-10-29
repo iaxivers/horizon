@@ -380,6 +380,11 @@ fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
                 fn_ptr: native_teleport as *mut c_void,
             },
             NativeMethod {
+                name: "abilities".into(),
+                sig: "(Ljava/lang/String;IIFF)V".into(),
+                fn_ptr: native_abilities as *mut c_void,
+            },
+            NativeMethod {
                 name: "broadcast".into(),
                 sig: "(Ljava/lang/String;)V".into(),
                 fn_ptr: native_broadcast as *mut c_void,
@@ -568,6 +573,30 @@ extern "system" fn native_teleport(
             yaw,
             pitch,
         });
+    }));
+}
+
+/// `Natives.abilities(String uuid, int gameMode, int flags, float flyingSpeed, float
+/// walkingSpeed)`.
+extern "system" fn native_abilities(
+    mut env: JNIEnv,
+    _class: JClass,
+    uuid: JString,
+    game_mode: sys::jint,
+    flags: sys::jint,
+    flying_speed: sys::jfloat,
+    walking_speed: sys::jfloat,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Ok(uuid) = env.get_string(&uuid) {
+            events::push(events::Action::Abilities {
+                uuid: uuid.into(),
+                game_mode,
+                flags: flags as i8,
+                flying_speed,
+                walking_speed,
+            });
+        }
     }));
 }
 

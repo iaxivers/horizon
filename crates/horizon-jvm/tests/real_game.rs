@@ -96,6 +96,8 @@ fn fabric_api_and_a_mod_on_the_real_game() {
     let _ = std::fs::remove_dir_all(&dir);
     let mods = dir.join("mods-java");
     std::fs::create_dir_all(&mods).unwrap();
+    // Mods write relative paths (./config/...) where the process runs: keep them here.
+    std::env::set_current_dir(&dir).unwrap();
     // The hello mod, as tests/fabric.rs's write_hello_mod makes it.
     let hello = std::env::var_os("HORIZON_HELLO_MOD").map(PathBuf::from);
     if let Some(hello) = &hello {

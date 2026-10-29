@@ -27,4 +27,10 @@ public abstract class IntegratedServerMixin {
     private void horizon$permissions(NameAndId player, CallbackInfoReturnable<LevelBasedPermissionSet> cir) {
         if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.permissions(player));
     }
+
+    /** The game folder Fabric runs in (config/ is there), not a client's or the process's. */
+    @Inject(method = "getServerDirectory", at = @At("HEAD"), cancellable = true)
+    private void horizon$serverDirectory(CallbackInfoReturnable<java.nio.file.Path> cir) {
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(net.fabricmc.loader.api.FabricLoader.getInstance().getGameDir());
+    }
 }

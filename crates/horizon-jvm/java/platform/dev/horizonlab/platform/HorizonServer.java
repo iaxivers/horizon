@@ -288,6 +288,11 @@ public final class HorizonServer {
                 player.setYBodyRot((float) motion[i * 5 + 3]);
                 player.setHealth(health[i]);
                 MODES.put(uuid, modes[i]);
+                // Horizon's game mode, so mods see it (ServerPlayer.setGameMode: abilities
+                // follow, and a mod that grants flight hears of the change).
+                if (player.gameMode().getId() != modes[i]) {
+                    player.setGameMode(net.minecraft.world.level.GameType.byId(modes[i]));
+                }
                 PERMISSIONS.put(uuid, permissions[i]);
                 now.put(uuid, player);
             } catch (Throwable t) {

@@ -528,6 +528,34 @@ mod run {
                             self.java_teleport(teleport);
                         }
                     }
+                    horizon_jvm::events::Action::Abilities {
+                        uuid,
+                        game_mode,
+                        flags,
+                        flying_speed,
+                        walking_speed,
+                    } => {
+                        let Some(host) = host.as_deref_mut().or(self.lan.as_mut()) else {
+                            continue;
+                        };
+                        let to = host
+                            .hub
+                            .guests
+                            .iter()
+                            .find(|g| uuid_string(g.uuid) == uuid)
+                            .map(|g| g.conn);
+                        if let Some(conn) = to {
+                            host.hub.set_mod_abilities(
+                                conn,
+                                horizon_client::lan::guest::ModAbilities {
+                                    game_mode,
+                                    flags,
+                                    flying_speed,
+                                    walking_speed,
+                                },
+                            );
+                        }
+                    }
                     horizon_jvm::events::Action::Broadcast { text } => {
                         if self.options.dedicated.is_some() {
                             super::super::dedicated::log("INFO", &text);

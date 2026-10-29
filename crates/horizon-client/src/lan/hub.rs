@@ -712,11 +712,7 @@ impl Hub {
             difficulty: ctx.difficulty,
             locked: ctx.difficulty_locked,
         }));
-        g.send(&C::PlayerAbilities(play::PlayerAbilities {
-            flags: g.ability_flags(),
-            flying_speed: 0.05,
-            walking_speed: 0.1,
-        }));
+        g.send(&g.abilities_packet());
         g.send(&C::SetHeldSlot(play::SetHeldSlot {
             slot: g.selected as i32,
         }));
@@ -2142,7 +2138,7 @@ impl Hub {
                 // handlePlayerAbilities: the client flies only if it may.
                 S::PlayerAbilities(p) => {
                     let g = &mut self.guests[i];
-                    g.flying = p.flags & 2 != 0 && (g.creative() || g.spectator());
+                    g.flying = p.flags & 2 != 0 && g.may_fly();
                 }
                 S::MovePlayerPos(p) => {
                     self.move_player(i, Some([p.x, p.y, p.z]), None, p.flags, ctx, events);
@@ -2468,11 +2464,7 @@ impl Hub {
             event: game_event::CHANGE_GAME_MODE,
             param: mode as f32,
         }));
-        g.send(&C::PlayerAbilities(play::PlayerAbilities {
-            flags: g.ability_flags(),
-            flying_speed: 0.05,
-            walking_speed: 0.1,
-        }));
+        g.send(&g.abilities_packet());
         self.broadcast(&C::PlayerInfoUpdate(play::PlayerInfoUpdate {
             actions: 4,
             entries: vec![play::PlayerInfo {
@@ -2481,6 +2473,22 @@ impl Hub {
                 ..Default::default()
             }],
         }));
+    }
+
+    /// A server mod (a Java mod) changed a guest's abilities: `/fly`, `/invuln`, speeds.
+    /// ServerPlayer.onUpdateAbilities: the guest is told at once.
+    pub fn set_mod_abilities(&mut self, conn: u32, abilities: super::guest::ModAbilities) {
+        let Some(g) = self.guest_mut(conn) else {
+            return;
+        };
+        if g.mod_abilities.as_ref() == Some(&abilities) {
+            return;
+        }
+        g.mod_abilities = Some(abilities);
+        if !g.may_fly() {
+            g.flying = false;
+        }
+        g.send(&g.abilities_packet());
     }
 
     /// The host's game mode changed (PlayerInfo UPDATE_GAME_MODE for everyone).
@@ -2558,11 +2566,7 @@ impl Hub {
         self.respawned(id);
         let g = &mut self.guests[i];
         // ServerPlayer.restoreFrom: the game mode again (onUpdateAbilities).
-        g.send(&C::PlayerAbilities(play::PlayerAbilities {
-            flags: g.ability_flags(),
-            flying_speed: 0.05,
-            walking_speed: 0.1,
-        }));
+        g.send(&g.abilities_packet());
         // The new player faces the level's respawn direction (snapTo).
         g.yaw = 0.0;
         g.pitch = 0.0;
@@ -2678,11 +2682,7 @@ impl Hub {
         self.send_permission_level(i);
         self.teleport(i, None);
         let g = &mut self.guests[i];
-        g.send(&C::PlayerAbilities(play::PlayerAbilities {
-            flags: g.ability_flags(),
-            flying_speed: 0.05,
-            walking_speed: 0.1,
-        }));
+        g.send(&g.abilities_packet());
         self.send_level_info(i, ctx);
         // PlayerList.sendAllPlayerInfo: the inventory and the held slot.
         self.send_inventory(i);

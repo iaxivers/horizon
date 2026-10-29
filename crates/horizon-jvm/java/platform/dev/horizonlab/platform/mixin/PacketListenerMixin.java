@@ -4,6 +4,7 @@ import dev.horizonlab.bridge.Natives;
 import dev.horizonlab.platform.HorizonServer;
 import io.netty.channel.ChannelFutureListener;
 import net.minecraft.network.protocol.Packet;
+import net.minecraft.network.protocol.game.ClientboundPlayerAbilitiesPacket;
 import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
 import net.minecraft.server.network.ServerCommonPacketListenerImpl;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
@@ -36,6 +37,14 @@ public abstract class PacketListenerMixin {
         if (packet instanceof ClientboundSystemChatPacket chat && self instanceof ServerGamePacketListenerImpl game
                 && game.player != null && !chat.overlay()) {
             Natives.tell(game.player.getStringUUID(), chat.content().getString());
+            return;
+        }
+        if (packet instanceof ClientboundPlayerAbilitiesPacket abilities && self instanceof ServerGamePacketListenerImpl game
+                && game.player != null) {
+            int flags = (abilities.isInvulnerable() ? 1 : 0) | (abilities.isFlying() ? 2 : 0)
+                    | (abilities.canFly() ? 4 : 0) | (abilities.canInstabuild() ? 8 : 0);
+            Natives.abilities(game.player.getStringUUID(), game.player.gameMode().getId(), flags,
+                    abilities.getFlyingSpeed(), abilities.getWalkingSpeed());
             return;
         }
         HorizonServer.dropped(packet);

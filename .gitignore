@@ -38,3 +38,6 @@
 # Minecraft's logger writes logs/ where the bridge's tests run.
 /crates/horizon-jvm/logs/
 /crates/horizon-jvm/world/
+# Fabric mods write config/ in the game folder (mods-java/ beside it).
+/config/
+/crates/horizon-jvm/config/
