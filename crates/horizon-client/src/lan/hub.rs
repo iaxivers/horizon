@@ -607,7 +607,7 @@ impl Hub {
             game_mode: Some(mode),
             listed: Some(true),
             latency: Some(latency),
-            display_name: Some(None),
+            display_name: Some(guest.and_then(|g| g.tab_name.clone())),
             list_order: Some(0),
             show_hat: Some(true),
         }
@@ -2489,6 +2489,26 @@ impl Hub {
             g.flying = false;
         }
         g.send(&g.abilities_packet());
+    }
+
+    /// A server mod (a Java mod's nickname) changed the name a guest shows in the tab list:
+    /// everyone is told (PlayerInfo UPDATE_DISPLAY_NAME).
+    pub fn set_tab_name(&mut self, uuid: u128, name: Option<Tag>) {
+        let Some(g) = self.guests.iter_mut().find(|g| g.uuid == uuid) else {
+            return;
+        };
+        if g.tab_name == name {
+            return;
+        }
+        g.tab_name = name.clone();
+        self.broadcast(&C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+            actions: 1 << 5,
+            entries: vec![play::PlayerInfo {
+                uuid,
+                display_name: Some(name),
+                ..Default::default()
+            }],
+        }));
     }
 
     /// The host's game mode changed (PlayerInfo UPDATE_GAME_MODE for everyone).

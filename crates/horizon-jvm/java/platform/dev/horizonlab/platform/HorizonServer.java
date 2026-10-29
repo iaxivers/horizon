@@ -177,6 +177,11 @@ public final class HorizonServer {
             access.horizon$setRandom(net.minecraft.util.RandomSource.create());
             ((ServerLevelAccess) level).horizon$setServer(server);
             ((ServerLevelAccess) level).horizon$setSleepStatus(new net.minecraft.server.players.SleepStatus());
+            // Its players' list from the start: vanilla's code (setGameMode's sleeping check)
+            // may read it before this tick's lists are made.
+            List<ServerPlayer> players = new ArrayList<>();
+            LEVEL_PLAYERS.put(level, players);
+            ((ServerLevelAccess) level).horizon$setPlayers(players);
             HorizonData.Loaded data = HorizonData.loaded;
             if (data != null) {
                 net.minecraft.core.RegistryAccess.Frozen registries = data.registries().compositeAccess();
@@ -291,12 +296,22 @@ public final class HorizonServer {
                 // Horizon's game mode, so mods see it (ServerPlayer.setGameMode: abilities
                 // follow, and a mod that grants flight hears of the change).
                 if (player.gameMode().getId() != modes[i]) {
-                    player.setGameMode(net.minecraft.world.level.GameType.byId(modes[i]));
+                    // What vanilla tells clients of the change, Horizon already did.
+                    syncing = true;
+                    try {
+                        player.setGameMode(net.minecraft.world.level.GameType.byId(modes[i]));
+                    } finally {
+                        syncing = false;
+                    }
                 }
                 PERMISSIONS.put(uuid, permissions[i]);
                 now.put(uuid, player);
             } catch (Throwable t) {
-                fire("mirroring player " + names[i], () -> { throw new RuntimeException(t); });
+                if (FAILURES.merge("mirroring players", 1, Integer::sum) <= 10) {
+                    Natives.log("Mirroring player " + names[i] + " failed: " + t);
+                    StackTraceElement[] frames = t.getStackTrace();
+                    for (int f = 0; f < Math.min(frames.length, 12); f++) Natives.log("    at " + frames[f]);
+                }
             }
         }
 
@@ -379,7 +394,11 @@ public final class HorizonServer {
     private static final Map<String, Integer> DROPPED = new ConcurrentHashMap<>();
 
     /** A packet a mod sent a mirrored player that Horizon doesn't take yet: logged once per type. */
+    /** True while Horizon's own state is copied in: the packets that sends are Horizon's already. */
+    private static boolean syncing;
+
     public static void dropped(Object packet) {
+        if (syncing) return;
         String type = packet.getClass().getSimpleName();
         if (DROPPED.merge(type, 1, Integer::sum) == 1) {
             Natives.log("A mod sent a player a " + type + "; Horizon doesn't send those yet");
@@ -498,6 +517,19 @@ public final class HorizonServer {
             return BlockStateParser.parseForBlock(BuiltInRegistries.BLOCK, text, false).blockState();
         } catch (Exception e) {
             return net.minecraft.world.level.block.Blocks.AIR.defaultBlockState();
+        }
+    }
+
+    /** A text component as JSON (ComponentSerialization.CODEC), or null for none. */
+    public static String json(net.minecraft.network.chat.Component component) {
+        if (component == null) return null;
+        try {
+            var ops = server.registryAccess().createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE);
+            return net.minecraft.network.chat.ComponentSerialization.CODEC.encodeStart(ops, component)
+                    .getOrThrow().toString();
+        } catch (Throwable t) {
+            // The plain text, if the component won't encode.
+            return new com.google.gson.JsonPrimitive(component.getString()).toString();
         }
     }
 }

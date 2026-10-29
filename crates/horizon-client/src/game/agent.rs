@@ -476,6 +476,8 @@ impl Game<'_> {
                 "velocity": [p.velocity.x, p.velocity.y, p.velocity.z],
                 "on_ground": p.ground.on_ground,
                 "flying": p.flying,
+                "may_fly": p.may_fly,
+                "invulnerable": p.invulnerable,
                 "fall_flying": p.fall_flying,
                 "sneaking": self.keys.contains(&KeyCode::ShiftLeft),
                 "sprinting": p.sprinting,

@@ -83,6 +83,10 @@ pub enum Action {
         flying_speed: f32,
         walking_speed: f32,
     },
+    /// ClientboundPlayerInfoUpdatePacket's UPDATE_DISPLAY_NAME: the name a player shows in
+    /// the tab list (`ServerPlayer.getTabListDisplayName`), as a JSON text component; None
+    /// for the player's own name.
+    TabName { uuid: String, json: Option<String> },
 }
 
 static ACTIONS: Mutex<Vec<Action>> = Mutex::new(Vec::new());

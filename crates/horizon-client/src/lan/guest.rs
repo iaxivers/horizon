@@ -113,6 +113,9 @@ pub struct Guest {
     /// What a server mod (a Java mod's `Abilities`) gave the player on top of its game mode:
     /// flight, invulnerability, speeds. Holds only for the game mode it was given in.
     pub mod_abilities: Option<ModAbilities>,
+    /// The name a server mod shows for the player in the tab list (a text component), None for
+    /// the player's own name (`ServerPlayer.getTabListDisplayName`).
+    pub tab_name: Option<horizon_world::nbt::Tag>,
     pub sleeping: bool,
     /// `LivingEntity.DATA_LIVING_ENTITY_FLAGS`: 1 while using an item, 2 if
     /// it is in the off hand.
@@ -302,6 +305,7 @@ impl Guest {
             fall_flying: false,
             flying: false,
             mod_abilities: None,
+            tab_name: None,
             sleeping: false,
             living_flags: 0,
             bed: None,

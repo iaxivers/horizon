@@ -5,6 +5,7 @@ import dev.horizonlab.platform.HorizonServer;
 import io.netty.channel.ChannelFutureListener;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientboundPlayerAbilitiesPacket;
+import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket;
 import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
 import net.minecraft.server.network.ServerCommonPacketListenerImpl;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
@@ -46,6 +47,13 @@ public abstract class PacketListenerMixin {
             Natives.abilities(game.player.getStringUUID(), game.player.gameMode().getId(), flags,
                     abilities.getFlyingSpeed(), abilities.getWalkingSpeed());
             return;
+        }
+        if (packet instanceof ClientboundPlayerInfoUpdatePacket info
+                && info.actions().contains(ClientboundPlayerInfoUpdatePacket.Action.UPDATE_DISPLAY_NAME)) {
+            for (ClientboundPlayerInfoUpdatePacket.Entry entry : info.entries()) {
+                Natives.tabName(entry.profileId().toString(), HorizonServer.json(entry.displayName()));
+            }
+            if (info.actions().size() == 1) return;
         }
         HorizonServer.dropped(packet);
     }

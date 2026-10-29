@@ -19,6 +19,12 @@ public final class Natives {
      */
     public static native void abilities(String uuid, int gameMode, int flags, float flyingSpeed, float walkingSpeed);
 
+    /**
+     * The name a player (by UUID) shows in the tab list, as a JSON text component; null for
+     * the player's own name.
+     */
+    public static native void tabName(String uuid, String json);
+
     /** A system message to every player on the server, and its log. */
     public static native void broadcast(String text);
 

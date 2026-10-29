@@ -556,6 +556,26 @@ mod run {
                             );
                         }
                     }
+                    horizon_jvm::events::Action::TabName { uuid, json } => {
+                        let Some(host) = host.as_deref_mut().or(self.lan.as_mut()) else {
+                            continue;
+                        };
+                        let Some(id) = host
+                            .hub
+                            .guests
+                            .iter()
+                            .find(|g| uuid_string(g.uuid) == uuid)
+                            .map(|g| g.uuid)
+                        else {
+                            continue;
+                        };
+                        let name = json
+                            .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
+                            .map(|v| {
+                                Self::uuid_int_arrays(horizon_client::lan::data::component_nbt(&v))
+                            });
+                        host.hub.set_tab_name(id, name);
+                    }
                     horizon_jvm::events::Action::Broadcast { text } => {
                         if self.options.dedicated.is_some() {
                             super::super::dedicated::log("INFO", &text);
@@ -571,6 +591,43 @@ mod run {
                         }
                     }
                 }
+            }
+        }
+
+        /// UUIDs in a component (a hover's `show_entity`) as vanilla's NBT has them: int arrays
+        /// (UUIDUtil.CODEC), not the lists of ints JSON gives.
+        #[cfg(feature = "java-mods")]
+        fn uuid_int_arrays(tag: horizon_world::nbt::Tag) -> horizon_world::nbt::Tag {
+            use horizon_world::nbt::Tag;
+            match tag {
+                Tag::Compound(entries) => Tag::Compound(
+                    entries
+                        .into_iter()
+                        .map(|(k, v)| {
+                            let v = match v {
+                                Tag::List(items)
+                                    if k.to_string().is_ok_and(|k| k == "uuid")
+                                        && items.len() == 4 =>
+                                {
+                                    let ints: Option<Vec<i32>> = items
+                                        .iter()
+                                        .map(|t| match t {
+                                            Tag::Int(i) => Some(*i),
+                                            _ => None,
+                                        })
+                                        .collect();
+                                    ints.map_or(Tag::List(items), Tag::IntArray)
+                                }
+                                other => Self::uuid_int_arrays(other),
+                            };
+                            (k, v)
+                        })
+                        .collect(),
+                ),
+                Tag::List(items) => {
+                    Tag::List(items.into_iter().map(Self::uuid_int_arrays).collect())
+                }
+                other => other,
             }
         }
 
