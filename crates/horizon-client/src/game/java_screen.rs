@@ -26,6 +26,9 @@ pub(super) struct JavaScreen {
     /// What the server last heard: the mouse, and the GUI's size.
     sent_mouse: Option<(i32, i32)>,
     sent_size: Option<(i32, i32)>,
+    /// A text box of the screen has the keyboard (the frame's `typing`): it takes the
+    /// inventory key's letter too.
+    typing: bool,
 }
 
 /// Java's ARGB as the batch's colour.
@@ -77,12 +80,19 @@ impl Game<'_> {
             Some(Value::Array(ops)) => ops.clone(),
             _ => return,
         };
+        let typing = ops
+            .iter()
+            .any(|op| op.get("op").and_then(Value::as_str) == Some("typing"));
         match &mut self.java_screen {
-            Some(screen) if screen.window == window => screen.ops = ops,
+            Some(screen) if screen.window == window => {
+                screen.ops = ops;
+                screen.typing = typing;
+            }
             _ => {
                 self.java_screen = Some(JavaScreen {
                     window,
                     ops,
+                    typing,
                     ..Default::default()
                 })
             }
@@ -132,13 +142,21 @@ impl Game<'_> {
         let mut tooltip = None;
         let mut lines_tooltip = None;
         for o in &ops {
-            let (dx, dy) = match o.get("pose").and_then(Value::as_array) {
-                Some(p) if p.len() == 6 => (
-                    p[4].as_f64().unwrap_or(0.0) as f32,
-                    p[5].as_f64().unwrap_or(0.0) as f32,
-                ),
-                _ => (0.0, 0.0),
+            // The GUI pose (Matrix3x2f: m00 m01 m10 m11 m20 m21). A translation moves the op;
+            // anything more (a scale: Tom's Storage's small counts) transforms what it drew.
+            let pose: [f32; 6] = match o.get("pose").and_then(Value::as_array) {
+                Some(p) if p.len() == 6 => {
+                    std::array::from_fn(|i| p[i].as_f64().unwrap_or(0.0) as f32)
+                }
+                _ => [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
             };
+            let affine = pose[..4] != [1.0, 0.0, 0.0, 1.0];
+            let (dx, dy) = if affine {
+                (0.0, 0.0)
+            } else {
+                (pose[4], pose[5])
+            };
+            let start = batch.vertices.len();
             let rect = || {
                 let (x0, y0) = (int(o, "x0") + dx, int(o, "y0") + dy);
                 (x0, y0, int(o, "x1") + dx - x0, int(o, "y1") + dy - y0)
@@ -223,6 +241,13 @@ impl Game<'_> {
                 }
                 _ => {}
             }
+            if affine {
+                for v in &mut batch.vertices[start..] {
+                    let [x, y] = [v.pos[0], v.pos[1]];
+                    v.pos[0] = pose[0] * x + pose[2] * y + pose[4];
+                    v.pos[1] = pose[1] * x + pose[3] * y + pose[5];
+                }
+            }
         }
         if let Some(stack) = tooltip {
             let (x, y) = self.cursor;
@@ -278,11 +303,14 @@ impl Game<'_> {
     /// A key for the open mod screen (GLFW's key code); Escape and the inventory key stay the
     /// game's, closing the window.
     /// Whether a mod screen takes this key: every key but Escape and the inventory key, which
-    /// stay Horizon's (they close the menu), and none while the recipe book's search is typed in.
+    /// stay Horizon's (they close the menu) unless one of its text boxes is typed in, and none
+    /// while Horizon's own recipe book search is.
     pub(super) fn java_screen_takes(&self, key: KeyCode) -> bool {
-        self.java_screen.is_some()
-            && key != KeyCode::Escape
-            && self.settings.keys.translate(key) != Some(Ok(KeyCode::KeyE))
+        let Some(screen) = &self.java_screen else {
+            return false;
+        };
+        key != KeyCode::Escape
+            && (screen.typing || self.settings.keys.translate(key) != Some(Ok(KeyCode::KeyE)))
             && !self.recipe_search_focused()
             && self.java_screen_window().is_some()
     }
@@ -303,7 +331,7 @@ impl Game<'_> {
         if let Some(code) = sdl_key(key) {
             self.send_java_screen_input(
                 window,
-                json!({"kind": "key", "key": code, "scancode": code, "mods": mods}),
+                json!({"kind": "key", "key": code, "keycode": sdl_keycode(key, code), "mods": mods}),
             );
         }
         for ch in text.unwrap_or("").chars().filter(|c| !c.is_control()) {
@@ -325,6 +353,47 @@ impl Game<'_> {
                 data,
             }),
         );
+    }
+}
+
+/// The text a letter, digit or space key types (scripted presses carry none of their own).
+pub(super) fn key_text(key: KeyCode) -> Option<String> {
+    let name = format!("{key:?}");
+    if key == KeyCode::Space {
+        return Some(" ".into());
+    }
+    let ch = name
+        .strip_prefix("Key")
+        .or_else(|| name.strip_prefix("Digit"))
+        .filter(|rest| rest.len() == 1)?;
+    Some(ch.to_lowercase())
+}
+
+/// SDL3's key code for a key (`KeyEvent.shortcutKey`, what text boxes' editing keys and
+/// shortcuts match): a character key's character, others their scancode with bit 30 set.
+fn sdl_keycode(key: KeyCode, scancode: i32) -> i32 {
+    use KeyCode as K;
+    if let Some(text) = key_text(key) {
+        return text.chars().next().map_or(scancode, |c| c as i32);
+    }
+    match key {
+        K::Enter => 13,
+        K::Escape => 27,
+        K::Backspace => 8,
+        K::Tab => 9,
+        K::Delete => 127,
+        K::Minus => '-' as i32,
+        K::Equal => '=' as i32,
+        K::BracketLeft => '[' as i32,
+        K::BracketRight => ']' as i32,
+        K::Backslash => '\\' as i32,
+        K::Semicolon => ';' as i32,
+        K::Quote => '\'' as i32,
+        K::Backquote => '`' as i32,
+        K::Comma => ',' as i32,
+        K::Period => '.' as i32,
+        K::Slash => '/' as i32,
+        _ => scancode | 1 << 30,
     }
 }
 

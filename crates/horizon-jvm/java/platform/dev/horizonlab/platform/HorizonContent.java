@@ -71,6 +71,81 @@ public final class HorizonContent {
         return String.join(",", namespaces);
     }
 
+    /**
+     * Writes the creative inventory as the mods change it to {@code out}: horizon-prepare's
+     * {@code creative-inventory.json} (VanillaCreativeTabsExporter's), from this game's own
+     * tabs, so mods' tabs, their items in vanilla's and the search tab's index are there; each
+     * tab with Fabric's page.
+     */
+    public static void exportCreative(String out) throws IOException {
+        Thread.currentThread().setContextClassLoader(HorizonContent.class.getClassLoader());
+        HorizonServer.ensureServer();
+        ServerLevel level = HorizonServer.level("minecraft:overworld");
+        var lookup = level.registryAccess();
+        net.minecraft.world.item.CreativeModeTabs.tryRebuildTabContents(level.enabledFeatures(), false, lookup);
+        var ops = lookup.createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE);
+        java.util.function.Function<ItemStack, String> snbt = stack -> stack.isEmpty()
+                ? "-" : ItemStack.CODEC.encodeStart(ops, stack).getOrThrow().toString();
+        var context = net.minecraft.world.item.Item.TooltipContext.of(lookup);
+        var flag = net.minecraft.world.item.TooltipFlag.Default.NORMAL.asCreative();
+        var tabs = new com.google.gson.JsonArray();
+        for (var tab : BuiltInRegistries.CREATIVE_MODE_TAB) {
+            var o = new com.google.gson.JsonObject();
+            var key = BuiltInRegistries.CREATIVE_MODE_TAB.getKey(tab);
+            o.addProperty("id", key == null ? "" : key.toString());
+            o.addProperty("type", tab.getType().name());
+            o.addProperty("row", tab.row().name());
+            o.addProperty("column", tab.column());
+            o.addProperty("page", page(tab));
+            o.addProperty("title", tab.getDisplayName().getString());
+            o.addProperty("icon", snbt.apply(tab.getIconItem()));
+            o.addProperty("visible", tab.shouldDisplay());
+            var items = new com.google.gson.JsonArray();
+            for (ItemStack stack : tab.getDisplayItems()) items.add(snbt.apply(stack));
+            o.add("items", items);
+            if (tab.getType() == net.minecraft.world.item.CreativeModeTab.Type.SEARCH) {
+                var lines = new com.google.gson.JsonArray();
+                var tags = new com.google.gson.JsonArray();
+                for (ItemStack stack : tab.getDisplayItems()) {
+                    var line = new com.google.gson.JsonArray();
+                    try {
+                        stack.getTooltipLines(context, null, flag).stream()
+                                .map(net.minecraft.network.chat.Component::getString)
+                                .map(l -> net.minecraft.ChatFormatting.stripFormatting(l).trim())
+                                .filter(l -> !l.isEmpty())
+                                .forEach(line::add);
+                    } catch (RuntimeException e) {
+                        // A mod's tooltip that needs the client: the item's name is enough.
+                        line.add(stack.getHoverName().getString());
+                    }
+                    lines.add(line);
+                    var tag = new com.google.gson.JsonArray();
+                    stack.tags().map(t -> t.location().toString()).forEach(tag::add);
+                    tags.add(tag);
+                }
+                o.add("lines", lines);
+                o.add("tags", tags);
+            }
+            tabs.add(o);
+        }
+        var json = new com.google.gson.JsonObject();
+        json.addProperty("schema", 2);
+        json.addProperty("permissions", false);
+        json.add("tabs", tabs);
+        Path path = Path.of(out);
+        Files.createDirectories(path.getParent());
+        Files.writeString(path, json.toString(), StandardCharsets.UTF_8);
+    }
+
+    /** Fabric's page of a tab (FabricCreativeModeTabImpl.fabric_getPage); 0 without Fabric's API. */
+    private static int page(net.minecraft.world.item.CreativeModeTab tab) {
+        try {
+            return (int) tab.getClass().getMethod("fabric_getPage").invoke(tab);
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return 0;
+        }
+    }
+
     private static final class Export {
         private static final BlockPos FLOOR = new BlockPos(0, 99, 0);
         final ServerLevel level;

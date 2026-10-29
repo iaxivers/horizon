@@ -84,6 +84,9 @@ public final class HorizonData {
                 (resources, reloadable, registries, data) -> new Loaded(resources, reloadable, registries, data);
         loaded = Util.blockUntilDone(executor ->
                 WorldLoader.load(init, world, result, Util.backgroundExecutor(), executor)).get();
+        // What MinecraftServer's constructor does next: recipe displays (recipe books) and the
+        // recipe property sets (which items a furnace's or a smithing table's slots take).
+        loaded.reloadable().getRecipeManager().finalizeRecipeLoading(configuration.enabledFeatures());
         Natives.log("Server data loaded in " + (System.nanoTime() - started) / 1_000_000 + " ms: "
                 + loaded.reloadable().getRecipeManager().getRecipes().size() + " recipes, "
                 + loaded.reloadable().getCommands().getDispatcher().getRoot().getChildren().size() + " commands");

@@ -11168,10 +11168,14 @@ impl Game<'_> {
     fn creative_origin(batch: &HudBatch) -> (f32, f32) {
         batch.centered_origin(Creative::WIDTH, Creative::HEIGHT)
     }
-    /// A creative tab's title: `itemGroup.*`, else the export's English title.
+    /// A creative tab's title: `itemGroup.*`, else the export's English title. A Java mod's
+    /// tab was exported by a server without the mod's languages: its title is its key, which
+    /// the mod's own language files (in the game's resources) name.
     fn creative_tab_title(&self, tab: &horizon_client::creative::Tab) -> String {
-        horizon_client::creative::item_group_key(&tab.id)
-            .map_or_else(|| tab.title.clone(), |key| self.translate(key, &tab.title))
+        horizon_client::creative::item_group_key(&tab.id).map_or_else(
+            || self.translate(&tab.title, &tab.title),
+            |key| self.translate(key, &tab.title),
+        )
     }
     /// Vanilla tooltip: dark box with a purple gradient border.
     fn tooltip(&self, batch: &mut HudBatch, text: &str, x: f32, y: f32) {
@@ -11182,6 +11186,75 @@ impl Game<'_> {
         batch.fill(atlas, x - 3.0, y - 3.0, w + 6.0, 1.0, rgba(80, 0, 255, 80));
         batch.fill(atlas, x - 3.0, y + 10.0, w + 6.0, 1.0, rgba(40, 0, 127, 80));
         batch.text(atlas, text, x, y, u32::MAX, true);
+    }
+    /// Fabric's page buttons (FabricCreativeGuiComponents): previous and next, 10 by 12, at
+    /// (170, 4) and (181, 4) of the screen; the page each turns to, when it is one.
+    fn creative_page_buttons(
+        creative: &Creative,
+        ox: f32,
+        oy: f32,
+    ) -> [(f32, f32, Option<u32>); 2] {
+        let page = creative.page;
+        let previous = page.checked_sub(1);
+        let next = Some(page + 1).filter(|p| *p < creative.pages());
+        [
+            (ox + 170.0, oy + 4.0, previous),
+            (ox + 181.0, oy + 4.0, next),
+        ]
+    }
+    fn creative_page_button(
+        creative: &Creative,
+        ox: f32,
+        oy: f32,
+        (cx, cy): (f32, f32),
+    ) -> Option<u32> {
+        if creative.pages() < 2 {
+            return None;
+        }
+        Self::creative_page_buttons(creative, ox, oy)
+            .into_iter()
+            .find(|(x, y, _)| cx >= *x && cx < x + 10.0 && cy >= *y && cy < y + 12.0)
+            .and_then(|(_, _, page)| page)
+    }
+    /// The page buttons and, over them, the page as Fabric's tooltip says it.
+    fn draw_creative_pages(&self, batch: &mut HudBatch, ox: f32, oy: f32) {
+        let creative = &self.creative_screen;
+        if creative.pages() < 2 {
+            return;
+        }
+        let atlas = &self.gui.atlas;
+        let mut hovered = false;
+        for (n, (x, y, page)) in Self::creative_page_buttons(creative, ox, oy)
+            .into_iter()
+            .enumerate()
+        {
+            let over = self.cursor.0 >= x
+                && self.cursor.0 < x + 10.0
+                && self.cursor.1 >= y
+                && self.cursor.1 < y + 12.0;
+            hovered |= over;
+            let face = match (page.is_some(), over) {
+                (false, _) => rgba(110, 110, 110, 255),
+                (true, true) => rgba(200, 200, 255, 255),
+                (true, false) => rgba(198, 198, 198, 255),
+            };
+            batch.fill(atlas, x, y, 10.0, 12.0, rgba(0, 0, 0, 255));
+            batch.fill(atlas, x + 1.0, y + 1.0, 8.0, 10.0, face);
+            let arrow = if n == 0 { "<" } else { ">" };
+            let w = HudBatch::text_width(atlas, arrow);
+            batch.text(
+                atlas,
+                arrow,
+                x + (10.0 - w) / 2.0,
+                y + 2.0,
+                rgba(64, 64, 64, 255),
+                false,
+            );
+        }
+        if hovered {
+            let text = format!("Page {}/{}", creative.page + 1, creative.pages());
+            self.tooltip(batch, &text, self.cursor.0, self.cursor.1);
+        }
     }
     fn draw_creative(&mut self, batch: &mut HudBatch) {
         let (ox, oy) = Self::creative_origin(batch);
@@ -11207,7 +11280,7 @@ impl Game<'_> {
         );
         // Unselected tabs behind the panel, then the panel, then the selected tab.
         for (i, t) in tabs.iter().enumerate() {
-            if i != selected {
+            if i != selected && self.creative_screen.shown(t) {
                 let (tx, ty) = Creative::tab_position(t);
                 batch.sprite(&self.gui.atlas, &tab_sprite(t, false), ox + tx, oy + ty);
             }
@@ -11226,7 +11299,7 @@ impl Game<'_> {
         }
         let (tx, ty) = Creative::tab_position(tab);
         batch.sprite(&self.gui.atlas, &tab_sprite(tab, true), ox + tx, oy + ty);
-        for t in &tabs {
+        for t in tabs.iter().filter(|t| self.creative_screen.shown(t)) {
             let (tx, ty) = Creative::tab_position(t);
             let stack = ItemStack {
                 item: Arc::from(t.icon.as_str()),
@@ -11345,7 +11418,8 @@ impl Game<'_> {
                 oy + Creative::SCROLL_Y + self.creative_screen.scroller_offset(),
             );
         }
-        for t in &tabs {
+        self.draw_creative_pages(batch, ox, oy);
+        for t in tabs.iter().filter(|t| self.creative_screen.shown(t)) {
             let (tx, ty) = Creative::tab_position(t);
             if self.cursor.0 >= ox + tx
                 && self.cursor.0 < ox + tx + 26.0
@@ -11393,8 +11467,17 @@ impl Game<'_> {
         let batch = HudBatch::new(size);
         let (ox, oy) = Self::creative_origin(&batch);
         let (cx, cy) = self.cursor;
+        if let Some(page) = Self::creative_page_button(&self.creative_screen, ox, oy, (cx, cy)) {
+            self.creative_screen.turn_page(page);
+            self.inv_drag = None;
+            self.last_inv_click = None;
+            return;
+        }
         let tabs = self.creative_screen.tabs.clone();
         for (i, t) in tabs.iter().enumerate() {
+            if !self.creative_screen.shown(t) {
+                continue;
+            }
             let (tx, ty) = Creative::tab_position(t);
             if cx >= ox + tx && cx < ox + tx + 26.0 && cy >= oy + ty && cy < oy + ty + 32.0 {
                 select_creative_tab(&mut self.creative_screen, &mut self.inv_clicks, i);

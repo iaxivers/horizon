@@ -430,6 +430,9 @@ impl ItemModelNode {
     pub fn decode(v: &Value) -> Result<Self> {
         let m = object(v)?;
         let kind = ident(required(m, "type")?)?;
+        if let Some(node) = Self::modded(&kind, m)? {
+            return Ok(node);
+        }
         Ok(match kind.as_str() {
             "minecraft:empty" => Self::Empty,
             "minecraft:model" => Self::Model(ModelLeaf {
@@ -512,6 +515,47 @@ impl ItemModelNode {
             },
             "minecraft:bundle/selected_item" => Self::BundleSelectedItem,
             _ => return Err(err("unknown item model type")),
+        })
+    }
+    /// A Java mod's own model type or property (registered by its client code, which Horizon
+    /// doesn't run): what it shows without it. A type's inner `model` (a node, or a model id);
+    /// a condition's `on_false`; a select's or range's fallback, else its first model. Vanilla's
+    /// own unknown names stay errors.
+    fn modded(kind: &str, m: &Map<String, Value>) -> Result<Option<Self>> {
+        let foreign = |id: &str| !id.starts_with("minecraft:");
+        let property = || -> Result<Option<String>> { get(m, "property").map(ident).transpose() };
+        if foreign(kind) {
+            return Ok(Some(match get(m, "model") {
+                Some(Value::String(id)) => Self::Model(ModelLeaf {
+                    model: ident(&Value::String(id.clone()))?,
+                    transformation: optional_transformation(m)?,
+                    tints: Vec::new(),
+                }),
+                Some(node @ Value::Object(_)) => Self::decode(node)?,
+                _ => Self::Empty,
+            }));
+        }
+        let Some(property) = property()? else {
+            return Ok(None);
+        };
+        if !foreign(&property) {
+            return Ok(None);
+        }
+        let first = |list_key: &str| -> Result<Option<Self>> {
+            if let Some(fallback) = get(m, "fallback") {
+                return Self::decode(fallback).map(Some);
+            }
+            let first = get(m, list_key)
+                .and_then(Value::as_array)
+                .and_then(|l| l.first())
+                .and_then(|e| e.get("model"));
+            first.map(Self::decode).transpose()
+        };
+        Ok(match kind {
+            "minecraft:condition" => Some(Self::decode(required(m, "on_false")?)?),
+            "minecraft:select" => Some(first("cases")?.unwrap_or(Self::Empty)),
+            "minecraft:range_dispatch" => Some(first("entries")?.unwrap_or(Self::Empty)),
+            _ => None,
         })
     }
     /// Every model resource id the tree can ask for.

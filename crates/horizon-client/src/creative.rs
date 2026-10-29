@@ -20,6 +20,10 @@ pub struct Tab {
     pub column: u32,
     pub search: bool,
     pub inventory: bool,
+    /// Fabric's creative tab page (`fabric_getPage`): 0 for vanilla's tabs, mods' from 1.
+    pub page: u32,
+    /// Not a category (search, inventory): on every page, as Fabric shows them.
+    pub always: bool,
 }
 /// What the client's creative search trees (SessionSearchTrees) index for one
 /// stack of the search tab: its creative tooltip lines and its item tags.
@@ -36,6 +40,8 @@ struct SearchEntry {
 pub struct Creative {
     pub tabs: Vec<Tab>,
     pub selected: usize,
+    /// The open tab page (Fabric's creative tab pages).
+    pub page: u32,
     /// Scroll position 0..1 (scrollOffs).
     pub scroll: f32,
     /// The scrollbar is held (scrolling): dragging moves it.
@@ -244,6 +250,8 @@ impl Creative {
                 column: t["column"].as_u64().unwrap_or(0) as u32,
                 search: kind == "SEARCH",
                 inventory: kind == "INVENTORY",
+                page: t["page"].as_u64().unwrap_or(0) as u32,
+                always: kind != "CATEGORY",
             });
         }
         Ok(Self::new(tabs, search_items, search_index))
@@ -277,6 +285,8 @@ impl Creative {
                 column: t["column"].as_u64().unwrap_or(0) as u32,
                 search: kind == "SEARCH",
                 inventory: kind == "INVENTORY",
+                page: 0,
+                always: kind != "CATEGORY",
             });
         }
         let search_index = search_items
@@ -296,6 +306,7 @@ impl Creative {
         Self {
             tabs,
             selected: 0,
+            page: 0,
             scroll: 0.0,
             scrolling: false,
             search: {
@@ -333,8 +344,28 @@ impl Creative {
                 column: t.column,
                 search: t.search,
                 inventory: t.inventory,
+                page: t.page,
+                always: t.always,
             })
             .collect()
+    }
+    /// The number of tab pages (Fabric's, with mods' tabs past vanilla's page).
+    pub fn pages(&self) -> u32 {
+        self.tabs.iter().map(|t| t.page + 1).max().unwrap_or(1)
+    }
+    /// Whether the open page shows a tab (FabricCreativeModeInventoryScreen.isGroupVisible).
+    pub fn shown(&self, tab: &Tab) -> bool {
+        tab.always || tab.page == self.page
+    }
+    /// Another page (the page buttons): its first tab is selected, as Fabric's switchToPage.
+    pub fn turn_page(&mut self, page: u32) {
+        if page >= self.pages() || page == self.page {
+            return;
+        }
+        self.page = page;
+        if let Some(first) = self.tabs.iter().position(|t| !t.always && t.page == page) {
+            self.select(first);
+        }
     }
     pub fn tab(&self) -> &Tab {
         &self.tabs[self.selected.min(self.tabs.len() - 1)]

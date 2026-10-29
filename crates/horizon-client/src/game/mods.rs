@@ -243,6 +243,10 @@ pub(super) fn content_root(
     }
     match mod_content::resource_root(root, &mods, &here.join(".horizon-cache")) {
         Ok(out) => {
+            #[cfg(feature = "java-mods")]
+            if out != root {
+                super::java_mods::java_creative(&out);
+            }
             if out != root {
                 log::info!(
                     "Horizon: content from {} mod(s) in {}",

@@ -170,6 +170,15 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
         fill(x0, y0, x1, y1, color);
     }
 
+    /**
+     * A text box's selection, which vanilla draws by inverting the text over it (a logic-op
+     * pipeline): a see-through blue over the text here.
+     */
+    @Override
+    public void textHighlight(int x0, int y0, int x1, int y1, boolean invert) {
+        fill(x0, y0, x1, y1, invert ? 0x800000FF : 0x80FFFFFF);
+    }
+
     @Override
     public void fillGradient(int x0, int y0, int x1, int y1, int top, int bottom) {
         JsonObject o = op("gradient");

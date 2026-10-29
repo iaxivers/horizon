@@ -585,6 +585,35 @@ pub fn random_ticks(dimension: &str, positions: &[[i32; 3]]) -> Result<(), Strin
     Ok(())
 }
 
+/// The world's game time (`Level.getGameTime`, which mods time their work by: Tom's Storage's
+/// connectors scan every second of it), set before each tick.
+pub fn game_time(time: i64) -> Result<(), String> {
+    with_server(|env, class| {
+        env.call_static_method(class, "gameTime", "(J)V", &[JValue::Long(time)])?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// Java mods' blocks placed or removed at `positions` of `dimension`: their block entities made
+/// (or, gone, put away), so they tick from their placement as vanilla's do.
+pub fn block_entities(dimension: &str, positions: &[[i32; 3]]) -> Result<(), String> {
+    let flat: Vec<i32> = positions.iter().flatten().copied().collect();
+    with_server(|env, class| {
+        let dimension = env.new_string(dimension)?;
+        let array = env.new_int_array(flat.len() as sys::jsize)?;
+        env.set_int_array_region(&array, 0, &flat)?;
+        env.call_static_method(
+            class,
+            "blockEntities",
+            "(Ljava/lang/String;[I)V",
+            &[JValue::Object(&dimension), JValue::Object(&array)],
+        )?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
 /// Input to the player's open mod screen (JSON: `size`, `move`, `press`, `release`, `drag`,
 /// `scroll`, `key`, `char`), run by the screen's own code.
 pub fn screen_input(uuid: &str, input: &str) -> Result<(), String> {
@@ -688,6 +717,36 @@ pub fn hurt(uuid: &str, damage_type: &str, amount: f32) -> Result<Option<f32>, S
 
 /// Writes the oracle facts of the Java mods' blocks and items (and vanilla's, for templates)
 /// to `out` (`HorizonContent.exportFacts`): the namespaces the mods register in.
+/// The creative inventory as the mods change it (HorizonContent.exportCreative), written to
+/// `out` in horizon-prepare's `creative-inventory.json` form.
+pub fn export_creative(out: &std::path::Path) -> Result<(), String> {
+    let bridge = crate::get().ok_or("the JVM is not running")?;
+    let mut env = bridge
+        .vm()
+        .attach_current_thread_permanently()
+        .map_err(|e| format!("attach: {e}"))?;
+    let result = env.with_local_frame(16, |env| -> jni::errors::Result<()> {
+        let name = env.new_string("dev.horizonlab.platform.HorizonContent")?;
+        let class = env
+            .call_static_method(
+                "dev/horizonlab/bridge/fabric/FabricBoot",
+                "gameClass",
+                "(Ljava/lang/String;)Ljava/lang/Class;",
+                &[JValue::Object(&name)],
+            )?
+            .l()?;
+        let out = env.new_string(out.to_string_lossy())?;
+        env.call_static_method(
+            JClass::from(class),
+            "exportCreative",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&out)],
+        )?;
+        Ok(())
+    });
+    result.map_err(|e| crate::describe(&mut env, e))
+}
+
 pub fn export_facts(out: &std::path::Path) -> Result<Vec<String>, String> {
     let bridge = crate::get().ok_or("the JVM is not running")?;
     let mut env = bridge

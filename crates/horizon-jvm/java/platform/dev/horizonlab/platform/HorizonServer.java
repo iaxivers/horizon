@@ -85,6 +85,30 @@ public final class HorizonServer {
         return object != null && MIRRORS.contains(object);
     }
 
+    /** Each mirrored player's packet context (Fabric's, which its connection would hold). */
+    private static final java.util.Map<Object, net.fabricmc.fabric.api.networking.v1.context.PacketContext> CONTEXTS =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
+    /**
+     * A mirrored listener's packet context (MirrorPacketContextMixin): no connection, the
+     * server, its registries and the player's profile.
+     */
+    public static net.fabricmc.fabric.api.networking.v1.context.PacketContext packetContext(
+            net.minecraft.server.network.ServerCommonPacketListenerImpl listener) {
+        return CONTEXTS.computeIfAbsent(listener, l -> {
+            var context = new net.fabricmc.fabric.impl.networking.context.PacketContextImpl(null);
+            var server = server();
+            if (server != null) {
+                context.set(net.fabricmc.fabric.impl.networking.context.PacketContextImpl.SERVER_INSTANCE, server);
+                context.set(net.fabricmc.fabric.impl.networking.context.PacketContextImpl.REGISTRY_ACCESS, server.registryAccess());
+            }
+            if (l instanceof net.minecraft.server.network.ServerGamePacketListenerImpl game && game.player != null) {
+                context.set(net.fabricmc.fabric.impl.networking.context.PacketContextImpl.GAME_PROFILE, game.player.getGameProfile());
+            }
+            return context;
+        });
+    }
+
     /** Ids for mirrored entities, apart from the ids Horizon gives its own (counting down). */
     private static final java.util.concurrent.atomic.AtomicInteger NEXT_ID = new java.util.concurrent.atomic.AtomicInteger(0x7fff0000);
 
@@ -151,6 +175,16 @@ public final class HorizonServer {
         ((PlayerListAccess) playerList).horizon$setServer(server);
         ((MinecraftServerAccess) server).horizon$setPlayerList(playerList);
         ((MinecraftServerAccess) server).horizon$setLevels(LEVELS);
+        // Its tick rate (Level.tickRateManager: mods' tooltips read it) and the collections
+        // mods' mixins add to it.
+        try {
+            java.lang.reflect.Field rate = MinecraftServer.class.getDeclaredField("tickRateManager");
+            rate.setAccessible(true);
+            rate.set(server, new net.minecraft.server.ServerTickRateManager(server));
+        } catch (ReflectiveOperationException e) {
+            Natives.log("Horizon's server mirror has no tick rate: " + e);
+        }
+        emptyCollections(server, server.getClass());
         // The registries and resources HorizonData loaded: vanilla's data pack and the mods'.
         HorizonData.Loaded data = HorizonData.loaded;
         if (data != null) {
@@ -187,6 +221,31 @@ public final class HorizonServer {
         HorizonHooks.scan();
     }
 
+    /**
+     * Fills the null collection fields of {@code object} (made without its constructor), up its
+     * classes from {@code from}: what the constructor (and mods' mixins into it) would have set.
+     */
+    static void emptyCollections(Object object, Class<?> from) {
+        for (Class<?> c = from; c != null && c != Object.class; c = c.getSuperclass()) {
+            for (java.lang.reflect.Field field : c.getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) continue;
+                Class<?> type = field.getType();
+                Object empty;
+                if (type == Map.class) empty = new java.util.concurrent.ConcurrentHashMap<>();
+                else if (type == java.util.Set.class) empty = java.util.concurrent.ConcurrentHashMap.newKeySet();
+                else if (type == List.class || type == java.util.Collection.class) empty = new java.util.concurrent.CopyOnWriteArrayList<>();
+                else if (type == java.util.Queue.class || type == java.util.Deque.class) empty = new java.util.concurrent.ConcurrentLinkedDeque<>();
+                else continue;
+                try {
+                    field.setAccessible(true);
+                    if (field.get(object) == null) field.set(object, empty);
+                } catch (ReflectiveOperationException | RuntimeException e) {
+                    // A field it can't reach stays as it is.
+                }
+            }
+        }
+    }
+
     static ServerLevel level(String dimension) {
         ResourceKey<Level> key = ResourceKey.create(Registries.DIMENSION, Identifier.parse(dimension));
         return LEVELS.computeIfAbsent(key, k -> {
@@ -214,6 +273,9 @@ public final class HorizonServer {
             // may read it before this tick's lists are made.
             List<ServerPlayer> players = new ArrayList<>();
             LEVEL_PLAYERS.put(level, players);
+            // Collections other mods' mixins add to the level and fill in its constructor
+            // (Fabric's Transfer API's lookup caches): empty ones of their own.
+            emptyCollections(level, ServerLevel.class);
             ((ServerLevelAccess) level).horizon$setPlayers(players);
             HorizonData.Loaded data = HorizonData.loaded;
             if (data != null) {
@@ -221,6 +283,14 @@ public final class HorizonServer {
                 access.horizon$setRegistryAccess(registries);
                 access.horizon$setDamageSources(new net.minecraft.world.damagesource.DamageSources(registries));
                 access.horizon$setLevelData(data.worldData());
+                // ServerLevel's own copy (its name, its spawn, what mods read of the world).
+                try {
+                    java.lang.reflect.Field own = ServerLevel.class.getDeclaredField("serverLevelData");
+                    own.setAccessible(true);
+                    own.set(level, data.worldData());
+                } catch (ReflectiveOperationException e) {
+                    Natives.log("Java mods: a level's data could not be set: " + e);
+                }
                 // The dimension's type: the level stem's, as vanilla's server binds it.
                 var stem = registries.lookupOrThrow(Registries.LEVEL_STEM)
                         .get(ResourceKey.create(Registries.LEVEL_STEM, k.identifier()));
@@ -228,6 +298,22 @@ public final class HorizonServer {
             }
             return level;
         });
+    }
+
+    /** Horizon's world game time, which the mirrored levels read (Level.getGameTime). */
+    public static void gameTime(long time) {
+        if (server == null) return;
+        server.getWorldData().overworldData().setGameTime(time);
+    }
+
+    /** The mirrored levels (one a dimension Horizon has). */
+    public static java.util.List<ServerLevel> levels() {
+        return new ArrayList<>(LEVELS.values());
+    }
+
+    /** A mirrored player by id; null when Horizon doesn't list them. */
+    public static ServerPlayer player(UUID uuid) {
+        return BY_UUID.get(uuid);
     }
 
     private static ServerPlayer player(UUID uuid, String name, ServerLevel level) {
@@ -604,8 +690,19 @@ public final class HorizonServer {
             if (level.getBlockTicks() instanceof HorizonTicks<?> ticks) ticks.run(level);
         }
         HorizonBlockEntities.tick();
+        // ServerPlayer.tick and doTick: a menu no longer valid closes, and the open menu sends
+        // its changes (a mod's menu keeps its block working while it is watched, and syncs its
+        // own data there: Tom's Storage's terminal its item list).
+        for (ServerPlayer player : new ArrayList<>(PLAYERS)) {
+            var menu = player.containerMenu;
+            if (menu == null || menu == player.inventoryMenu || !SHOWN.containsKey(player.getUUID())) continue;
+            fire("AbstractContainerMenu.stillValid", () -> {
+                if (!menu.stillValid(player)) player.closeContainer();
+            });
+            if (player.containerMenu == menu) fire("AbstractContainerMenu.broadcastChanges", menu::broadcastChanges);
+        }
         // Mods' own screens: each changed frame to its player.
-        HorizonClient.sendFrames();
+        if (client) HorizonClient.sendFrames();
         fire("ServerTickEvents.END_SERVER_TICK", () -> ServerTickEvents.END_SERVER_TICK.invoker().onEndTick(server));
         hook(server, MinecraftServer.class, "tickServer", TICK_SERVER, "RETURN", haveTime);
         hook(server, MinecraftServer.class, "tickServer", TICK_SERVER, "TAIL", haveTime);
@@ -760,7 +857,7 @@ public final class HorizonServer {
                 Shown shown = layout(menu, opening);
                 SHOWN.put(id, shown);
                 // The mod's own screen, in Horizon's headless client (its frames: sendFrames).
-                HorizonClient.openScreen(player, menu, opening.text());
+                if (client) HorizonClient.openScreen(player, menu, opening.text());
                 SHOWN_CONTENT.remove(id);
             }
             Shown shown = SHOWN.get(id);
@@ -768,7 +865,7 @@ public final class HorizonServer {
             if (menu == null || menu == player.inventoryMenu || menu.containerId != shown.containerId) {
                 SHOWN.remove(id);
                 SHOWN_CONTENT.remove(id);
-                HorizonClient.closeScreen(id);
+                if (client) HorizonClient.closeScreen(id);
                 Natives.menuContent(player.getStringUUID(), null, null, null, null);
                 continue;
             }
@@ -833,10 +930,26 @@ public final class HorizonServer {
         if (player == null) return;
         Shown shown = SHOWN.remove(player.getUUID());
         SHOWN_CONTENT.remove(player.getUUID());
-        HorizonClient.closeScreen(player.getUUID());
+        if (client) HorizonClient.closeScreen(player.getUUID());
         if (shown != null && player.containerMenu != null && player.containerMenu.containerId == shown.containerId) {
             fire("ServerPlayer.doCloseContainer", player::doCloseContainer);
         }
+        syncInventories();
+    }
+
+    /**
+     * Whether this JVM runs the headless client (the game's own, not a dedicated server's): set
+     * by HorizonClient as it boots. Without it no client class is touched (a server has none).
+     */
+    static volatile boolean client;
+
+    /** Whether the mods' messages loop between their two sides here (HorizonLoop). */
+    public static boolean loop() {
+        return client;
+    }
+
+    /** After a mod's client message ran its server code: its changes go out as a click's do. */
+    static void afterLoop() {
         syncInventories();
     }
 
@@ -844,13 +957,19 @@ public final class HorizonServer {
     private static boolean syncing;
 
     /**
-     * A mod's payload for a mirrored player (Horizon's client has no mod channels): Fabric API's
-     * menu opening (ExtendedMenuProvider's) is shown as vanilla's are; the rest is dropped.
+     * A mod's payload for a mirrored player: to the mod's own client code when it receives it
+     * (HorizonLoop); else Fabric API's menu opening (ExtendedMenuProvider's) is shown as
+     * vanilla's are; the rest is dropped.
      */
     public static void payload(ServerPlayer player,
                                net.minecraft.network.protocol.common.custom.CustomPacketPayload payload) {
         Class<?> c = payload.getClass();
-        if (c.getName().equals("net.fabricmc.fabric.impl.menu.Networking$OpenScreenPayload")) {
+        // Fabric API's menu opening is Horizon's to show (its own screens, below), never the
+        // client's Fabric code's: that would make the client's menu from a client's level.
+        boolean opening = c.getName().equals("net.fabricmc.fabric.impl.menu.Networking$OpenScreenPayload");
+        // The mod's own client code takes its messages (the headless client's receivers).
+        if (!opening && client && HorizonLoop.toClient(player, payload)) return;
+        if (opening) {
             try {
                 Object type = c.getMethod("identifier").invoke(payload);
                 int containerId = (int) c.getMethod("containerId").invoke(payload);
@@ -1162,6 +1281,21 @@ public final class HorizonServer {
      * Random ticks Horizon's level gave mods' blocks (ServerLevel.tickChunk's): each still a
      * mod's block that ticks randomly grows as its mod says (BlockState.randomTick).
      */
+    /**
+     * Java mods' blocks placed or removed in Horizon's world: a block with a block entity has
+     * it made now (it ticks from its placement, as vanilla's do); a removed one's goes at its
+     * next tick (HorizonBlockEntities.tick).
+     */
+    public static void blockEntities(String dimension, int[] positions) {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        if (server == null) return;
+        ServerLevel level = level(dimension);
+        for (int i = 0; i + 2 < positions.length; i += 3) {
+            BlockPos pos = new BlockPos(positions[i], positions[i + 1], positions[i + 2]);
+            fire("BlockEntity (made)", () -> HorizonBlockEntities.ensure(level, pos));
+        }
+    }
+
     public static void randomTicks(String dimension, int[] positions) {
         Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
         if (server == null) return;
@@ -1279,6 +1413,8 @@ public final class HorizonServer {
     private static void syncInventories() {
         HorizonBlockEntities.flushVanilla();
         syncMenus();
+        // What mods sent their client code, now that the screens it is for are up.
+        if (client) HorizonLoop.flush();
         for (ServerPlayer player : new ArrayList<>(BY_UUID.values())) {
             float[] seen = FOOD_SEEN.get(player.getUUID());
             if (seen == null) continue;

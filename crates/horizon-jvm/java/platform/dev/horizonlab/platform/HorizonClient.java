@@ -23,6 +23,7 @@ public final class HorizonClient {
         minecraft = mc;
         File dir = new File(gameDir);
         set(Minecraft.class, mc, "gameDirectory", dir);
+        HorizonServer.client = true;
     }
 
     /**
@@ -31,6 +32,8 @@ public final class HorizonClient {
      */
     public static void finish() throws ReflectiveOperationException {
         Minecraft mc = minecraft;
+        // options.txt is brought up to date by the game's data fixer, as the server's saves are.
+        set(Minecraft.class, mc, "fixerUpper", net.minecraft.util.datafix.DataFixers.getDataFixer());
         set(Minecraft.class, mc, "options", new net.minecraft.client.Options(mc, mc.gameDirectory));
         set(Minecraft.class, mc, "font", font());
         // A mouse, which screens focus their widgets for.
@@ -47,6 +50,14 @@ public final class HorizonClient {
         set(Minecraft.class, mc, "gui", gui);
         // Screens click through the game mode (handleContainerInput): GameModeClientMixin.
         set(Minecraft.class, mc, "gameMode", Natives.allocate(net.minecraft.client.multiplayer.MultiPlayerGameMode.class));
+        // Its task queue (Minecraft.execute: a mod's client receiver hands its work to the
+        // client's thread), which the server thread runs: tasks().
+        set(net.minecraft.util.thread.BlockableEventLoop.class, mc, "pendingRunnables",
+                new java.util.concurrent.ConcurrentLinkedQueue<Runnable>());
+        // Text boxes' typing area, for a window it has none of (TextInputManagerMixin).
+        set(Minecraft.class, mc, "textInputManager", Natives.allocate(com.mojang.blaze3d.platform.TextInputManager.class));
+        // Buttons click with a sound: a manager without an engine (SoundManagerMixin).
+        set(Minecraft.class, mc, "soundManager", Natives.allocate(net.minecraft.client.sounds.SoundManager.class));
         Natives.log("Horizon's headless client is up");
     }
 
@@ -189,28 +200,78 @@ public final class HorizonClient {
         var local = PLAYERS.get(player.getUUID());
         if (local == null) {
             local = (net.minecraft.client.player.LocalPlayer) Natives.allocate(net.minecraft.client.player.LocalPlayer.class);
-            set(net.minecraft.client.player.LocalPlayer.class, local, "recipeBook", new net.minecraft.client.ClientRecipeBook());
+            set(net.minecraft.client.player.LocalPlayer.class, local, "recipeBook", recipeBook(player));
             set(net.minecraft.client.player.LocalPlayer.class, local, "minecraft", minecraft);
             set(net.minecraft.world.entity.player.Player.class, local, "inventory", player.getInventory());
             set(net.minecraft.world.entity.player.Player.class, local, "inventoryMenu", player.inventoryMenu);
             // Its level, which tooltips ask (enabled features): the server player's.
             set(net.minecraft.world.entity.Entity.class, local, "level", player.level());
+            // Its synced data (health: isAlive, which a screen's tick asks): the server player's.
+            set(net.minecraft.world.entity.Entity.class, local, "entityData", player.getEntityData());
             PLAYERS.put(player.getUUID(), local);
         }
-        local.containerMenu = player.containerMenu;
+        SERVER_PLAYERS.put(local, player);
+        // The client's menu: its own copy where its screen has one, else the server's.
+        var client = CLIENT_MENUS.get(player.getUUID());
+        local.containerMenu = client != null && player.containerMenu != null
+                && client.containerId == player.containerMenu.containerId ? client : player.containerMenu;
         // Its permissions (tooltips' operator warnings): the server player's.
         set(net.minecraft.client.player.LocalPlayer.class, local, "permissions", player.permissions());
         return local;
     }
 
+    /**
+     * The client's recipe book (what ClientboundRecipeBookAddPacket fills): every recipe the
+     * server shows in recipe books, as Horizon's player unlocks recipes on its side.
+     */
+    static net.minecraft.client.ClientRecipeBook recipeBook(net.minecraft.server.level.ServerPlayer player) {
+        var book = new net.minecraft.client.ClientRecipeBook();
+        var recipes = player.level().getServer().getRecipeManager();
+        for (var holder : recipes.getRecipes()) {
+            recipes.listDisplaysForRecipe(holder.id(), book::add);
+        }
+        book.rebuildCollections();
+        searchTrees(book, player.level());
+        return book;
+    }
+
+    /** A connection that is only its search trees (the recipe book's search): never sends. */
+    private static net.minecraft.client.multiplayer.ClientPacketListener searchConnection;
+
+    public static synchronized net.minecraft.client.multiplayer.ClientPacketListener searchConnection() {
+        return searchConnection;
+    }
+
+    /** Recipe search, over the recipe book every player's client has (they all know all). */
+    private static synchronized void searchTrees(net.minecraft.client.ClientRecipeBook book,
+                                                 net.minecraft.world.level.Level level) {
+        if (searchConnection != null) return;
+        try {
+            var connection = (net.minecraft.client.multiplayer.ClientPacketListener)
+                    Natives.allocate(net.minecraft.client.multiplayer.ClientPacketListener.class);
+            var trees = new net.minecraft.client.multiplayer.SessionSearchTrees();
+            trees.updateRecipes(book, level);
+            set(net.minecraft.client.multiplayer.ClientPacketListener.class, connection, "searchTrees", trees);
+            searchConnection = connection;
+        } catch (Throwable t) {
+            Natives.log("Horizon's client: no recipe search: " + t);
+        }
+    }
+
     /** Runs {@code run} with the player's own client player as Minecraft.player. */
     static void as(net.minecraft.server.level.ServerPlayer player, ThrowingRunnable run) throws Throwable {
         var before = minecraft.player;
+        var screenBefore = minecraft.gui.screen();
         set(Minecraft.class, minecraft, "player", localPlayer(player));
+        // Their open screen is the GUI's (Minecraft.gui.screen()), which mods' client code looks at (a message
+        // for the screen that is open: Tom's Storage's terminal's item list).
+        var screen = SCREENS.get(player.getUUID());
+        if (screen != null) set(net.minecraft.client.gui.Gui.class, minecraft.gui, "screen", screen);
         try {
             run.run();
         } finally {
             set(Minecraft.class, minecraft, "player", before);
+            set(net.minecraft.client.gui.Gui.class, minecraft.gui, "screen", screenBefore);
         }
     }
 
@@ -240,7 +301,17 @@ public final class HorizonClient {
                     net.minecraft.world.inventory.AbstractContainerMenu.class,
                     net.minecraft.world.entity.player.Inventory.class, net.minecraft.network.chat.Component.class);
             create.setAccessible(true);
-            var screen = (net.minecraft.client.gui.screens.Screen) create.invoke(constructor, menu, player.getInventory(), title);
+            // The client's own menu where its type makes one (MenuType.create, as a client does on
+            // the open-screen packet), kept as the server's is (syncClientMenu): a mod whose
+            // menu keeps state of its own on each side (Tom's Storage's terminal's item list)
+            // needs both. Else (a Fabric extended menu, whose client constructor reads the
+            // client's level) the screen shows the server's menu itself.
+            net.minecraft.world.inventory.AbstractContainerMenu[] made = {null};
+            as(player, () -> made[0] = clientMenu(menu, player));
+            var shown = made[0] != null ? made[0] : menu;
+            if (made[0] != null) CLIENT_MENUS.put(player.getUUID(), made[0]);
+            else CLIENT_MENUS.remove(player.getUUID());
+            var screen = (net.minecraft.client.gui.screens.Screen) create.invoke(constructor, shown, player.getInventory(), title);
             as(player, () -> screen.init(width, height));
             SCREENS.put(player.getUUID(), screen);
             OWNERS.put(player.getUUID(), player);
@@ -256,6 +327,7 @@ public final class HorizonClient {
     }
 
     public static void closeScreen(java.util.UUID player) {
+        CLIENT_MENUS.remove(player);
         SCREENS.remove(player);
         OWNERS.remove(player);
         SENT.remove(player);
@@ -275,7 +347,44 @@ public final class HorizonClient {
             Natives.log("Horizon's client: a screen failed to draw: " + root);
             for (StackTraceElement frame : root.getStackTrace()) Natives.log("    at " + frame);
         }
-        return graphics.ops().toString();
+        var ops = graphics.ops();
+        if (typing(screen)) {
+            var op = new com.google.gson.JsonObject();
+            op.addProperty("op", "typing");
+            ops.add(op);
+        }
+        return ops.toString();
+    }
+
+    /**
+     * Whether a text box of the screen has the keyboard (its focused widget, or a recipe book's
+     * search): then it takes every key, the inventory key's letter too, as vanilla's do.
+     */
+    static boolean typing(net.minecraft.client.gui.screens.Screen screen) {
+        net.minecraft.client.gui.components.events.GuiEventListener at = screen;
+        while (at instanceof net.minecraft.client.gui.components.events.ContainerEventHandler parent
+                && parent.getFocused() != null) {
+            at = parent.getFocused();
+        }
+        if (at instanceof net.minecraft.client.gui.components.EditBox box && box.isFocused()) return true;
+        if (screen instanceof net.minecraft.client.gui.screens.inventory.AbstractRecipeBookScreen<?>) {
+            try {
+                var book = field(net.minecraft.client.gui.screens.inventory.AbstractRecipeBookScreen.class, screen, "recipeBookComponent");
+                var search = field(net.minecraft.client.gui.screens.recipebook.RecipeBookComponent.class, book, "searchBox");
+                return book instanceof net.minecraft.client.gui.screens.recipebook.RecipeBookComponent<?> component
+                        && component.isVisible()
+                        && search instanceof net.minecraft.client.gui.components.EditBox box && box.isFocused();
+            } catch (ReflectiveOperationException e) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    static Object field(Class<?> owner, Object target, String name) throws ReflectiveOperationException {
+        Field field = owner.getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(target);
     }
 
     // ---- Frames to Horizon, input from it -------------------------------------------------------
@@ -289,10 +398,61 @@ public final class HorizonClient {
 
     /** Each open mod screen's frame, to its player when it changed (the server's tick end). */
     public static void sendFrames() {
-        for (var id : new java.util.ArrayList<>(SCREENS.keySet())) send(id);
+        tasks();
+        for (var id : new java.util.ArrayList<>(SCREENS.keySet())) {
+            tickScreen(id);
+            send(id);
+        }
+    }
+
+    private static final java.util.Set<Object> TICK_FAILED =
+            java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
+
+    /** Screen.tick, as the client's tick runs it (a container screen's containerTick). */
+    private static void tickScreen(java.util.UUID id) {
+        var screen = SCREENS.get(id);
+        var player = OWNERS.get(id);
+        if (screen == null || player == null) return;
+        try {
+            syncClientMenu(id);
+            as(player, screen::tick);
+        } catch (Throwable t) {
+            Throwable root = t;
+            while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+            // Once a screen: a failing tick fails each tick.
+            if (TICK_FAILED.add(screen)) {
+                Natives.log("Horizon's client: a screen's tick failed: " + root);
+                for (StackTraceElement frame : root.getStackTrace()) Natives.log("    at " + frame);
+            }
+        }
+    }
+
+    private static java.lang.reflect.Method runAllTasks;
+
+    /**
+     * The client's thread is the server thread (where Horizon runs every screen and message):
+     * what is handed to it there runs at once, and what other threads hand it runs here, each
+     * tick, as the client's frame would run it.
+     */
+    static void tasks() {
+        try {
+            if (minecraft.getRunningThread() == null) {
+                set(Minecraft.class, minecraft, "gameThread", Thread.currentThread());
+            }
+            if (runAllTasks == null) {
+                runAllTasks = net.minecraft.util.thread.BlockableEventLoop.class.getDeclaredMethod("runAllTasks");
+                runAllTasks.setAccessible(true);
+            }
+            runAllTasks.invoke(minecraft);
+        } catch (Throwable t) {
+            Throwable root = t;
+            while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+            Natives.log("Horizon's client: a client task failed: " + root);
+        }
     }
 
     private static void send(java.util.UUID id) {
+        syncClientMenu(id);
         double[] mouse = MOUSE.getOrDefault(id, new double[] {-1, -1});
         String frame = frame(id, (int) mouse[0], (int) mouse[1]);
         if (frame == null || frame.equals(SENT.get(id))) return;
@@ -335,7 +495,7 @@ public final class HorizonClient {
                             in.has("dx") ? in.get("dx").getAsDouble() : 0, in.has("dy") ? in.get("dy").getAsDouble() : 0);
                     case "scroll" -> screen.mouseScrolled(x, y, in.get("h").getAsDouble(), in.get("v").getAsDouble());
                     case "key" -> screen.keyPressed(new net.minecraft.client.input.KeyEvent(
-                            in.get("key").getAsInt(), in.get("scancode").getAsInt(), mods));
+                            in.get("key").getAsInt(), in.has("keycode") ? in.get("keycode").getAsInt() : in.get("key").getAsInt(), mods));
                     case "char" -> screen.charTyped(new net.minecraft.client.input.CharacterEvent(in.get("char").getAsInt()));
                     default -> {}
                 }
@@ -363,6 +523,114 @@ public final class HorizonClient {
             menu.broadcastChanges();
         } else {
             player.closeContainer();
+        }
+    }
+
+    /** Each player's client menu, where the screen has one of its own (openScreen). */
+    private static final java.util.Map<java.util.UUID, net.minecraft.world.inventory.AbstractContainerMenu> CLIENT_MENUS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** The client's menu for a server's, made by its type; null when it can't be made apart. */
+    private static net.minecraft.world.inventory.AbstractContainerMenu clientMenu(
+            net.minecraft.world.inventory.AbstractContainerMenu menu, net.minecraft.server.level.ServerPlayer player) {
+        var type = menu.getType();
+        // Fabric's extended menus need their opening data (and often the client's level).
+        if (type.getClass() != net.minecraft.world.inventory.MenuType.class) return null;
+        try {
+            var made = type.create(menu.containerId, player.getInventory());
+            if (made == null || made.slots.size() != menu.slots.size()) return null;
+            syncClientMenu(menu, made);
+            return made;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * The server's menu as its client copy shows it (the slots, the data slots and the carried
+     * stack, as its synchronizer's packets carry them). The player's own inventory is one object
+     * on both sides here: its slots are left as they are.
+     */
+    @SuppressWarnings("unchecked")
+    private static void syncClientMenu(net.minecraft.world.inventory.AbstractContainerMenu server,
+                                       net.minecraft.world.inventory.AbstractContainerMenu client) {
+        int state = server.getStateId();
+        for (int i = 0; i < server.slots.size() && i < client.slots.size(); i++) {
+            var mine = client.slots.get(i);
+            if (mine.container instanceof net.minecraft.world.entity.player.Inventory) continue;
+            var want = server.slots.get(i).getItem();
+            if (!net.minecraft.world.item.ItemStack.matches(mine.getItem(), want)) client.setItem(i, state, want.copy());
+        }
+        try {
+            Field field = net.minecraft.world.inventory.AbstractContainerMenu.class.getDeclaredField("dataSlots");
+            field.setAccessible(true);
+            var theirs = (java.util.List<net.minecraft.world.inventory.DataSlot>) field.get(server);
+            var ours = (java.util.List<net.minecraft.world.inventory.DataSlot>) field.get(client);
+            for (int i = 0; i < theirs.size() && i < ours.size(); i++) {
+                int value = theirs.get(i).get();
+                if (ours.get(i).get() != value) client.setData(i, value);
+            }
+        } catch (ReflectiveOperationException e) {
+            // No data slots to copy.
+        }
+        if (!net.minecraft.world.item.ItemStack.matches(client.getCarried(), server.getCarried())) {
+            client.setCarried(server.getCarried().copy());
+        }
+    }
+
+    /** A player's client menu brought up to the server's (before each frame). */
+    private static void syncClientMenu(java.util.UUID id) {
+        var client = CLIENT_MENUS.get(id);
+        var player = OWNERS.get(id);
+        if (client == null || player == null) return;
+        var server = player.containerMenu;
+        if (server == null || server.containerId != client.containerId) return;
+        try {
+            as(player, () -> syncClientMenu(server, client));
+        } catch (Throwable t) {
+            Natives.log("Horizon's client: a client menu could not follow its server's: " + t);
+        }
+    }
+
+    /** Each client player's server player (its game mode, for one). */
+    private static final java.util.Map<Object, net.minecraft.server.level.ServerPlayer> SERVER_PLAYERS =
+            java.util.Collections.synchronizedMap(new java.util.IdentityHashMap<>());
+
+    /** A client player's server player (who a mod's client message is from). */
+    public static net.minecraft.server.level.ServerPlayer serverPlayer(Object local) {
+        return local == null ? null : SERVER_PLAYERS.get(local);
+    }
+
+    /** AbstractClientPlayer.gameMode, which reads the tab list's entry: the server player's. */
+    public static net.minecraft.world.level.GameType gameMode(Object local) {
+        var player = SERVER_PLAYERS.get(local);
+        return player == null ? net.minecraft.world.level.GameType.SURVIVAL : player.gameMode();
+    }
+
+    /**
+     * MultiPlayerGameMode.handlePlaceRecipe, as ServerGamePacketListenerImpl.handlePlaceRecipe
+     * answers it: the recipe book's click fills the menu's grid, or shows the recipe as a ghost
+     * when the ingredients are missing (ClientboundPlaceGhostRecipePacket, straight to the screen).
+     */
+    public static void placeRecipe(int containerId, net.minecraft.world.item.crafting.display.RecipeDisplayId id,
+                                   boolean useMaxItems) {
+        var player = acting;
+        if (player == null || player.isSpectator() || player.containerMenu == null
+                || player.containerMenu.containerId != containerId) return;
+        if (!player.containerMenu.stillValid(player)) {
+            player.closeContainer();
+            return;
+        }
+        var info = player.level().getServer().getRecipeManager().getRecipeFromDisplay(id);
+        if (info == null) return;
+        var holder = info.parent();
+        if (!(player.containerMenu instanceof net.minecraft.world.inventory.RecipeBookMenu menu)) return;
+        if (holder.value().placementInfo().isImpossibleToPlace()) return;
+        var after = menu.handlePlacement(useMaxItems, player.isCreative(), holder, player.level(), player.getInventory());
+        menu.broadcastChanges();
+        if (after == net.minecraft.world.inventory.RecipeBookMenu.PostPlaceAction.PLACE_GHOST_RECIPE
+                && SCREENS.get(player.getUUID()) instanceof net.minecraft.client.gui.screens.recipebook.RecipeUpdateListener screen) {
+            screen.fillGhostRecipe(info.display().display());
         }
     }
 

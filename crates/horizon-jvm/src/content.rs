@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 /// The version of what this module writes: bump it when the facts or the carry-over change.
-const FORMAT: u32 = 7;
+const FORMAT: u32 = 8;
 
 /// The stamp of a set of jars: their names, sizes and modification times, and [`FORMAT`].
 pub fn stamp(jars: &[PathBuf]) -> String {
@@ -53,6 +53,16 @@ fn carried(work: &Path) -> Vec<PathBuf> {
         .collect();
     out.sort();
     out
+}
+
+/// The creative inventory the mods' content build exports, in the cache.
+pub const CREATIVE: &str = "creative-inventory.json";
+
+/// The creative inventory exported with the cached content: the game's resources take it in
+/// place of the prepared one (horizon-prepare's, vanilla's tabs only).
+pub fn creative(cache: &Path) -> Option<PathBuf> {
+    let path = cache.join(CREATIVE);
+    path.is_file().then_some(path)
 }
 
 /// Builds the content mods of `jars` into `cache` (the JVM and Fabric running, with these
@@ -97,6 +107,11 @@ pub fn build(
     // blocks still has names, recipes and loot Horizon reads).
     let all: Vec<String> = records.iter().map(|r| r.key.clone()).collect();
     horizon_port_pack::pipeline::carry(&work, Some(resources), &all, &log_line)?;
+    // The creative tabs with the mods' (the game puts it over the prepared one: `creative`).
+    match crate::events::export_creative(&cache.join(CREATIVE)) {
+        Ok(()) => log("Java mods' content: creative tabs exported".into()),
+        Err(e) => log(format!("Java mods' content: no creative tabs: {e}")),
+    }
     let _ = std::fs::remove_dir_all(&instance);
     std::fs::write(cache.join("stamp"), stamp(jars)).map_err(|e| format!("stamp: {e}"))?;
     Ok(carried(&work))

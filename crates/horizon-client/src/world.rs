@@ -8,6 +8,11 @@ use std::{
     sync::Arc,
 };
 
+/// Told of every block a world's `set` changes (position, previous and new state ids): the game
+/// keeps those of blocks only Java mods know, whose block entities then exist as vanilla's do.
+pub static SET_HOOK: std::sync::OnceLock<fn((i32, i32, i32), u32, u32)> =
+    std::sync::OnceLock::new();
+
 /// Sections (x, section index, z) waiting to be remeshed, kept by column
 /// (a bit per section index), so the mesh scheduler looks at each column once
 /// rather than at every section of it.
@@ -263,6 +268,9 @@ impl World {
         }
         let previous = Arc::make_mut(chunk).set(x & 15, y, z & 15, state.0);
         if previous != state.0 {
+            if let Some(hook) = SET_HOOK.get() {
+                hook((x, y, z), previous, state.0);
+            }
             self.block_entities
                 .state_changed((x, y, z), previous, state.0);
             let watches = |id: u32| self.watched.get(id as usize).copied().unwrap_or(false);

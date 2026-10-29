@@ -26,6 +26,7 @@ impl Game<'_> {
         // The head of the players' hurtServer asks the Java mods.
         let _ = horizon_client::health::HURT_HOOK.set(super::server_mods::java_hurt);
         let _ = horizon_world::level::RANDOM_TICK_HOOK.set(super::server_mods::java_random_tick);
+        let _ = horizon_client::world::SET_HOOK.set(super::server_mods::java_block_set);
         let spawned = std::thread::Builder::new()
             .name("Java mods".into())
             .spawn(move || {
@@ -89,6 +90,23 @@ pub(super) fn java_content(base: &Path) -> Vec<PathBuf> {
             log::warn!("Java mods: their content was not made: {e}");
             Vec::new()
         }
+    }
+}
+
+/// Puts the creative tabs the Java mods' content build exported (their tabs, their items in
+/// vanilla's, the search index) over the prepared ones in the game's content root `out`.
+pub(super) fn java_creative(out: &Path) {
+    let cache = std::env::current_dir()
+        .unwrap_or_default()
+        .join(".horizon-cache/java-content");
+    let Some(exported) = horizon_jvm::content::creative(&cache) else {
+        return;
+    };
+    let at = out.join(horizon_jvm::content::CREATIVE);
+    // The content root links the prepared file: the link goes, the export takes its place.
+    let _ = std::fs::remove_file(&at);
+    if let Err(e) = std::fs::copy(&exported, &at) {
+        log::warn!("Java mods: their creative tabs were not added: {e}");
     }
 }
 

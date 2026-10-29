@@ -55,6 +55,7 @@ public final class HorizonBlockEntities {
         if (dir != null) save();
         LIVE.clear();
         SAVED.clear();
+        COPIES.clear();
         dir = now;
     }
 
@@ -91,7 +92,31 @@ public final class HorizonBlockEntities {
         made.setLevel(level);
         live.put(key, made);
         dirty = true;
+        loaded(level, made);
         return made;
+    }
+
+    /** A mod block placed at {@code pos}: its block entity made, if it has one and none is up. */
+    public static synchronized void ensure(Level level, BlockPos pos) {
+        BlockState state = HorizonServer.blockState(level, pos);
+        if (!modded(state) || !state.hasBlockEntity()) return;
+        Map<Long, BlockEntity> live = LIVE.get((ServerLevel) level);
+        if (live == null || !live.containsKey(pos.asLong())) get(level, pos);
+    }
+
+    /**
+     * Saved block entities whose chunks Horizon has loaded come back up, so they tick (a mod
+     * machine works on with no one looking at it), as a loaded chunk's do.
+     */
+    private static void restore() {
+        for (ServerLevel level : HorizonServer.levels()) {
+            String dimension = level.dimension().identifier().toString();
+            Map<Long, CompoundTag> saved = saved(level);
+            for (Long key : new ArrayList<>(saved.keySet())) {
+                BlockPos pos = BlockPos.of(key);
+                if (Natives.blockState(dimension, pos.getX(), pos.getY(), pos.getZ()) != null) get(level, pos);
+            }
+        }
     }
 
     /** Level.setBlockEntity on a mirrored level. */
@@ -108,7 +133,10 @@ public final class HorizonBlockEntities {
     public static synchronized void removed(Level level, BlockPos pos) {
         Map<Long, BlockEntity> live = LIVE.get((ServerLevel) level);
         BlockEntity be = live == null ? null : live.remove(pos.asLong());
-        if (be != null) be.setRemoved();
+        if (be != null) {
+            be.setRemoved();
+            unloaded(level, be);
+        }
         saved(level).remove(pos.asLong());
         dirty = true;
     }
@@ -116,26 +144,52 @@ public final class HorizonBlockEntities {
     /** Level.blockEntityChanged (BlockEntity.setChanged). */
     public static synchronized void changed(Level level, BlockPos pos) {
         dirty = true;
-        Map<Long, BlockEntity> call = CALL.get((ServerLevel) level);
-        if (call != null && call.containsKey(pos.asLong())) {
-            CHANGED.computeIfAbsent((ServerLevel) level, l -> new java.util.HashSet<>()).add(pos.asLong());
-        }
+        Map<Long, Copy> copies = COPIES.get((ServerLevel) level);
+        Copy copy = copies == null ? null : copies.get(pos.asLong());
+        if (copy != null) copy.changed = true;
     }
 
     // ---- Vanilla blocks' block entities: Horizon's ------------------------------------------
 
-    /** This call's copies of Horizon's block entities (a chest's), made as mods ask. */
-    private static final Map<ServerLevel, Map<Long, BlockEntity>> CALL = new IdentityHashMap<>();
-    private static final Map<ServerLevel, java.util.Set<Long>> CHANGED = new IdentityHashMap<>();
+    /**
+     * Horizon's block entities (a chest's) as vanilla ones Java's mods use: one lasting copy a
+     * position, so what a mod keeps of it (Tom's Storage's connector, the chest's item storage)
+     * stays the one in use. Each tick it is read again from Horizon in place (what players did to
+     * the chest shows), and what mods change of it goes back to Horizon (flushVanilla).
+     */
+    private static final Map<ServerLevel, Map<Long, Copy>> COPIES = new IdentityHashMap<>();
+
+    private static final class Copy {
+        final BlockEntity be;
+        /** Horizon's block entity as last read (null: read it again). */
+        String snbt;
+        /** Mods changed it since it was last written to Horizon. */
+        boolean changed;
+
+        Copy(BlockEntity be, String snbt) {
+            this.be = be;
+            this.snbt = snbt;
+        }
+    }
 
     /** Horizon's block entity at {@code pos}, as a vanilla one Java's mods can use. */
     private static BlockEntity vanilla(Level level, BlockPos pos, BlockState state) {
-        Map<Long, BlockEntity> call = CALL.computeIfAbsent((ServerLevel) level, l -> new HashMap<>());
-        BlockEntity be = call.get(pos.asLong());
-        if (be != null) return be;
+        Map<Long, Copy> copies = COPIES.computeIfAbsent((ServerLevel) level, l -> new HashMap<>());
+        long key = pos.asLong();
+        Copy copy = copies.get(key);
+        if (copy != null && !copy.be.isRemoved() && copy.be.getType().isValid(state)) {
+            if (copy.be.getBlockState() != state) copy.be.setBlockState(state);
+            if (!copy.changed) refresh(level, pos, copies, copy);
+            return copy.be.isRemoved() ? null : copy.be;
+        }
+        if (copy != null) {
+            copies.remove(key);
+            copy.be.setRemoved();
+        }
         String dimension = level.dimension().identifier().toString();
         String snbt = Natives.blockEntity(dimension, pos.getX(), pos.getY(), pos.getZ());
         if (snbt == null) return null;
+        BlockEntity be;
         try {
             CompoundTag tag = net.minecraft.nbt.TagParser.parseCompoundFully(snbt);
             be = BlockEntity.loadStatic(pos.immutable(), state, tag, level.registryAccess());
@@ -145,38 +199,66 @@ public final class HorizonBlockEntities {
         }
         if (be == null) return null;
         be.setLevel(level);
-        call.put(pos.asLong(), be);
+        copies.put(key, new Copy(be, snbt));
         return be;
     }
 
+    /** A copy read again from Horizon, in place; removed when Horizon's is gone. */
+    private static void refresh(Level level, BlockPos pos, Map<Long, Copy> copies, Copy copy) {
+        String dimension = level.dimension().identifier().toString();
+        String snbt = Natives.blockEntity(dimension, pos.getX(), pos.getY(), pos.getZ());
+        if (snbt == null) {
+            copies.remove(pos.asLong());
+            copy.be.setRemoved();
+            return;
+        }
+        if (snbt.equals(copy.snbt)) return;
+        try {
+            CompoundTag tag = net.minecraft.nbt.TagParser.parseCompoundFully(snbt);
+            copy.be.loadWithComponents(net.minecraft.world.level.storage.TagValueInput.create(
+                    net.minecraft.util.ProblemReporter.DISCARDING, level.registryAccess(), tag));
+            copy.snbt = snbt;
+        } catch (Throwable t) {
+            Natives.log("Java mods: Horizon's block entity at " + pos + " could not be read: " + t);
+        }
+    }
+
+    /** Each tick, before mods' block entities run: the copies read again from Horizon. */
+    private static void refreshVanilla() {
+        for (Map.Entry<ServerLevel, Map<Long, Copy>> e : COPIES.entrySet()) {
+            Map<Long, Copy> copies = e.getValue();
+            for (Copy copy : new ArrayList<>(copies.values())) {
+                if (!copy.changed) refresh(e.getKey(), copy.be.getBlockPos(), copies, copy);
+            }
+        }
+    }
+
     /**
-     * The end of a call: what mods changed of Horizon's block entities goes back to Horizon,
-     * and the copies go (the next call reads Horizon's again).
+     * The end of a call: what mods changed of Horizon's block entities goes back to Horizon (the
+     * copies stay, to be read again next tick).
      */
     public static synchronized void flushVanilla() {
-        for (Map.Entry<ServerLevel, java.util.Set<Long>> e : CHANGED.entrySet()) {
+        for (Map.Entry<ServerLevel, Map<Long, Copy>> e : COPIES.entrySet()) {
             ServerLevel level = e.getKey();
-            Map<Long, BlockEntity> call = CALL.get(level);
-            if (call == null) continue;
             String dimension = level.dimension().identifier().toString();
-            for (long key : e.getValue()) {
-                BlockEntity be = call.get(key);
-                if (be == null) continue;
+            for (Copy copy : e.getValue().values()) {
+                if (!copy.changed) continue;
+                copy.changed = false;
+                copy.snbt = null;
                 try {
-                    CompoundTag tag = be.saveWithFullMetadata(level.registryAccess());
-                    BlockPos pos = be.getBlockPos();
+                    CompoundTag tag = copy.be.saveWithFullMetadata(level.registryAccess());
+                    BlockPos pos = copy.be.getBlockPos();
                     Natives.setBlockEntity(dimension, pos.getX(), pos.getY(), pos.getZ(), tag.toString());
                 } catch (Throwable t) {
-                    Natives.log("Java mods: a block entity at " + be.getBlockPos() + " could not be saved: " + t);
+                    Natives.log("Java mods: a block entity at " + copy.be.getBlockPos() + " could not be saved: " + t);
                 }
             }
         }
-        CHANGED.clear();
-        CALL.clear();
     }
 
     /** Each server tick: the tickers run; gone blocks drop, unloaded ones are put away. */
     public static synchronized void tick() {
+        refreshVanilla();
         for (Map.Entry<ServerLevel, Map<Long, BlockEntity>> e : LIVE.entrySet()) {
             ServerLevel level = e.getKey();
             Map<Long, BlockEntity> live = e.getValue();
@@ -190,6 +272,7 @@ public final class HorizonBlockEntities {
                     saved(level).put(entry.getKey(), be.saveWithFullMetadata(level.registryAccess()));
                     live.remove(entry.getKey());
                     be.setRemoved();
+                    unloaded(level, be);
                     continue;
                 }
                 BlockState state = HorizonServer.blockState(level, pos);
@@ -202,6 +285,7 @@ public final class HorizonBlockEntities {
             }
         }
         if (++ticks % SAVE_TICKS == 0 && dirty) save();
+        if (ticks % 20 == 0) restore();
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -222,7 +306,32 @@ public final class HorizonBlockEntities {
             Containers.dropContents(level, be.getBlockPos(), container);
         }
         be.setRemoved();
+        unloaded(level, be);
         dirty = true;
+    }
+
+    /**
+     * Fabric API's block entity load event, as a level fires it for a block entity it adds (as its
+     * chunk loads, or the block is placed): mods set theirs up there (Tom's Storage's terminals
+     * find their network).
+     */
+    private static void loaded(Level level, BlockEntity be) {
+        try {
+            net.fabricmc.fabric.api.event.lifecycle.v1.ServerBlockEntityEvents.BLOCK_ENTITY_LOAD.invoker()
+                    .onLoad(be, (ServerLevel) level);
+        } catch (Throwable t) {
+            Natives.log("Java mods: a block entity's load failed: " + t);
+        }
+    }
+
+    /** Fabric API's block entity unload event, for one removed or put away. */
+    private static void unloaded(Level level, BlockEntity be) {
+        try {
+            net.fabricmc.fabric.api.event.lifecycle.v1.ServerBlockEntityEvents.BLOCK_ENTITY_UNLOAD.invoker()
+                    .onUnload(be, (ServerLevel) level);
+        } catch (Throwable t) {
+            Natives.log("Java mods: a block entity's unload failed: " + t);
+        }
     }
 
     private static Map<Long, CompoundTag> saved(Level level) {

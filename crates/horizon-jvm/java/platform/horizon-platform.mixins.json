@@ -21,13 +21,20 @@
     "DedicatedServerMixin",
     "IntegratedServerMixin",
     "PacketListenerMixin",
-    "GameListenerMixin"
+    "GameListenerMixin",
+    "MirrorPacketContextMixin"
   ],
   "injectors": {
     "defaultRequire": 1
   },
   "client": [
     "HudMixin",
-    "GameModeClientMixin"
+    "GameModeClientMixin",
+    "SoundManagerMixin",
+    "SlotDisplayContextMixin",
+    "ClientPlayerMixin",
+    "RecipeBookComponentMixin",
+    "TextInputManagerMixin",
+    "ClientPlayNetworkingMixin"
   ]
 }

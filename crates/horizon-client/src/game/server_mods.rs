@@ -68,6 +68,26 @@ pub(super) fn java_random_tick(
     }
 }
 
+/// Blocks only Java mods know that a world's `set` placed or removed, for the mods (their block
+/// entities exist from their placement, as vanilla's do: Game::java_random_ticks).
+#[cfg(feature = "java-mods")]
+static JAVA_SETS: std::sync::Mutex<Vec<[i32; 3]>> = std::sync::Mutex::new(Vec::new());
+
+/// horizon_client::world::SET_HOOK: a Java mod's block placed or removed is kept for the mods.
+#[cfg(feature = "java-mods")]
+pub(super) fn java_block_set(pos: (i32, i32, i32), previous: u32, state: u32) {
+    let Some(states) = JAVA_STATES.get() else {
+        return;
+    };
+    let java = |id: u32| states.get(id as usize).copied().unwrap_or(false);
+    if java(previous) || java(state) {
+        let mut sets = JAVA_SETS.lock().unwrap_or_else(|e| e.into_inner());
+        if sets.len() < 65_536 {
+            sets.push([pos.0, pos.1, pos.2]);
+        }
+    }
+}
+
 /// The hook at the head of the player's hurtServer (`horizon_client::health::HURT_HOOK`): Java
 /// mods' injections there and Fabric API's ALLOW_DAMAGE, for the player acting now.
 #[cfg(feature = "java-mods")]
@@ -780,7 +800,9 @@ mod run {
                 }
             }
             let (ticks, root) = (self.ticks as i64, self.save.root.clone());
+            let game_time = self.world.game_time;
             let ticked = self.with_java_world(|| {
+                horizon_jvm::events::game_time(game_time)?;
                 horizon_jvm::events::server_tick(ticks, dedicated, &root, &players, &events)
             });
             if let Err(e) = ticked {
@@ -1474,6 +1496,18 @@ mod run {
                         })
                         .collect();
                     let _ = super::JAVA_STATES.set(states);
+                }
+                // Java mods' blocks placed or removed: their block entities made or put away.
+                let sets = std::mem::take(
+                    &mut *super::JAVA_SETS.lock().unwrap_or_else(|e| e.into_inner()),
+                );
+                if !sets.is_empty() {
+                    let dim = self.dim.id();
+                    let ran =
+                        self.with_java_world(|| horizon_jvm::events::block_entities(dim, &sets));
+                    if let Err(e) = ran {
+                        log::warn!("Java mods: block entities failed: {e}");
+                    }
                 }
                 let ticks = std::mem::take(
                     &mut *super::JAVA_RANDOM_TICKS

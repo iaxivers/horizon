@@ -192,6 +192,9 @@ impl Game<'_> {
                     }
                 }
                 for (i, t) in self.creative_screen.tabs.iter().enumerate() {
+                    if !self.creative_screen.shown(t) {
+                        continue;
+                    }
                     let (x, y) = Creative::tab_position(t);
                     targets.push(Target {
                         rect: [ox + x, oy + y, 26.0, 32.0],
@@ -609,6 +612,12 @@ impl Game<'_> {
         } else {
             (selected + count - 1) % count
         };
+        // A tab on another page (Fabric's pages of mods' tabs) turns to it first.
+        let target = &self.creative_screen.tabs[tab];
+        if !self.creative_screen.shown(target) {
+            let page = target.page;
+            self.creative_screen.turn_page(page);
+        }
         let (ox, oy) = Self::creative_origin(&batch);
         let (x, y) = Creative::tab_position(&self.creative_screen.tabs[tab]);
         let back = self.pad.menu.pos;
