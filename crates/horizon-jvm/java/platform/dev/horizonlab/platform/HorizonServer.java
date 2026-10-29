@@ -224,6 +224,59 @@ public final class HorizonServer {
         return player;
     }
 
+    // ---- Death and respawn ----------------------------------------------------------------
+
+    /**
+     * Horizon's player died of {@code cause} (a damage type id): vanilla's LivingEntity.die as
+     * mods hook it (ServerPlayer.die and LivingEntity.die's head, dropAllDeathLoot's head and end,
+     * Fabric's AFTER_DEATH, then the ends of die). Horizon has dropped the items already: the
+     * mirrored inventory is what is left (so a mod can't keep a second copy of them).
+     */
+    private static void died(ServerPlayer player, String cause) {
+        ServerLevel level = (ServerLevel) player.level();
+        net.minecraft.world.damagesource.DamageSource source;
+        try {
+            var key = net.minecraft.resources.ResourceKey.create(Registries.DAMAGE_TYPE, Identifier.parse(cause));
+            source = new net.minecraft.world.damagesource.DamageSource(
+                    level.registryAccess().lookupOrThrow(Registries.DAMAGE_TYPE).getOrThrow(key));
+        } catch (Throwable t) {
+            source = level.damageSources().generic();
+        }
+        net.minecraft.world.damagesource.DamageSource from = source;
+        Object[] dying = {from};
+        String die = "(Lnet/minecraft/world/damagesource/DamageSource;)V";
+        hook(player, ServerPlayer.class, "die", die, "HEAD", dying);
+        hook(player, net.minecraft.world.entity.LivingEntity.class, "die", die, "HEAD", dying);
+        Object[] loot = {level, from};
+        String dropLoot = "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/damagesource/DamageSource;)V";
+        hook(player, net.minecraft.world.entity.LivingEntity.class, "dropAllDeathLoot", dropLoot, "HEAD", loot);
+        hook(player, net.minecraft.world.entity.LivingEntity.class, "dropAllDeathLoot", dropLoot, "RETURN", loot);
+        hook(player, net.minecraft.world.entity.LivingEntity.class, "dropAllDeathLoot", dropLoot, "TAIL", loot);
+        fire("ServerLivingEntityEvents.AFTER_DEATH", () ->
+                net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AFTER_DEATH.invoker().afterDeath(player, from));
+        hook(player, net.minecraft.world.entity.LivingEntity.class, "die", die, "RETURN", dying);
+        hook(player, net.minecraft.world.entity.LivingEntity.class, "die", die, "TAIL", dying);
+        hook(player, ServerPlayer.class, "die", die, "RETURN", dying);
+        hook(player, ServerPlayer.class, "die", die, "TAIL", dying);
+    }
+
+    /**
+     * Horizon's dead player respawned: vanilla makes a new ServerPlayer and copies the old one in
+     * (ServerPlayer.restoreFrom); the mirror keeps one, so the copy is from itself (mods' copies
+     * of their own data keep it), then Fabric's COPY_FROM and AFTER_RESPAWN.
+     */
+    private static void respawned(ServerPlayer player) {
+        Object[] restoring = {player, false};
+        String restoreFrom = "(Lnet/minecraft/server/level/ServerPlayer;Z)V";
+        hook(player, ServerPlayer.class, "restoreFrom", restoreFrom, "HEAD", restoring);
+        hook(player, ServerPlayer.class, "restoreFrom", restoreFrom, "RETURN", restoring);
+        hook(player, ServerPlayer.class, "restoreFrom", restoreFrom, "TAIL", restoring);
+        fire("ServerPlayerEvents.COPY_FROM", () ->
+                net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents.COPY_FROM.invoker().copyFromPlayer(player, player, false));
+        fire("ServerPlayerEvents.AFTER_RESPAWN", () ->
+                net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents.AFTER_RESPAWN.invoker().afterRespawn(player, player, false));
+    }
+
     // ---- The mods' event-like Mixins (HorizonHooks) ---------------------------------------
 
     private static final String PLACE_NEW_PLAYER =
@@ -292,7 +345,8 @@ public final class HorizonServer {
      * @param world Horizon's world folder
      * @param motion five values per player: x, y, z, yaw, pitch
      * @param permissions per player: vanilla's permission level, 0 to 4
-     * @param kinds per event: 0 joined, 1 left, 2 chat, 3 broke a block, 4 placed a block
+     * @param kinds per event: 0 joined, 1 left, 2 chat, 3 broke a block, 4 placed a block, 5 died
+     *     (texts: the damage type), 6 respawned
      * @param who per event: the player's UUID
      * @param texts per event: the chat line, or the block state ("minecraft:oak_log[axis=y]")
      * @param positions three per event: the block's x, y, z
@@ -429,6 +483,8 @@ public final class HorizonServer {
                     Level level = player.level();
                     fire("PlayerBlockBreakEvents.AFTER", () -> PlayerBlockBreakEvents.AFTER.invoker().afterBlockBreak(level, player, pos, state, null));
                 }
+                case 5 -> died(player, texts[e]);
+                case 6 -> respawned(player);
                 default -> { }
             }
         }

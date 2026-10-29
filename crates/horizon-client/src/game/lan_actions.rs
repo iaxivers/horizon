@@ -2297,6 +2297,13 @@ impl Game<'_> {
     /// message, the loot and experience, the death screen.
     fn guest_die(&mut self, host: &mut LanHost, gi: usize, conn: u32) {
         if host.hub.guests[gi].health <= 0.0 && !host.hub.guests[gi].dead {
+            // What killed the guest (its tracker's last hit), for Java mods' death hooks.
+            let cause = self
+                .guest_combat
+                .get(&conn)
+                .and_then(|t| t.last_damage_type())
+                .map(str::to_owned);
+            self.note_java_death_cause(&format!("conn:{conn}"), cause);
             self.guest_forget_digging(host, conn);
             // FishingHook.shouldStopFishing: its owner is dead.
             if let Some(play) = host.play.get_mut(&conn) {
@@ -2319,6 +2326,22 @@ impl Game<'_> {
             let drops =
                 (g.game_mode != SPECTATOR).then(|| [at[0], at[1] + g.eye_height() - 0.3, at[2]]);
             let cause = host.play.get_mut(&conn).and_then(|p| p.death_cause.take());
+            // The damage type a death message names (`death.attack.<message_id>...`), for Java
+            // mods' death hooks: surer than the tracker, which may not have the blow yet.
+            if let Some(id) = cause
+                .as_deref()
+                .and_then(|k| k.strip_prefix("death.attack."))
+            {
+                let id = id.split('.').next().unwrap_or(id);
+                let named = self
+                    .motion
+                    .health
+                    .damage
+                    .entries()
+                    .find(|(_, d)| d.message_id == id)
+                    .map(|(_, d)| d.name.clone());
+                self.note_java_death_cause(&format!("conn:{conn}"), named);
+            }
             // ServerPlayer.die: with showDeathMessages, the message goes to
             // the dying player's death screen and to everyone the team lets
             // see it; without it, the death screen gets an empty one.

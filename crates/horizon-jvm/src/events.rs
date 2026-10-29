@@ -62,6 +62,16 @@ pub enum Event {
         state: String,
         placed: bool,
     },
+    /// A player died (its health reached 0): `cause` is the damage type that killed it
+    /// (`minecraft:fall`, ...). The game has dropped what it drops by then.
+    Died {
+        uuid: String,
+        cause: String,
+    },
+    /// A dead player respawned.
+    Respawned {
+        uuid: String,
+    },
 }
 
 /// What a mod asked of the game.
@@ -284,7 +294,7 @@ fn call_tick(
     }
 
     // Events as parallel arrays: a kind per event (0 joined, 1 left, 2 chat, 3 broken,
-    // 4 placed), its player, a text (chat line or block state) and a position.
+    // 4 placed, 5 died, 6 respawned), its player, a text (chat line or block state) and a position.
     let mut kinds = Vec::with_capacity(events.len());
     let mut who = Vec::with_capacity(events.len());
     let mut texts = Vec::with_capacity(events.len());
@@ -300,6 +310,8 @@ fn call_tick(
                 state,
                 placed,
             } => (if *placed { 4 } else { 3 }, uuid, state.as_str(), *position),
+            Event::Died { uuid, cause } => (5, uuid, cause.as_str(), [0; 3]),
+            Event::Respawned { uuid } => (6, uuid, "", [0; 3]),
         };
         kinds.push(kind);
         who.push(uuid.as_str());

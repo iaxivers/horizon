@@ -51,6 +51,9 @@ impl Game<'_> {
     pub(super) fn java_before_break(&mut self, _pos: [i32; 3], _state: BlockStateId) -> bool {
         true
     }
+    pub(super) fn note_java_death(&mut self) {}
+    pub(super) fn note_java_death_of(&mut self, _key: &str) {}
+    pub(super) fn note_java_death_cause(&mut self, _key: &str, _cause: Option<String>) {}
     pub(super) fn java_use_block(
         &mut self,
         _pos: [i32; 3],
@@ -99,6 +102,13 @@ mod run {
             position: [i32; 3],
             state: String,
             placed: bool,
+        },
+        Died {
+            uuid: String,
+            cause: String,
+        },
+        Respawned {
+            uuid: String,
         },
     }
 
@@ -263,6 +273,17 @@ mod run {
         let seen = seen.get_or_insert_with(Default::default);
         (seen.insert(g.uuid, hash) != Some(hash)).then_some(slots)
     }
+
+    /// Whether each player was dead at the last tick Java mods heard of (for deaths and
+    /// respawns).
+    #[cfg(feature = "java-mods")]
+    static JAVA_DEAD: std::sync::Mutex<Option<std::collections::HashMap<String, bool>>> =
+        std::sync::Mutex::new(None);
+
+    /// What killed each player who died since the last tick (noted at its death message).
+    #[cfg(feature = "java-mods")]
+    static JAVA_DEATH_CAUSES: std::sync::Mutex<Option<std::collections::HashMap<String, String>>> =
+        std::sync::Mutex::new(None);
 
     /// Items Java mods dropped, by dimension, made when their level is in place.
     #[cfg(feature = "java-mods")]
@@ -579,9 +600,61 @@ mod run {
                 self.options.execution_role,
                 crate::game::execution_role::ExecutionRole::DedicatedServer
             );
+            // Deaths and respawns, from each player's health since the last tick.
+            let mut events = events.to_vec();
+            {
+                let mut dead = JAVA_DEAD.lock().unwrap_or_else(|e| e.into_inner());
+                let dead = dead.get_or_insert_with(Default::default);
+                for p in &players {
+                    // A connection's player is dead once the server's ServerPlayer.die ran for it
+                    // (guest_die: its message and drops made); the window's own at no health.
+                    let now = self
+                        .lan
+                        .iter()
+                        .flat_map(|h| &h.hub.guests)
+                        .find(|g| uuid_string(g.uuid) == p.uuid)
+                        .map_or(p.health <= 0.0, |g| g.dead);
+                    let was = dead.insert(p.uuid.clone(), now).unwrap_or(false);
+                    if now && !was {
+                        let conn = self
+                            .lan
+                            .iter()
+                            .flat_map(|h| &h.hub.guests)
+                            .find(|g| uuid_string(g.uuid) == p.uuid)
+                            .map(|g| g.conn);
+                        let tracker = match conn {
+                            Some(conn) => self.guest_combat.get(&conn),
+                            None => Some(&self.combat),
+                        };
+                        // Noted where the death message is made, else the tracker's last hit.
+                        let noted = JAVA_DEATH_CAUSES
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .as_mut()
+                            .and_then(|m| {
+                                let by_conn = conn.and_then(|c| m.remove(&format!("conn:{c}")));
+                                m.remove(&p.uuid).or(by_conn)
+                            });
+                        let cause = noted.unwrap_or_else(|| {
+                            tracker
+                                .and_then(|t| t.last_damage_type())
+                                .unwrap_or("minecraft:generic")
+                                .to_string()
+                        });
+                        events.push(JavaEvent::Died {
+                            uuid: p.uuid.clone(),
+                            cause,
+                        });
+                    } else if was && !now {
+                        events.push(JavaEvent::Respawned {
+                            uuid: p.uuid.clone(),
+                        });
+                    }
+                }
+            }
             let (ticks, root) = (self.ticks as i64, self.save.root.clone());
             let ticked = self.with_java_world(|| {
-                horizon_jvm::events::server_tick(ticks, dedicated, &root, &players, events)
+                horizon_jvm::events::server_tick(ticks, dedicated, &root, &players, &events)
             });
             if let Err(e) = ticked {
                 log::warn!("Java mods: a tick failed: {e}");
@@ -1005,6 +1078,56 @@ mod run {
             }
             for action in later {
                 horizon_jvm::events::push_action(action);
+            }
+        }
+
+        /// The player acting now is dying: what killed it (its tracker's last hit), for the
+        /// Java mods' death hooks at the next tick.
+        pub(in crate::game) fn note_java_death(&mut self) {
+            #[cfg(feature = "java-mods")]
+            {
+                if !java_mods_on() {
+                    return;
+                }
+                let uuid = self
+                    .lan_acting_uuid
+                    .map(uuid_string)
+                    .unwrap_or_else(|| self.player_uuid_string());
+                self.note_java_death_of(&uuid);
+            }
+        }
+
+        /// What killed the player named by `key` (its UUID, or `conn:N`), when known.
+        pub(in crate::game) fn note_java_death_cause(&mut self, key: &str, cause: Option<String>) {
+            #[cfg(feature = "java-mods")]
+            if java_mods_on()
+                && let Some(cause) = cause
+            {
+                JAVA_DEATH_CAUSES
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get_or_insert_with(Default::default)
+                    .insert(key.to_string(), cause);
+            }
+            #[cfg(not(feature = "java-mods"))]
+            let _ = (key, cause);
+        }
+
+        /// [`Game::note_java_death`] for a player named by `key` (its UUID, or `conn:N`).
+        pub(in crate::game) fn note_java_death_of(&mut self, key: &str) {
+            #[cfg(feature = "java-mods")]
+            {
+                if !java_mods_on() {
+                    return;
+                }
+                let uuid = key.to_string();
+                if let Some(cause) = self.combat.last_damage_type() {
+                    JAVA_DEATH_CAUSES
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get_or_insert_with(Default::default)
+                        .insert(uuid, cause.to_string());
+                }
             }
         }
 

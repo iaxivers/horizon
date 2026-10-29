@@ -474,6 +474,38 @@ fn fabric_api_and_a_mod_on_the_real_game() {
         }]
     );
 
+    // Death and respawn, from Steve's health: the Mixin at the head of LivingEntity.die, then
+    // Fabric's AFTER_RESPAWN.
+    let mut dying = steve.clone();
+    dying.health = 0.0;
+    let actions = tick(
+        2,
+        std::slice::from_ref(&dying),
+        &[Event::Died {
+            uuid: uuid.clone(),
+            cause: "minecraft:fall".into(),
+        }],
+    );
+    assert!(
+        actions.contains(&Action::Tell {
+            uuid: uuid.clone(),
+            text: "[events] a mixin saw Steve die of minecraft:fall".into()
+        }),
+        "{actions:?}"
+    );
+    let actions = tick(
+        2,
+        std::slice::from_ref(&steve),
+        &[Event::Respawned { uuid: uuid.clone() }],
+    );
+    assert!(
+        actions.contains(&Action::Tell {
+            uuid: uuid.clone(),
+            text: "[events] welcome back Steve".into()
+        }),
+        "{actions:?}"
+    );
+
     let started = std::time::Instant::now();
     let mut counted = Vec::new();
     for n in 3..=100 {

@@ -1111,6 +1111,8 @@ impl Game<'_> {
     /// Death message in chat (CombatTracker.getDeathMessage, as far as the
     /// cause is known to the client).
     pub(super) fn death_message(&mut self) {
+        // What killed the player, for Java mods' death hooks (the tracker is cleared after).
+        self.note_java_death();
         let cause = self.ui.death_cause.take();
         self.ui.died_at = Some(std::time::Instant::now());
         self.ui.death_text = None;

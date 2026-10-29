@@ -135,6 +135,8 @@ public class EventsMod implements ModInitializer {
             if (felled > 0) player.sendSystemMessage(Component.literal("[events] felled " + felled + " logs"));
             return true;
         });
+        net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents.AFTER_RESPAWN.register((old, now, alive) ->
+                now.sendSystemMessage(Component.literal("[events] welcome back " + now.getName().getString())));
         PlayerBlockBreakEvents.AFTER.register((level, player, pos, state, blockEntity) ->
                 player.sendSystemMessage(Component.literal("[events] you broke "
                         + BuiltInRegistries.BLOCK.getKey(state.getBlock()) + " at " + pos.toShortString())));

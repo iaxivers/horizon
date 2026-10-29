@@ -3,6 +3,6 @@
   "minVersion": "0.8",
   "package": "dev.horizonlab.eventsmod.mixin",
   "compatibilityLevel": "JAVA_21",
-  "mixins": ["JoinLeaveMixin", "PlayerTickMixin"],
+  "mixins": ["JoinLeaveMixin", "PlayerTickMixin", "DeathMixin"],
   "injectors": { "defaultRequire": 1 }
 }
