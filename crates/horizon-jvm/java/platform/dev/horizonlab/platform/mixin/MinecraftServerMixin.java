@@ -43,4 +43,10 @@ public abstract class MinecraftServerMixin {
                                         CallbackInfoReturnable<net.minecraft.util.RandomSource> cir) {
         if (HorizonServer.isMirror(this)) cir.setReturnValue(net.minecraft.util.RandomSource.create());
     }
+
+    /** Horizon's services: names of the players it knows, nothing online (HorizonServices). */
+    @Inject(method = "services", at = @At("HEAD"), cancellable = true)
+    private void horizon$services(CallbackInfoReturnable<net.minecraft.server.Services> cir) {
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.services());
+    }
 }

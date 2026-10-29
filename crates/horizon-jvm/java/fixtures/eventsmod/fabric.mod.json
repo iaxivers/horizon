@@ -5,6 +5,7 @@
   "name": "Horizon Events Test",
   "description": "A plain server-side Fabric mod that answers to Fabric API's events: the bridge's end-to-end test.",
   "environment": "*",
+  "mixins": ["eventsmod.mixins.json"],
   "entrypoints": { "main": ["dev.horizonlab.eventsmod.EventsMod"] },
   "depends": { "fabricloader": ">=0.20", "minecraft": "26.3", "fabric-api": "*" }
 }

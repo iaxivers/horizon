@@ -1,0 +1,8 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "dev.horizonlab.eventsmod.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": ["JoinLeaveMixin", "PlayerTickMixin"],
+  "injectors": { "defaultRequire": 1 }
+}

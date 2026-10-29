@@ -80,9 +80,15 @@ fn events_mod(root: &Path, home: &Path, fabric_api: &Path, dir: &Path, mods: &Pa
         zip.start_file(name, options).unwrap();
         zip.write_all(&std::fs::read(&file).unwrap()).unwrap();
     }
-    zip.start_file("fabric.mod.json", options).unwrap();
-    zip.write_all(&std::fs::read(source.join("fabric.mod.json")).unwrap())
-        .unwrap();
+    // fabric.mod.json and the Mixin configs beside it.
+    for entry in std::fs::read_dir(&source).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "json") {
+            zip.start_file(path.file_name().unwrap().to_string_lossy(), options)
+                .unwrap();
+            zip.write_all(&std::fs::read(&path).unwrap()).unwrap();
+        }
+    }
     zip.finish().unwrap();
 }
 
@@ -195,6 +201,14 @@ fn fabric_api_and_a_mod_on_the_real_game() {
         &[Event::Joined { uuid: uuid.clone() }],
     );
     println!("tick 1: {actions:?}");
+    // The Mixin at the end of PlayerList.placeNewPlayer.
+    assert!(
+        actions.contains(&Action::Tell {
+            uuid: uuid.clone(),
+            text: "[events] a mixin saw Steve join".into()
+        }),
+        "{actions:?}"
+    );
     assert!(
         actions.contains(&Action::Broadcast {
             text: "[events] server started".into()
@@ -466,17 +480,33 @@ fn fabric_api_and_a_mod_on_the_real_game() {
         counted.extend(tick(n, std::slice::from_ref(&steve), &[]));
     }
     println!("98 ticks in {} ms", started.elapsed().as_millis());
+    // The mod's tick event, and its Mixin at the head of Player.tick (fired by Horizon).
+    let mixin_ticks = |n: u32| Action::Tell {
+        uuid: uuid.clone(),
+        text: format!("[events] a mixin counted {n} player ticks"),
+    };
     assert_eq!(
         counted,
-        vec![Action::Broadcast {
-            text: "[events] 100 ticks, 1 players on".into()
-        }]
+        vec![
+            mixin_ticks(50),
+            mixin_ticks(100),
+            Action::Broadcast {
+                text: "[events] 100 ticks, 1 players on".into()
+            }
+        ]
     );
     let actions = tick(101, &[], &[Event::Left { uuid: uuid.clone() }]);
     println!("tick 101: {actions:?}");
     assert!(
         actions.contains(&Action::Broadcast {
             text: "[events] Steve left".into()
+        }),
+        "{actions:?}"
+    );
+    // The Mixin at the head of PlayerList.remove.
+    assert!(
+        actions.contains(&Action::Broadcast {
+            text: "[events] a mixin saw Steve leave".into()
         }),
         "{actions:?}"
     );
