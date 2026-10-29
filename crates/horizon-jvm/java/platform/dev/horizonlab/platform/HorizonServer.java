@@ -814,6 +814,28 @@ public final class HorizonServer {
     /** True while Horizon's own state is copied in: the packets that sends are Horizon's already. */
     private static boolean syncing;
 
+    /**
+     * A mod's payload for a mirrored player (Horizon's client has no mod channels): Fabric API's
+     * menu opening (ExtendedMenuProvider's) is shown as vanilla's are; the rest is dropped.
+     */
+    public static void payload(ServerPlayer player,
+                               net.minecraft.network.protocol.common.custom.CustomPacketPayload payload) {
+        Class<?> c = payload.getClass();
+        if (c.getName().equals("net.fabricmc.fabric.impl.menu.Networking$OpenScreenPayload")) {
+            try {
+                Object type = c.getMethod("identifier").invoke(payload);
+                int containerId = (int) c.getMethod("containerId").invoke(payload);
+                Object title = c.getMethod("title").invoke(payload);
+                menuOpened(player, containerId, String.valueOf(type),
+                        json((net.minecraft.network.chat.Component) title));
+                return;
+            } catch (ReflectiveOperationException e) {
+                Natives.log("Java mods: a menu's opening could not be read: " + e);
+            }
+        }
+        dropped(payload);
+    }
+
     public static void dropped(Object packet) {
         if (syncing) return;
         // Horizon sends its own blocks: a mod's resync (a cancelled break) is already done.

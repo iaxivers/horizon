@@ -56,6 +56,14 @@ public abstract class PacketListenerMixin {
             }
             return;
         }
+        if (packet instanceof net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket custom
+                && self instanceof ServerGamePacketListenerImpl game && game.player != null
+                && custom.payload().getClass().getName().equals("net.fabricmc.fabric.impl.menu.Networking$OpenScreenPayload")) {
+            // Fabric API's ExtendedMenuProvider opens its menus with a payload of its own
+            // (the menu's data for the client's screen): shown as vanilla's are.
+            HorizonServer.payload(game.player, custom.payload());
+            return;
+        }
         if (self instanceof ServerGamePacketListenerImpl game && game.player != null
                 && HorizonServer.isShown(game.player, containerId(packet))) {
             // A shown menu's content: HorizonServer.syncMenus sends it whole.

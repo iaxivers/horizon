@@ -73,7 +73,7 @@ public abstract class PlayNetworkingMixin {
     @Inject(method = "send", at = @At("HEAD"), cancellable = true)
     private static void horizon$send(ServerPlayer player, CustomPacketPayload payload, CallbackInfo ci) {
         if (HorizonServer.isMirror(player)) {
-            HorizonServer.dropped(payload);
+            HorizonServer.payload(player, payload);
             ci.cancel();
         }
     }
