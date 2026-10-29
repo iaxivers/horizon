@@ -114,6 +114,15 @@ pub enum Action {
         /// The title, a JSON text component.
         title: Option<String>,
     },
+    /// A mod's menu the player has open, which Horizon shows and Java runs (a cabinet's):
+    /// `open` (the drawn menu type and title) when it opens, its slots' items as SNBT and the
+    /// carried one; `items` None when it closed.
+    MenuContent {
+        uuid: String,
+        open: Option<(String, Option<String>)>,
+        items: Option<Vec<Option<String>>>,
+        carried: Option<String>,
+    },
     /// `Level.setBlock` on a mirrored level: the block is to be that state (`/setblock`).
     SetBlock {
         dimension: String,
@@ -529,6 +538,42 @@ pub fn use_block(
         Some(1) => UseResult::Taken,
         _ => UseResult::Pass,
     })
+}
+
+/// A click in the window of a mod's menu ([`Action::MenuContent`]): `ServerboundContainerClickPacket`'s
+/// slot, button and input, run by the menu.
+pub fn menu_click(uuid: &str, slot: i32, button: i32, input: i32) -> Result<(), String> {
+    with_server(|env, class| {
+        let uuid = env.new_string(uuid)?;
+        env.call_static_method(
+            class,
+            "menuClick",
+            "(Ljava/lang/String;III)V",
+            &[
+                JValue::Object(&uuid),
+                JValue::Int(slot),
+                JValue::Int(button),
+                JValue::Int(input),
+            ],
+        )?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// The player closed the window of a mod's menu.
+pub fn menu_close(uuid: &str) -> Result<(), String> {
+    with_server(|env, class| {
+        let uuid = env.new_string(uuid)?;
+        env.call_static_method(
+            class,
+            "menuClose",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&uuid)],
+        )?;
+        Ok(())
+    })?;
+    Ok(())
 }
 
 /// The head of a player's `hurtServer`: Fabric API's `ALLOW_DAMAGE`, then the mods'

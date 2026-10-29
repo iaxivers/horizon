@@ -38,4 +38,18 @@ public abstract class ServerLevelMixin {
         ci.cancel();
         HorizonServer.levelEvent((ServerLevel) (Object) this, type, pos, data);
     }
+
+    /** A block's update for clients: Horizon sends its own. */
+    @Inject(method = "sendBlockUpdated", at = @At("HEAD"), cancellable = true)
+    private void horizon$sendBlockUpdated(net.minecraft.core.BlockPos pos, net.minecraft.world.level.block.state.BlockState old,
+                                          net.minecraft.world.level.block.state.BlockState now, int flags,
+                                          org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        if (HorizonServer.isMirror(this)) ci.cancel();
+    }
+
+    /** The level's entities, for a mod's checks: its mirrored players. */
+    @Inject(method = "getEntities()Lnet/minecraft/world/level/entity/LevelEntityGetter;", at = @At("HEAD"), cancellable = true)
+    private void horizon$entities(CallbackInfoReturnable<net.minecraft.world.level.entity.LevelEntityGetter<net.minecraft.world.entity.Entity>> cir) {
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.entities((ServerLevel) (Object) this));
+    }
 }

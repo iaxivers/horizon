@@ -197,6 +197,19 @@ public final class HorizonServer {
             access.horizon$setRandom(net.minecraft.util.RandomSource.create());
             ((ServerLevelAccess) level).horizon$setServer(server);
             ((ServerLevelAccess) level).horizon$setSleepStatus(new net.minecraft.server.players.SleepStatus());
+            // What the skipped constructor makes that mods' code reaches (a placement's
+            // entity check, sounds, block events).
+            ServerLevelAccess sl = (ServerLevelAccess) level;
+            sl.horizon$setDragonParts(new it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<>());
+            sl.horizon$setNavigatingMobs(new java.util.HashSet<>());
+            sl.horizon$setBlockEvents(new it.unimi.dsi.fastutil.objects.ObjectLinkedOpenHashSet<>());
+            sl.horizon$setBlockEventsToReschedule(new ArrayList<>());
+            sl.horizon$setCustomSpawners(new ArrayList<>());
+            sl.horizon$setBlockTicks(new HorizonTicks<>());
+            sl.horizon$setFluidTicks(new HorizonTicks<>());
+            access.horizon$setSoundSeedGenerator(net.minecraft.util.RandomSource.create());
+            access.horizon$setBlockEntityTickers(new ArrayList<>());
+            access.horizon$setPendingBlockEntityTickers(new ArrayList<>());
             // Its players' list from the start: vanilla's code (setGameMode's sleeping check)
             // may read it before this tick's lists are made.
             List<ServerPlayer> players = new ArrayList<>();
@@ -425,6 +438,7 @@ public final class HorizonServer {
         }
         MinecraftServer server = HorizonServer.server;
         if (world != null && !world.isEmpty()) worldDir = java.nio.file.Paths.get(world).toAbsolutePath();
+        HorizonBlockEntities.world(worldDir);
         // The server's tick count follows Horizon's (mods time their tasks with it).
         ((MinecraftServerAccess) server).horizon$setTickCount((int) tick);
         if (!started) {
@@ -577,6 +591,11 @@ public final class HorizonServer {
             hook(player, ServerPlayer.class, "tick", "()V", "RETURN", NO_ARGUMENTS);
             hook(player, ServerPlayer.class, "tick", "()V", "TAIL", NO_ARGUMENTS);
         }
+        // Mod blocks' scheduled ticks and block entities, as their levels' ticks run them.
+        for (ServerLevel level : new ArrayList<>(LEVELS.values())) {
+            if (level.getBlockTicks() instanceof HorizonTicks<?> ticks) ticks.run(level);
+        }
+        HorizonBlockEntities.tick();
         fire("ServerTickEvents.END_SERVER_TICK", () -> ServerTickEvents.END_SERVER_TICK.invoker().onEndTick(server));
         hook(server, MinecraftServer.class, "tickServer", TICK_SERVER, "RETURN", haveTime);
         hook(server, MinecraftServer.class, "tickServer", TICK_SERVER, "TAIL", haveTime);
@@ -634,6 +653,162 @@ public final class HorizonServer {
                 syncing = false;
             }
         }
+    }
+
+    // ---- Mods' menus Horizon shows ---------------------------------------------------------
+
+    /** Menus Horizon runs itself when a mod opens one (the rest are shown, run here). */
+    public static boolean horizonMenu(String type, String title) {
+        return switch (type) {
+            case "minecraft:crafting", "minecraft:stonecutter", "minecraft:grindstone", "minecraft:loom",
+                 "minecraft:cartography_table", "minecraft:smithing" -> true;
+            case "minecraft:generic_9x3" -> title != null && title.contains("container.enderchest");
+            default -> false;
+        };
+    }
+
+    /** Menu types a guest's game draws, with their container slots. */
+    private static final Map<String, Integer> DRAWN = Map.of(
+            "minecraft:generic_9x1", 9, "minecraft:generic_9x2", 18, "minecraft:generic_9x3", 27,
+            "minecraft:generic_9x4", 36, "minecraft:generic_9x5", 45, "minecraft:generic_9x6", 54,
+            "minecraft:generic_3x3", 9, "minecraft:hopper", 5, "minecraft:shulker_box", 27);
+
+    /**
+     * A mod's menu a player has open, as Horizon shows it: the menu type the player's game
+     * draws, and for each of its slots the menu's slot (-1: none), the container's first, then
+     * the player's 36 as vanilla's menus have them (inventory rows, then the hotbar).
+     */
+    private record Shown(int containerId, String type, String title, int[] slots) {}
+
+    private record Opening(int containerId, String type, String title) {}
+
+    private static final Map<UUID, Opening> OPENING = new ConcurrentHashMap<>();
+    private static final Map<UUID, Shown> SHOWN = new ConcurrentHashMap<>();
+    private static final Map<UUID, String> SHOWN_CONTENT = new ConcurrentHashMap<>();
+
+    /** ClientboundOpenScreenPacket of a mod's menu: shown once the menu is the player's. */
+    public static void menuOpened(ServerPlayer player, int containerId, String type, String title) {
+        OPENING.put(player.getUUID(), new Opening(containerId, type, title));
+    }
+
+    public static boolean isShown(ServerPlayer player, int containerId) {
+        Shown shown = SHOWN.get(player.getUUID());
+        Opening opening = OPENING.get(player.getUUID());
+        return containerId >= 0 && ((shown != null && shown.containerId == containerId)
+                || (opening != null && opening.containerId == containerId));
+    }
+
+    private static Shown layout(net.minecraft.world.inventory.AbstractContainerMenu menu, Opening opening) {
+        List<Integer> own = new ArrayList<>();
+        int[] player = new int[36];
+        java.util.Arrays.fill(player, -1);
+        for (int i = 0; i < menu.slots.size(); i++) {
+            var slot = menu.slots.get(i);
+            if (slot.container instanceof net.minecraft.world.entity.player.Inventory) {
+                int k = slot.getContainerSlot();
+                // The shown order: inventory 9-35, then the hotbar 0-8.
+                if (k >= 9 && k < 36) player[k - 9] = i;
+                else if (k >= 0 && k < 9) player[27 + k] = i;
+            } else {
+                own.add(i);
+            }
+        }
+        String type = opening.type;
+        Integer drawn = DRAWN.get(type);
+        if (drawn == null || drawn != own.size()) {
+            // A menu the game can't draw (a cooking pot's): its slots in a chest's rows.
+            int rows = Math.max(1, Math.min(6, (own.size() + 8) / 9));
+            type = "minecraft:generic_9x" + rows;
+            drawn = rows * 9;
+        }
+        int[] slots = new int[drawn + 36];
+        java.util.Arrays.fill(slots, -1);
+        for (int i = 0; i < Math.min(drawn, own.size()); i++) slots[i] = own.get(i);
+        System.arraycopy(player, 0, slots, drawn, 36);
+        return new Shown(opening.containerId, type, opening.title, slots);
+    }
+
+    /**
+     * Each mirrored player's menu, after anything that may change it: a mod's menu just opened
+     * is shown, one closed (or replaced) is closed, and a shown one's slots go to Horizon when
+     * they changed (a cooking pot's progress, a click).
+     */
+    private static void syncMenus() {
+        for (ServerPlayer player : new ArrayList<>(BY_UUID.values())) {
+            UUID id = player.getUUID();
+            var menu = player.containerMenu;
+            Opening opening = OPENING.get(id);
+            if (opening != null && menu != null && menu.containerId == opening.containerId) {
+                OPENING.remove(id);
+                Shown shown = layout(menu, opening);
+                SHOWN.put(id, shown);
+                SHOWN_CONTENT.remove(id);
+            }
+            Shown shown = SHOWN.get(id);
+            if (shown == null) continue;
+            if (menu == null || menu == player.inventoryMenu || menu.containerId != shown.containerId) {
+                SHOWN.remove(id);
+                SHOWN_CONTENT.remove(id);
+                Natives.menuContent(player.getStringUUID(), null, null, null, null);
+                continue;
+            }
+            String[] items = new String[shown.slots.length];
+            StringBuilder all = new StringBuilder();
+            for (int i = 0; i < items.length; i++) {
+                int at = shown.slots[i];
+                items[i] = at >= 0 && at < menu.slots.size() ? snbt(menu.slots.get(at).getItem()) : null;
+                all.append(items[i]).append('\n');
+            }
+            String carried = snbt(menu.getCarried());
+            all.append(carried);
+            String now = all.toString();
+            if (now.equals(SHOWN_CONTENT.get(id))) continue;
+            boolean first = !SHOWN_CONTENT.containsKey(id);
+            SHOWN_CONTENT.put(id, now);
+            Natives.menuContent(player.getStringUUID(), first ? shown.type : null, first ? shown.title : null,
+                    items, carried);
+        }
+    }
+
+    /**
+     * A click in a shown menu's window (ServerboundContainerClickPacket): the menu's own
+     * AbstractContainerMenu.clicked, on the slot behind the shown one.
+     */
+    public static void menuClick(String uuid, int slot, int button, int input) {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        ServerPlayer player = BY_UUID.get(UUID.fromString(uuid));
+        if (player == null) return;
+        Shown shown = SHOWN.get(player.getUUID());
+        var menu = player.containerMenu;
+        if (shown == null || menu == null || menu.containerId != shown.containerId) return;
+        int at = slot == -999 || slot == -1 ? slot : slot >= 0 && slot < shown.slots.length ? shown.slots[slot] : -2;
+        if (at == -2 || (at == -1 && slot != -1)) {
+            SHOWN_CONTENT.remove(player.getUUID()); // the window has it wrong: send it again
+        } else if (input >= 0 && input < net.minecraft.world.inventory.ContainerInput.values().length) {
+            var type = net.minecraft.world.inventory.ContainerInput.values()[input];
+            fire("AbstractContainerMenu.clicked", () -> {
+                if (menu.stillValid(player)) {
+                    menu.clicked(at, button, type, player);
+                    menu.broadcastChanges();
+                } else {
+                    player.closeContainer();
+                }
+            });
+        }
+        syncInventories();
+    }
+
+    /** The player closed a shown menu's window (ServerboundContainerClosePacket). */
+    public static void menuClose(String uuid) {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        ServerPlayer player = BY_UUID.get(UUID.fromString(uuid));
+        if (player == null) return;
+        Shown shown = SHOWN.remove(player.getUUID());
+        SHOWN_CONTENT.remove(player.getUUID());
+        if (shown != null && player.containerMenu != null && player.containerMenu.containerId == shown.containerId) {
+            fire("ServerPlayer.doCloseContainer", player::doCloseContainer);
+        }
+        syncInventories();
     }
 
     /** True while Horizon's own state is copied in: the packets that sends are Horizon's already. */
@@ -877,6 +1052,82 @@ public final class HorizonServer {
     }
 
     /**
+     * ServerLevel.getEntities on a mirrored level (it has no entity manager): the level's
+     * mirrored players, so a mod's checks for what stands in a block's way see them.
+     */
+    public static net.minecraft.world.level.entity.LevelEntityGetter<net.minecraft.world.entity.Entity> entities(ServerLevel level) {
+        return new net.minecraft.world.level.entity.LevelEntityGetter<>() {
+            private List<net.minecraft.world.entity.Entity> all() {
+                List<ServerPlayer> players = LEVEL_PLAYERS.get(level);
+                return players == null ? List.of() : new ArrayList<>(players);
+            }
+
+            @Override
+            public net.minecraft.world.entity.Entity get(int id) {
+                for (var e : all()) if (e.getId() == id) return e;
+                return null;
+            }
+
+            @Override
+            public net.minecraft.world.entity.Entity get(UUID uuid) {
+                for (var e : all()) if (e.getUUID().equals(uuid)) return e;
+                return null;
+            }
+
+            @Override
+            public Iterable<net.minecraft.world.entity.Entity> getAll() {
+                return all();
+            }
+
+            @Override
+            public <U extends net.minecraft.world.entity.Entity> void get(
+                    net.minecraft.world.level.entity.EntityTypeTest<net.minecraft.world.entity.Entity, U> test,
+                    net.minecraft.util.AbortableIterationConsumer<U> out) {
+                for (var e : all()) {
+                    U u = test.tryCast(e);
+                    if (u != null && out.accept(u).shouldAbort()) return;
+                }
+            }
+
+            @Override
+            public void get(net.minecraft.world.phys.AABB box, java.util.function.Consumer<net.minecraft.world.entity.Entity> out) {
+                for (var e : all()) if (e.getBoundingBox().intersects(box)) out.accept(e);
+            }
+
+            @Override
+            public <U extends net.minecraft.world.entity.Entity> void get(
+                    net.minecraft.world.level.entity.EntityTypeTest<net.minecraft.world.entity.Entity, U> test,
+                    net.minecraft.world.phys.AABB box, net.minecraft.util.AbortableIterationConsumer<U> out) {
+                for (var e : all()) {
+                    if (!e.getBoundingBox().intersects(box)) continue;
+                    U u = test.tryCast(e);
+                    if (u != null && out.accept(u).shouldAbort()) return;
+                }
+            }
+        };
+    }
+
+    /** A mod's item (not vanilla's). */
+    public static boolean moddedItem(ItemStack stack) {
+        return !stack.isEmpty()
+                && !BuiltInRegistries.ITEM.getKey(stack.getItem()).getNamespace().equals("minecraft");
+    }
+
+    private static final Map<Class<?>, Boolean> USABLE = new ConcurrentHashMap<>();
+
+    /** Whether a block does something when used (its class has useItemOn or useWithoutItem). */
+    public static boolean usable(BlockState state) {
+        return USABLE.computeIfAbsent(state.getBlock().getClass(), c -> {
+            for (Class<?> k = c; k != null && k != net.minecraft.world.level.block.state.BlockBehaviour.class; k = k.getSuperclass()) {
+                for (java.lang.reflect.Method m : k.getDeclaredMethods()) {
+                    if (m.getName().equals("useItemOn") || m.getName().equals("useWithoutItem")) return true;
+                }
+            }
+            return false;
+        });
+    }
+
+    /**
      * PlayerBlockBreakEvents.BEFORE, called by Horizon before a player breaks a block: false
      * when a mod cancels the break.
      */
@@ -948,6 +1199,7 @@ public final class HorizonServer {
 
     /** After mods ran: each slot a mod changed (given, taken, counted down) goes to Horizon. */
     private static void syncInventories() {
+        syncMenus();
         for (ServerPlayer player : new ArrayList<>(BY_UUID.values())) {
             ItemStack[] seen = SEEN.get(player.getUUID());
             if (seen == null) continue;

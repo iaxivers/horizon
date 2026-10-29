@@ -1,6 +1,7 @@
 package dev.horizonlab.platform.mixin;
 
 import dev.horizonlab.bridge.Natives;
+import dev.horizonlab.platform.HorizonBlockEntities;
 import dev.horizonlab.platform.HorizonServer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
@@ -10,6 +11,7 @@ import net.minecraft.world.level.material.FluidState;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
@@ -28,10 +30,38 @@ public abstract class LevelMixin {
         if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.blockState((Level) (Object) this, pos).getFluidState());
     }
 
-    /** Block entities stay Horizon's: none here yet. */
+    /** Vanilla blocks' block entities are Horizon's (none here); mod blocks' are Java's. */
     @Inject(method = "getBlockEntity", at = @At("HEAD"), cancellable = true)
     private void horizon$blockEntity(BlockPos pos, CallbackInfoReturnable<BlockEntity> cir) {
-        if (HorizonServer.isMirror(this)) cir.setReturnValue(null);
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonBlockEntities.get((Level) (Object) this, pos));
+    }
+
+    @Inject(method = "setBlockEntity", at = @At("HEAD"), cancellable = true)
+    private void horizon$setBlockEntity(BlockEntity be, CallbackInfo ci) {
+        if (!HorizonServer.isMirror(this)) return;
+        ci.cancel();
+        HorizonBlockEntities.put((Level) (Object) this, be);
+    }
+
+    @Inject(method = "removeBlockEntity", at = @At("HEAD"), cancellable = true)
+    private void horizon$removeBlockEntity(BlockPos pos, CallbackInfo ci) {
+        if (!HorizonServer.isMirror(this)) return;
+        ci.cancel();
+        HorizonBlockEntities.removed((Level) (Object) this, pos);
+    }
+
+    /** BlockEntity.setChanged: saved with the others; the level holds no chunk to mark. */
+    @Inject(method = "blockEntityChanged", at = @At("HEAD"), cancellable = true)
+    private void horizon$blockEntityChanged(BlockPos pos, CallbackInfo ci) {
+        if (!HorizonServer.isMirror(this)) return;
+        ci.cancel();
+        HorizonBlockEntities.changed();
+    }
+
+    /** Comparators are Horizon's. */
+    @Inject(method = "updateNeighbourForOutputSignal", at = @At("HEAD"), cancellable = true)
+    private void horizon$outputSignal(BlockPos pos, net.minecraft.world.level.block.Block block, CallbackInfo ci) {
+        if (HorizonServer.isMirror(this)) ci.cancel();
     }
 
     @Inject(method = "isLoaded", at = @At("HEAD"), cancellable = true)

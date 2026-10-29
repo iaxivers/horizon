@@ -91,6 +91,22 @@ impl Game<'_> {
     ) -> Option<bool> {
         None
     }
+    pub(super) fn java_menu_click(
+        &mut self,
+        _host: &mut LanHost,
+        _conn: u32,
+        _p: &horizon_protocol::packets::play::ContainerClick,
+    ) -> bool {
+        false
+    }
+    pub(super) fn java_menu_closed(
+        &mut self,
+        _host: &mut LanHost,
+        _conn: u32,
+        _window: i32,
+    ) -> bool {
+        false
+    }
 }
 
 #[cfg(feature = "mods")]
@@ -315,6 +331,24 @@ mod run {
 
     /// Items Java mods dropped, by dimension, made when their level is in place.
     #[cfg(feature = "java-mods")]
+    /// The windows of Java mods' menus, by player: (connection, window).
+    #[cfg(feature = "java-mods")]
+    static JAVA_WINDOWS: std::sync::Mutex<std::collections::BTreeMap<String, (u32, i32)>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+    /// The player whose Java mod's menu has `window` open on `conn`.
+    #[cfg(feature = "java-mods")]
+    fn java_window_of(host: &LanHost, conn: u32, window: i32) -> Option<String> {
+        let uuid = host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.conn == conn)
+            .map(|g| uuid_string(g.uuid))?;
+        let windows = JAVA_WINDOWS.lock().unwrap_or_else(|e| e.into_inner());
+        (windows.get(&uuid) == Some(&(conn, window))).then_some(uuid)
+    }
+
     static JAVA_DROPS: std::sync::Mutex<Vec<(String, horizon_jvm::events::Action)>> =
         std::sync::Mutex::new(Vec::new());
 
@@ -773,6 +807,62 @@ mod run {
                             self.lan = Some(lan);
                         }
                     }
+                    horizon_jvm::events::Action::MenuContent {
+                        uuid,
+                        open,
+                        items,
+                        carried,
+                    } => {
+                        let Some(host) = host.as_deref_mut().or(self.lan.as_mut()) else {
+                            continue;
+                        };
+                        let Some(conn) = host
+                            .hub
+                            .guests
+                            .iter()
+                            .find(|g| uuid_string(g.uuid) == uuid)
+                            .map(|g| g.conn)
+                        else {
+                            continue;
+                        };
+                        let mut windows = JAVA_WINDOWS.lock().unwrap_or_else(|e| e.into_inner());
+                        let Some(items) = items else {
+                            if let Some((c, w)) = windows.remove(&uuid) {
+                                host.hub.close_window(c, w);
+                            }
+                            continue;
+                        };
+                        if let Some((menu, title)) = open {
+                            let title = title
+                                .and_then(|j| serde_json::from_str::<Value>(&j).ok())
+                                .unwrap_or(Value::Null);
+                            let title = horizon_client::lan::data::component_nbt(&title);
+                            match host.hub.open_window(conn, &menu, title) {
+                                Some(w) => {
+                                    windows.insert(uuid.clone(), (conn, w));
+                                }
+                                None => {
+                                    log::warn!("Java mods: a menu of type {menu} can't be shown")
+                                }
+                            }
+                        }
+                        let Some(&(c, w)) = windows.get(&uuid) else {
+                            continue;
+                        };
+                        let item = |s: &Option<String>| {
+                            let snbt = s.as_deref()?;
+                            match horizon_world::nbt::parse_snbt(snbt) {
+                                Ok((tag, _)) => horizon_items::item_nbt::item_from_nbt(&tag),
+                                Err(e) => {
+                                    log::warn!("Java mods: a mod's item {snbt}: {e}");
+                                    None
+                                }
+                            }
+                        };
+                        let stacks = items.iter().map(item).collect();
+                        let carried = item(&carried);
+                        host.hub.send_window_content(c, w, stacks, carried);
+                    }
                     horizon_jvm::events::Action::SetBlock {
                         dimension,
                         position: [x, y, z],
@@ -1206,6 +1296,66 @@ mod run {
             {
                 let _ = (pos, face, point, off_hand);
                 None
+            }
+        }
+
+        /// A click in the window of a Java mod's menu (a cabinet's): the menu runs it, in Java;
+        /// false for other windows.
+        pub(in crate::game) fn java_menu_click(
+            &mut self,
+            host: &mut LanHost,
+            conn: u32,
+            p: &play::ContainerClick,
+        ) -> bool {
+            #[cfg(feature = "java-mods")]
+            {
+                let Some(uuid) = java_window_of(host, conn, p.container) else {
+                    return false;
+                };
+                let (slot, button, input) = (i32::from(p.slot), i32::from(p.button), p.input);
+                let clicked = self.with_java_world(|| {
+                    horizon_jvm::events::menu_click(&uuid, slot, button, input)
+                });
+                if let Err(e) = clicked {
+                    log::warn!("Java mods: a click in a mod's menu failed: {e}");
+                }
+                self.apply_java_actions(Some(host));
+                true
+            }
+            #[cfg(not(feature = "java-mods"))]
+            {
+                let _ = (host, conn, p);
+                false
+            }
+        }
+
+        /// The player closed the window of a Java mod's menu; false for other windows.
+        pub(in crate::game) fn java_menu_closed(
+            &mut self,
+            host: &mut LanHost,
+            conn: u32,
+            window: i32,
+        ) -> bool {
+            #[cfg(feature = "java-mods")]
+            {
+                let Some(uuid) = java_window_of(host, conn, window) else {
+                    return false;
+                };
+                JAVA_WINDOWS
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&uuid);
+                let closed = self.with_java_world(|| horizon_jvm::events::menu_close(&uuid));
+                if let Err(e) = closed {
+                    log::warn!("Java mods: closing a mod's menu failed: {e}");
+                }
+                self.apply_java_actions(Some(host));
+                true
+            }
+            #[cfg(not(feature = "java-mods"))]
+            {
+                let _ = (host, conn, window);
+                false
             }
         }
 

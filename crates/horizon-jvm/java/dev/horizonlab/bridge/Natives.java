@@ -32,6 +32,13 @@ public final class Natives {
     public static native void openMenu(String uuid, String menu, String title);
 
     /**
+     * A mod's menu a player has open, shown by Horizon and run by Java: on opening, the menu
+     * type the player's game draws and its title (else null); the shown slots' items as SNBT
+     * (null empty) and the carried one. All null: the menu closed.
+     */
+    public static native void menuContent(String uuid, String menu, String title, String[] items, String carried);
+
+    /**
      * Horizon's block at x y z of a dimension ("minecraft:oak_log[axis=y]"), or null where no
      * chunk is loaded or outside a call that lent the world.
      */

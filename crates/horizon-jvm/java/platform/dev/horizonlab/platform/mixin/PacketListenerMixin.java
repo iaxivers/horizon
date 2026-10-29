@@ -44,9 +44,21 @@ public abstract class PacketListenerMixin {
         if (packet instanceof ClientboundOpenScreenPacket open && self instanceof ServerGamePacketListenerImpl game
                 && game.player != null) {
             var type = net.minecraft.core.registries.BuiltInRegistries.MENU.getKey(open.getType());
-            Natives.openMenu(game.player.getStringUUID(), type == null ? "" : type.toString(),
-                    HorizonServer.json(open.getTitle()));
-            HorizonServer.forwarded(game.player, open.getContainerId());
+            String name = type == null ? "" : type.toString();
+            String title = HorizonServer.json(open.getTitle());
+            if (HorizonServer.horizonMenu(name, title)) {
+                // A menu Horizon runs itself (a crafting table, an ender chest).
+                Natives.openMenu(game.player.getStringUUID(), name, title);
+                HorizonServer.forwarded(game.player, open.getContainerId());
+            } else {
+                // The mod's own menu (a cabinet's): Horizon shows it, Java runs it.
+                HorizonServer.menuOpened(game.player, open.getContainerId(), name, title);
+            }
+            return;
+        }
+        if (self instanceof ServerGamePacketListenerImpl game && game.player != null
+                && HorizonServer.isShown(game.player, containerId(packet))) {
+            // A shown menu's content: HorizonServer.syncMenus sends it whole.
             return;
         }
         if (self instanceof ServerGamePacketListenerImpl game && game.player != null

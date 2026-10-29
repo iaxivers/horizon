@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 /// The version of what this module writes: bump it when the facts or the carry-over change.
-const FORMAT: u32 = 3;
+const FORMAT: u32 = 4;
 
 /// The stamp of a set of jars: their names, sizes and modification times, and [`FORMAT`].
 pub fn stamp(jars: &[PathBuf]) -> String {

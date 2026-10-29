@@ -495,10 +495,11 @@ impl Facts {
     /// does not reproduce.
     pub fn item(&self, id: &str) -> Result<(Value, Vec<String>), String> {
         let item = self.items.get(id).ok_or("not in the oracle")?;
-        if item.block.is_some() {
-            return Err("a block item without a block".into());
-        }
         let mut differences = Vec::new();
+        if let Some(block) = &item.block {
+            // A seed's crop, a block of another name: the Java mod places it when it runs.
+            differences.push(format!("places {block}: only where its Java mod runs"));
+        }
         if !item.class.starts_with(VANILLA_PACKAGE) {
             differences.push(format!("class {} (behaviour beyond Item)", item.class));
         }

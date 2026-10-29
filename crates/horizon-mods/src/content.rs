@@ -432,8 +432,7 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
             if !seen.insert(&s.properties) {
                 return Err("states: a state is listed twice".into());
             }
-            if s
-                .shape
+            if s.shape
                 .as_deref()
                 .is_some_and(|v| !vanilla_id(v.split('[').next().unwrap_or(v)))
             {

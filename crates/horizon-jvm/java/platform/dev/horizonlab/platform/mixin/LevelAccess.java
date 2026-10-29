@@ -41,4 +41,16 @@ public interface LevelAccess {
     @Mutable
     @Accessor("random")
     void horizon$setRandom(RandomSource random);
+
+    @org.spongepowered.asm.mixin.Mutable
+    @org.spongepowered.asm.mixin.gen.Accessor("soundSeedGenerator")
+    void horizon$setSoundSeedGenerator(net.minecraft.util.RandomSource random);
+
+    @org.spongepowered.asm.mixin.Mutable
+    @org.spongepowered.asm.mixin.gen.Accessor("blockEntityTickers")
+    void horizon$setBlockEntityTickers(java.util.List<net.minecraft.world.level.block.entity.TickingBlockEntity> tickers);
+
+    @org.spongepowered.asm.mixin.Mutable
+    @org.spongepowered.asm.mixin.gen.Accessor("pendingBlockEntityTickers")
+    void horizon$setPendingBlockEntityTickers(java.util.List<net.minecraft.world.level.block.entity.TickingBlockEntity> tickers);
 }

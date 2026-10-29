@@ -244,6 +244,8 @@ pub struct Guest {
     /// The open block container, if any.
     pub menu: Option<super::menu::Menu>,
     pub next_window: i32,
+    /// The state id of the window of a Java mod's menu (Hub::send_window_content).
+    pub java_window_state: i32,
     /// An unfinished drag in the inventory menu.
     pub drag: Option<(u8, Vec<usize>)>,
     /// The compound this player was loaded from, for fields Horizon does not model.
@@ -371,6 +373,7 @@ impl Guest {
             dimension: "minecraft:overworld".into(),
             menu: None,
             next_window: 0,
+            java_window_state: 0,
             drag: None,
             saved: None,
             seen_credits: false,

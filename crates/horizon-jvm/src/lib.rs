@@ -397,6 +397,12 @@ fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
                 fn_ptr: native_open_menu as *mut c_void,
             },
             NativeMethod {
+                name: "menuContent".into(),
+                sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)V"
+                    .into(),
+                fn_ptr: native_menu_content as *mut c_void,
+            },
+            NativeMethod {
                 name: "blockState".into(),
                 sig: "(Ljava/lang/String;III)Ljava/lang/String;".into(),
                 fn_ptr: native_block_state as *mut c_void,
@@ -671,6 +677,51 @@ extern "system" fn native_open_menu(
             env.get_string(&title).ok().map(String::from)
         };
         events::push(events::Action::OpenMenu { uuid, menu, title });
+    }));
+}
+
+/// `Natives.menuContent(String uuid, String menu, String title, String[] items, String carried)`.
+extern "system" fn native_menu_content(
+    mut env: JNIEnv,
+    _class: JClass,
+    uuid: JString,
+    menu: JString,
+    title: JString,
+    items: JObjectArray,
+    carried: JString,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Ok(uuid) = env.get_string(&uuid).map(String::from) else {
+            return;
+        };
+        let mut string = |s: &JString| -> Option<String> {
+            (!s.is_null())
+                .then(|| env.get_string(s).ok().map(String::from))
+                .flatten()
+        };
+        let open = string(&menu).map(|m| (m, string(&title)));
+        let carried = string(&carried);
+        let items = if items.is_null() {
+            None
+        } else {
+            let n = env.get_array_length(&items).unwrap_or(0);
+            let mut out = Vec::with_capacity(n as usize);
+            for i in 0..n {
+                let item = env
+                    .get_object_array_element(&items, i)
+                    .ok()
+                    .filter(|o| !o.is_null())
+                    .and_then(|o| env.get_string(&JString::from(o)).ok().map(String::from));
+                out.push(item);
+            }
+            Some(out)
+        };
+        events::push(events::Action::MenuContent {
+            uuid,
+            open,
+            items,
+            carried,
+        });
     }));
 }
 
