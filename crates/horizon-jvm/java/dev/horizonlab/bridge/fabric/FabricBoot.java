@@ -66,7 +66,28 @@ public final class FabricBoot {
         loader.prepareModInit(HorizonGameProvider.gameDir, null);
         loader.invokeEntrypoints("main", ModInitializer.class, ModInitializer::onInitialize);
         if (env == EnvType.CLIENT) {
-            loader.invokeEntrypoints("client", ClientModInitializer.class, ClientModInitializer::onInitializeClient);
+            // Horizon's headless client, which mods' client code reaches (Minecraft.getInstance()).
+            try {
+                Class.forName("dev.horizonlab.platform.HorizonClient", true, gameLoader)
+                        .getMethod("boot", String.class).invoke(null, gameDir);
+            } catch (ClassNotFoundException e) {
+                // No platform mod: no headless client.
+            }
+            // Every client entrypoint runs, then Fabric throws what failed: a mod whose client
+            // code needs more of a client than the headless one has loses that, not the rest.
+            try {
+                loader.invokeEntrypoints("client", ClientModInitializer.class, ClientModInitializer::onInitializeClient);
+            } catch (RuntimeException e) {
+                Throwable root = e;
+                while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+                Natives.log("Some mods' client code failed (their screens may be missing): " + e.getMessage()
+                        + ", caused by " + root);
+            }
+            try {
+                Class.forName("dev.horizonlab.platform.HorizonClient", true, gameLoader).getMethod("finish").invoke(null);
+            } catch (ClassNotFoundException e) {
+                // No platform mod.
+            }
         } else {
             loader.invokeEntrypoints("server", DedicatedServerModInitializer.class, DedicatedServerModInitializer::onInitializeServer);
         }

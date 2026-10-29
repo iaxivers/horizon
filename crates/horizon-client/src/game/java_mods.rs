@@ -37,11 +37,15 @@ impl Game<'_> {
     }
 }
 
-/// The side Fabric runs as: the server's, always. The bridge mirrors Horizon's server (its
-/// levels and players): mods' client entrypoints (key bindings, renderers) would need a
-/// Minecraft client there is none of, and fail the whole start.
+/// The side Fabric runs as: the client's, with the platform's headless client (no window, no
+/// GPU) for mods' client code, whose screens Horizon shows; the server mirror runs beside it.
+/// A dedicated server has no screens to show.
 fn bridge_side() -> horizon_jvm::Side {
-    horizon_jvm::Side::Server
+    if std::env::args().any(|a| a == "--dedicated") {
+        horizon_jvm::Side::Server
+    } else {
+        horizon_jvm::Side::Client
+    }
 }
 
 /// The checkout (or install) holding research-lock.json and the prepared jars.
