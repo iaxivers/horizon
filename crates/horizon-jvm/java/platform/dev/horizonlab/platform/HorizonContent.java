@@ -306,6 +306,15 @@ public final class HorizonContent {
             json.endArray();
         }
 
+        static final com.google.gson.Gson GSON = new com.google.gson.Gson();
+
+        static <T> com.google.gson.JsonElement encode(net.minecraft.core.component.TypedDataComponent<T> component,
+                com.mojang.serialization.DynamicOps<com.google.gson.JsonElement> ops) {
+            var codec = component.type().codec();
+            if (codec == null) return null;
+            return codec.encodeStart(ops, component.value()).result().orElse(null);
+        }
+
         void items() throws IOException {
             json.name("items");
             json.beginObject();
@@ -329,6 +338,17 @@ public final class HorizonContent {
                     json.name("saturation").value(food.saturation());
                     json.endObject();
                 }
+                // Every default component in its JSON form (the ones without a codec are runtime only).
+                json.name("components");
+                json.beginObject();
+                var ops = level.registryAccess().createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE);
+                for (var component : item.components()) {
+                    var encoded = encode(component, ops);
+                    if (encoded == null) continue;
+                    json.name(BuiltInRegistries.DATA_COMPONENT_TYPE.getKey(component.type()).toString());
+                    json.jsonValue(GSON.toJson(encoded));
+                }
+                json.endObject();
                 json.endObject();
             }
             json.endObject();

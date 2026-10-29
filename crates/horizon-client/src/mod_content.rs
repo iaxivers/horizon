@@ -235,6 +235,8 @@ struct NewItem {
     rename: Rename,
     max_stack_size: Option<u8>,
     rarity: Option<Rarity>,
+    /// Component overrides, by component id.
+    components: Vec<(String, J)>,
 }
 
 struct Plan<'a> {
@@ -356,6 +358,7 @@ impl<'a> Plan<'a> {
                     rename: Rename::new(item, &b.decl.id),
                     max_stack_size: None,
                     rarity: None,
+                    components: Vec::new(),
                 });
             }
         }
@@ -365,6 +368,12 @@ impl<'a> Plan<'a> {
                     rename: Rename::new(&i.template, &i.id),
                     max_stack_size: i.max_stack_size,
                     rarity: i.rarity,
+                    components: i
+                        .components
+                        .iter()
+                        .map(|(k, v)| Ok((k.clone(), serde_json::from_value(v.clone())?)))
+                        .collect::<std::result::Result<_, serde_json::Error>>()
+                        .map_err(|e| format!("{}: components: {e}", i.id))?,
                 });
             }
         }
@@ -477,6 +486,9 @@ impl<'a> Plan<'a> {
                         Rarity::Epic => "epic",
                     };
                     v.set("minecraft:rarity", J::Str(r.into()));
+                }
+                for (k, c) in &i.components {
+                    v.set(k, c.clone());
                 }
             }
             map.set(&i.rename.to, v);

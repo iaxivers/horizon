@@ -116,6 +116,8 @@ struct ItemFile {
     template: String,
     max_stack_size: Option<u8>,
     rarity: Option<Rarity>,
+    #[serde(default)]
+    components: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// An item the mod adds: a vanilla template item's components under a new
@@ -127,6 +129,9 @@ pub struct Item {
     pub template: String,
     pub max_stack_size: Option<u8>,
     pub rarity: Option<Rarity>,
+    /// Vanilla components (`minecraft:food`, `minecraft:consumable`...) in their JSON form,
+    /// over the template's.
+    pub components: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug)]
@@ -344,6 +349,11 @@ impl Content {
             if file.max_stack_size.is_some_and(|n| !(1..=99).contains(&n)) {
                 return Err(format!("{name}: max_stack_size is 1 to 99"));
             }
+            if let Some(c) = file.components.keys().find(|c| !vanilla_id(c)) {
+                return Err(format!(
+                    "{name}: component {c:?} is not vanilla's (minecraft:...)"
+                ));
+            }
             if !ids.insert(item.clone()) {
                 return Err(format!("{name}: {item} is also a block's item"));
             }
@@ -352,6 +362,7 @@ impl Content {
                 template: file.template,
                 max_stack_size: file.max_stack_size,
                 rarity: file.rarity,
+                components: file.components,
             });
         }
         Ok(())

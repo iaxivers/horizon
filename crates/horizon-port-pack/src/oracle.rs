@@ -75,6 +75,58 @@ pub struct Item {
     pub block: Option<String>,
     #[serde(default)]
     pub food: Option<Value>,
+    /// Its default components in their JSON form (exporters that write them).
+    #[serde(default)]
+    pub components: Map<String, Value>,
+}
+
+/// The components carried onto an item's template: what it does when used, worn or held.
+/// (Its name, model and tooltip come with the content mod's own id and assets.)
+const CARRIED_COMPONENTS: &[&str] = &[
+    "minecraft:food",
+    "minecraft:consumable",
+    "minecraft:use_remainder",
+    "minecraft:use_cooldown",
+    "minecraft:max_damage",
+    "minecraft:tool",
+    "minecraft:weapon",
+    "minecraft:attribute_modifiers",
+    "minecraft:equippable",
+    "minecraft:enchantable",
+    "minecraft:repairable",
+    "minecraft:damage_resistant",
+    "minecraft:death_protection",
+    "minecraft:blocks_attacks",
+    "minecraft:glider",
+    "minecraft:fireworks",
+    "minecraft:jukebox_playable",
+    "minecraft:instrument",
+];
+
+/// Whether a JSON value names only ids Horizon has: vanilla's (and tags of them), or the
+/// mod's own items (`own`), not its effects, sounds or other registries' entries.
+fn known_ids(v: &Value, own: &str) -> bool {
+    match v {
+        Value::String(s) => {
+            let id = s.strip_prefix('#').unwrap_or(s);
+            match id.split_once(':') {
+                Some((ns, path))
+                    if !ns.is_empty()
+                        && ns
+                            .chars()
+                            .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-' | '.'))
+                        && !path.is_empty()
+                        && !path.contains(' ') =>
+                {
+                    ns == "minecraft" || ns == own
+                }
+                _ => true,
+            }
+        }
+        Value::Array(a) => a.iter().all(|v| known_ids(v, own)),
+        Value::Object(o) => o.values().all(|v| known_ids(v, own)),
+        _ => true,
+    }
 }
 
 const VANILLA_PACKAGE: &str = "net.minecraft.";
@@ -334,10 +386,43 @@ impl Facts {
         if !item.class.starts_with(VANILLA_PACKAGE) {
             differences.push(format!("class {} (behaviour beyond Item)", item.class));
         }
-        if item.food.is_some() {
-            return Err("food (no food template yet)".into());
+        let food = item.food.is_some() || item.components.contains_key("minecraft:food");
+        let template = if food {
+            "minecraft:bread"
+        } else {
+            "minecraft:stick"
+        };
+        let mut decl = json!({"template": template});
+        let own = id.split_once(':').map_or("", |(ns, _)| ns);
+        let mut components = Map::new();
+        for (name, value) in &item.components {
+            if !CARRIED_COMPONENTS.contains(&name.as_str()) {
+                continue;
+            }
+            let mut value = value.clone();
+            // Effects of the mod's own (Farmer's Delight's Comfort...) are left out, the rest kept.
+            if let Some(Value::Array(effects)) = value.get_mut("on_consume_effects") {
+                let before = effects.len();
+                effects.retain(|e| known_ids(e, ""));
+                if effects.len() < before {
+                    differences.push(format!(
+                        "{name}: {} effect(s) of the mod's own",
+                        before - effects.len()
+                    ));
+                }
+            }
+            if known_ids(&value, own) {
+                components.insert(name.clone(), value);
+            } else {
+                differences.push(format!("{name}: names what Horizon does not have"));
+            }
         }
-        let mut decl = json!({"template": "minecraft:stick"});
+        if food && !components.contains_key("minecraft:food") {
+            return Err("food without its components (an older exporter)".into());
+        }
+        if !components.is_empty() {
+            decl["components"] = Value::Object(components);
+        }
         if item.max_stack_size != 64 {
             decl["max_stack_size"] = json!(item.max_stack_size);
         }
