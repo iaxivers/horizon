@@ -37,6 +37,8 @@ public abstract class ServerLevelMixin {
                                     org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
         if (!HorizonServer.isMirror(this)) return;
         ci.cancel();
+        // A client half's own effects: the server's are played.
+        if (HorizonServer.clientHalf == Thread.currentThread()) return;
         HorizonServer.levelEvent((ServerLevel) (Object) this, type, pos, data);
     }
 

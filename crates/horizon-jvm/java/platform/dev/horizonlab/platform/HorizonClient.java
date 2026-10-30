@@ -3,6 +3,7 @@ package dev.horizonlab.platform;
 import dev.horizonlab.bridge.Natives;
 import java.io.File;
 import java.lang.reflect.Field;
+import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 
 /**
@@ -369,6 +370,25 @@ public final class HorizonClient {
                 && client.containerId == player.containerMenu.containerId ? client : player.containerMenu;
         // Its permissions (tooltips' operator warnings): the server player's.
         set(net.minecraft.client.player.LocalPlayer.class, local, "permissions", player.permissions());
+        // Where it is and looks (Nature's Compass sends blockPosition() with its search): the
+        // server player's, set as fields (setPosRaw reads the old position, which a player made
+        // without its constructor has none of).
+        Class<?> entity = net.minecraft.world.entity.Entity.class;
+        set(entity, local, "position", player.position());
+        set(entity, local, "blockPosition", player.blockPosition());
+        set(entity, local, "chunkPosition", player.chunkPosition());
+        set(entity, local, "bb", player.getBoundingBox());
+        set(entity, local, "yRot", player.getYRot());
+        set(entity, local, "xRot", player.getXRot());
+        local.yRotO = player.getYRot();
+        local.xRotO = player.getXRot();
+        local.yHeadRot = player.getYHeadRot();
+        local.yBodyRot = player.yBodyRot;
+        // Its keys (LocalPlayer.isShiftKeyDown reads them): the sneak key as the server
+        // player has it.
+        if (local.input == null) local.input = new net.minecraft.client.player.ClientInput();
+        local.input.keyPresses = new net.minecraft.world.entity.player.Input(
+                false, false, false, false, false, player.isShiftKeyDown(), false);
         return local;
     }
 
@@ -555,6 +575,63 @@ public final class HorizonClient {
         as(player, () -> setScreen(null));
     }
 
+    /** A client player's own message (LocalPlayerMessagesMixin): to its player's game. */
+    public static boolean clientMessage(net.minecraft.client.player.LocalPlayer local,
+                                        net.minecraft.network.chat.Component message, boolean overlay) {
+        var player = SERVER_PLAYERS.get(local);
+        if (player == null) return false;
+        String json = HorizonServer.chatJson(message);
+        if (overlay) Natives.overlay(player.getStringUUID(), json);
+        else Natives.tell(player.getStringUUID(), json);
+        return true;
+    }
+
+    /**
+     * The client half of using a mod's block (MultiPlayerGameMode.performUseItemOn, after the
+     * server's): Fabric's UseBlockCallback, then the block's useItemOn and, passed to an empty
+     * hand, useWithoutItem, on the player's client player with the level answering
+     * isClientSide() true. What it opens is the player's screen; what it would change in the
+     * world is the client's prediction, dropped (HorizonServer.setBlock): the server's is
+     * made. The item's own useOn is left out (a placement predicted on the shared inventory).
+     */
+    public static void useBlock(net.minecraft.server.level.ServerPlayer player,
+                                net.minecraft.world.InteractionHand hand,
+                                net.minecraft.world.phys.BlockHitResult hit) {
+        if (minecraft == null || minecraft.font == null) return;
+        try {
+            as(player, () -> {
+                var local = minecraft.player;
+                var level = local.level();
+                HorizonServer.clientHalf = Thread.currentThread();
+                try {
+                    var event = net.fabricmc.fabric.api.event.player.UseBlockCallback.EVENT;
+                    Object[] listeners = HorizonServer.listeners(event);
+                    for (Object listener : listeners != null ? listeners : new Object[] {event.invoker()}) {
+                        var r = ((net.fabricmc.fabric.api.event.player.UseBlockCallback) listener).interact(local, level, hand, hit);
+                        if (r != net.minecraft.world.InteractionResult.PASS) return;
+                    }
+                    var state = level.getBlockState(hit.getBlockPos());
+                    var stack = local.getItemInHand(hand);
+                    boolean secondary = local.isSecondaryUseActive() && !(local.getMainHandItem().isEmpty() && local.getOffhandItem().isEmpty());
+                    if (secondary) return;
+                    var r = state.useItemOn(stack, level, local, hand, hit);
+                    if (r.consumesAction()) return;
+                    if (r instanceof net.minecraft.world.InteractionResult.TryEmptyHandInteraction
+                            && hand == net.minecraft.world.InteractionHand.MAIN_HAND) {
+                        state.useWithoutItem(level, local, hit);
+                    }
+                } finally {
+                    HorizonServer.clientHalf = null;
+                }
+            });
+        } catch (Throwable t) {
+            Throwable root = t;
+            while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+            Natives.log("Horizon's client: the client side of using a block failed: " + root);
+            for (StackTraceElement frame : root.getStackTrace()) Natives.log("    at " + frame);
+        }
+    }
+
     /**
      * The client half of using an item on nothing (MultiPlayerGameMode.useItem, after the
      * server's): Fabric's UseItemCallback, then the item's own use, on the player's client
@@ -611,12 +688,120 @@ public final class HorizonClient {
         if (minecraft == null || minecraft.font == null) return;
         Thread.currentThread().setContextClassLoader(HorizonClient.class.getClassLoader());
         tasks();
+        // Each player's game is a client of its own: its tick runs as that player
+        // (Minecraft.player, the open screen), with its own keys (bindings). With no player, a
+        // client at its title screen.
+        var players = HorizonServer.players();
+        if (players.isEmpty()) {
+            tickOnce();
+            return;
+        }
+        for (var player : players) {
+            try {
+                as(player, () -> withKeys(player.getUUID(), HorizonClient::tickOnce));
+            } catch (Throwable t) {
+                Natives.log("Horizon's client: a tick as " + player.getScoreboardName() + " failed: " + t);
+            }
+        }
+    }
+
+    private static void tickOnce() {
         HorizonHooks.fireClient(minecraft, "runTick");
         HorizonHooks.fireClient(minecraft, "tick");
         HorizonServer.fireEach("ClientTickEvents.START_CLIENT_TICK",
                 net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.START_CLIENT_TICK, l -> l.onStartTick(minecraft));
         HorizonServer.fireEach("ClientTickEvents.END_CLIENT_TICK",
                 net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK, l -> l.onEndTick(minecraft));
+    }
+
+    // ---- Mods' key bindings ---------------------------------------------------------------------
+
+    /** Each player's keys: which of the mods' KeyMappings are down, and their clicks not yet consumed. */
+    private record Keys(java.util.Set<KeyMapping> down, java.util.Map<KeyMapping, Integer> clicks) {}
+
+    private static final java.util.Map<java.util.UUID, Keys> KEYS = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** The mods' own KeyMappings (Fabric's KeyMappingHelper registry), vanilla's left to Horizon. */
+    @SuppressWarnings("unchecked")
+    static java.util.List<KeyMapping> modKeys() {
+        try {
+            Class<?> registry = Class.forName("net.fabricmc.fabric.impl.client.keymapping.KeyMappingRegistryImpl");
+            Field list = registry.getDeclaredField("MODDED_KEY_BINDINGS");
+            list.setAccessible(true);
+            return new java.util.ArrayList<>((java.util.List<KeyMapping>) list.get(null));
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return java.util.List.of();
+        }
+    }
+
+    /** The keyboard keys (26.3 scancodes) the mods' KeyMappings are set to, as a JSON array. */
+    public static String boundKeys() {
+        Thread.currentThread().setContextClassLoader(HorizonClient.class.getClassLoader());
+        var out = new com.google.gson.JsonArray();
+        java.util.Set<Integer> seen = new java.util.TreeSet<>();
+        for (KeyMapping mapping : modKeys()) {
+            var key = key(mapping);
+            if (key != null && key.getType() == com.mojang.blaze3d.platform.InputConstants.Type.KEYBOARD
+                    && key.getValue() >= 0 && seen.add(key.getValue())) {
+                out.add(key.getValue());
+            }
+        }
+        return out.toString();
+    }
+
+    private static com.mojang.blaze3d.platform.InputConstants.Key key(KeyMapping mapping) {
+        try {
+            return (com.mojang.blaze3d.platform.InputConstants.Key) field(KeyMapping.class, mapping, "key");
+        } catch (ReflectiveOperationException e) {
+            return null;
+        }
+    }
+
+    /**
+     * A key of a player's game, pressed or released while playing (KeyboardHandler.keyPress:
+     * KeyMapping.set, and click on a press), kept for that player's client tick.
+     */
+    static void bind(java.util.UUID player, int scancode, boolean down) {
+        Keys keys = KEYS.computeIfAbsent(player, p -> new Keys(
+                java.util.concurrent.ConcurrentHashMap.newKeySet(), new java.util.concurrent.ConcurrentHashMap<>()));
+        var pressed = com.mojang.blaze3d.platform.InputConstants.Type.KEYBOARD.getOrCreate(scancode);
+        for (KeyMapping mapping : modKeys()) {
+            if (!pressed.equals(key(mapping))) continue;
+            if (down) {
+                keys.down().add(mapping);
+                keys.clicks().merge(mapping, 1, Integer::sum);
+            } else {
+                keys.down().remove(mapping);
+            }
+        }
+    }
+
+    /**
+     * Runs with the player's keys on the mods' KeyMappings (isDown, clicks; KeyMappings are the
+     * client's, one set for every player here), then keeps the clicks the mods didn't consume.
+     */
+    static void withKeys(java.util.UUID player, ThrowingRunnable run) throws Throwable {
+        Keys keys = KEYS.get(player);
+        var mappings = modKeys();
+        Field clickCount = KeyMapping.class.getDeclaredField("clickCount");
+        clickCount.setAccessible(true);
+        for (KeyMapping mapping : mappings) {
+            mapping.setDown(keys != null && keys.down().contains(mapping));
+            clickCount.setInt(mapping, keys == null ? 0 : keys.clicks().getOrDefault(mapping, 0));
+        }
+        try {
+            run.run();
+        } finally {
+            for (KeyMapping mapping : mappings) {
+                int left = clickCount.getInt(mapping);
+                if (keys != null) {
+                    if (left > 0) keys.clicks().put(mapping, left);
+                    else keys.clicks().remove(mapping);
+                }
+                mapping.setDown(false);
+                clickCount.setInt(mapping, 0);
+            }
+        }
     }
 
     /** One frame of a player's mod screen, as Horizon draws it (HorizonGraphics' operations). */
@@ -756,11 +941,15 @@ public final class HorizonClient {
     public static void input(String uuid, String json) {
         Thread.currentThread().setContextClassLoader(HorizonClient.class.getClassLoader());
         java.util.UUID id = java.util.UUID.fromString(uuid);
+        var in = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+        String kind = in.get("kind").getAsString();
+        if (kind.equals("bind")) {
+            bind(id, in.get("key").getAsInt(), in.get("down").getAsBoolean());
+            return;
+        }
         var screen = SCREENS.get(id);
         var player = OWNERS.get(id);
         if (screen == null || player == null) return;
-        var in = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
-        String kind = in.get("kind").getAsString();
         if (DEBUG_INPUT) Natives.log("screen input " + json + " to " + screen.getClass().getName());
         double x = in.has("x") ? in.get("x").getAsDouble() : MOUSE.getOrDefault(id, new double[2])[0];
         double y = in.has("y") ? in.get("y").getAsDouble() : MOUSE.getOrDefault(id, new double[2])[1];

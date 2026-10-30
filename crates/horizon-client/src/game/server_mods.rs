@@ -52,6 +52,30 @@ static JAVA_RANDOM_TICKS: std::sync::Mutex<Vec<horizon_core::position::BlockPos>
 static JAVA_STATES: std::sync::OnceLock<Vec<bool>> = std::sync::OnceLock::new();
 
 /// horizon-world's RANDOM_TICK_HOOK: a random tick of a Java mod's block is kept for the mods.
+/// The chunks Java mods' tickets keep in each dimension (`Action::ChunkTickets`), kept here
+/// too for a level that opens later.
+#[cfg(feature = "java-mods")]
+static JAVA_TICKETS: std::sync::Mutex<Option<std::collections::HashMap<String, Vec<(i32, i32)>>>> =
+    std::sync::Mutex::new(None);
+
+/// The chunks Java mods' chunk loaders keep in `dimension` (none without Java mods).
+pub(super) fn java_tickets(dimension: &str) -> Vec<(i32, i32)> {
+    #[cfg(feature = "java-mods")]
+    {
+        JAVA_TICKETS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(|m| m.get(dimension).cloned())
+            .unwrap_or_default()
+    }
+    #[cfg(not(feature = "java-mods"))]
+    {
+        let _ = dimension;
+        Vec::new()
+    }
+}
+
 #[cfg(feature = "java-mods")]
 pub(super) fn java_random_tick(
     pos: horizon_core::position::BlockPos,
@@ -787,6 +811,11 @@ mod run {
                         .flat_map(|h| &h.hub.guests)
                         .find(|g| uuid_string(g.uuid) == p.id)
                         .map_or(4, |g| g.permission),
+                    sneaking: self
+                        .lan
+                        .iter()
+                        .flat_map(|h| &h.hub.guests)
+                        .any(|g| uuid_string(g.uuid) == p.id && g.sneaking),
                     inventory: self
                         .lan
                         .iter()
@@ -853,6 +882,13 @@ mod run {
                 }
             }
             let (ticks, root) = (self.ticks as i64, self.save.root.clone());
+            // The level in place keeps what Java mods' chunk loaders last asked for, though its
+            // streaming was made after they asked (a world loading, a level swapped in).
+            let wanted = super::java_tickets(self.dim.id());
+            let held = self.streaming.ticketed();
+            if wanted.len() != held.len() || wanted.iter().any(|c| !held.contains(c)) {
+                self.streaming.set_ticketed(wanted);
+            }
             let (game_time, seed) = (self.world.game_time, self.level.seed);
             let ticked = self.with_java_world(|| {
                 horizon_jvm::events::game_time(game_time, seed)?;
@@ -985,8 +1021,53 @@ mod run {
 
         /// Sends what the Java mods asked since the last call: system messages to a player or
         /// everyone. `host` is the hub when it is out of `self.lan`.
+        /// Each player's game is told once which keys Java mods bind (game/java_screen.rs's
+        /// KEYS), so it sends them while playing.
+        #[cfg(feature = "java-mods")]
+        fn send_java_keys(host: &mut LanHost) {
+            static KEYS: std::sync::OnceLock<Vec<i32>> = std::sync::OnceLock::new();
+            static TOLD: std::sync::Mutex<Option<std::collections::HashSet<u32>>> =
+                std::sync::Mutex::new(None);
+            let mut told = TOLD.lock().unwrap_or_else(|e| e.into_inner());
+            let told = told.get_or_insert_with(Default::default);
+            let new: Vec<u32> = host
+                .hub
+                .guests
+                .iter()
+                .filter(|g| g.placed && !told.contains(&g.conn))
+                .map(|g| g.conn)
+                .collect();
+            if new.is_empty() {
+                return;
+            }
+            let keys = KEYS.get_or_init(|| {
+                horizon_jvm::events::bound_keys().unwrap_or_else(|e| {
+                    log::warn!("Java mods: their key bindings can't be read: {e}");
+                    Vec::new()
+                })
+            });
+            for conn in new {
+                told.insert(conn);
+                if keys.is_empty() {
+                    continue;
+                }
+                host.hub.send_to(
+                    conn,
+                    &C::CustomPayload(horizon_protocol::packets::configuration::CustomPayload {
+                        channel: super::super::java_screen::KEYS.into(),
+                        data: serde_json::to_vec(keys).unwrap_or_default(),
+                    }),
+                );
+            }
+        }
+
         #[cfg(feature = "java-mods")]
         fn apply_java_actions(&mut self, mut host: Option<&mut LanHost>) {
+            if let Some(h) = host.as_deref_mut() {
+                Self::send_java_keys(h);
+            } else if let Some(h) = self.lan.as_mut() {
+                Self::send_java_keys(h);
+            }
             let mut wrote = false;
             for action in horizon_jvm::events::take_actions() {
                 wrote |= matches!(
@@ -997,6 +1078,9 @@ mod run {
                 match action {
                     horizon_jvm::events::Action::Tell { uuid, text } => {
                         self.tell_server_player(host.as_deref_mut(), &uuid, java_chat(&text));
+                    }
+                    horizon_jvm::events::Action::Overlay { uuid, text } => {
+                        self.overlay_server_player(host.as_deref_mut(), &uuid, java_chat(&text));
                     }
                     teleport @ horizon_jvm::events::Action::Teleport { .. } => {
                         if host.is_some() {
@@ -1264,6 +1348,19 @@ mod run {
                         {
                             // The hub sends the changed slot with the tick's other changes.
                             *at = stack;
+                        }
+                    }
+                    horizon_jvm::events::Action::ChunkTickets { dimension, chunks } => {
+                        super::JAVA_TICKETS
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .get_or_insert_with(Default::default)
+                            .insert(dimension.clone(), chunks.clone());
+                        let dim = super::super::Dim::from_id(&dimension);
+                        if dim == self.dim {
+                            self.streaming.set_ticketed(chunks);
+                        } else if let Some(level) = self.levels.parked_mut(dim) {
+                            level.set_ticketed(chunks);
                         }
                     }
                     horizon_jvm::events::Action::Broadcast { text } => {
@@ -1942,7 +2039,19 @@ mod run {
                     return;
                 };
                 let window = input.get("window").and_then(Value::as_i64).unwrap_or(-1) as i32;
-                let Some(uuid) = java_window_of(host, conn, window) else {
+                // A key of a Java mod's key binding, pressed or released while playing: the
+                // connection's player's, whatever window is open.
+                let bind = input.get("kind").and_then(Value::as_str) == Some("bind");
+                let uuid = if bind {
+                    host.hub
+                        .guests
+                        .iter()
+                        .find(|g| g.conn == conn)
+                        .map(|g| uuid_string(g.uuid))
+                } else {
+                    java_window_of(host, conn, window)
+                };
+                let Some(uuid) = uuid else {
                     return;
                 };
                 let input = input.to_string();
@@ -2251,6 +2360,36 @@ mod run {
         /// Sends a server mod's line to the player with this id: the
         /// window's own chat for the local player, a system message for a
         /// connection's. `host` is the hub when it is out of `self.lan`.
+        /// A line for one player's action bar (`SystemChat` with `overlay`); the window's own
+        /// player in-frame gets it in chat.
+        #[cfg(feature = "java-mods")]
+        fn overlay_server_player(&mut self, host: Option<&mut LanHost>, id: &str, line: Text) {
+            let local = self.options.execution_role.is_client()
+                && self.remote.is_none()
+                && self.player.is_some();
+            if local && self.player_uuid_string() == id {
+                self.add_mod_chat_line(line);
+                return;
+            }
+            let Some(host) = host.or(self.lan.as_mut()) else {
+                return;
+            };
+            let to = host
+                .hub
+                .guests
+                .iter()
+                .find(|g| g.placed && uuid_string(g.uuid) == id);
+            if let Some(conn) = to.map(|g| g.conn) {
+                host.hub.send_to(
+                    conn,
+                    &C::SystemChat(play::SystemChat {
+                        content: component_nbt(&line.component()),
+                        overlay: true,
+                    }),
+                );
+            }
+        }
+
         pub(in crate::game) fn tell_server_player(
             &mut self,
             host: Option<&mut LanHost>,

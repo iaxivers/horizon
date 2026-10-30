@@ -445,6 +445,8 @@ impl Game<'_> {
         self.apply_settings();
         self.clear_waypoints();
         self.boss_overlay.reset();
+        // A new server: its Java mods (if any) say which keys they bind once we're in.
+        self.java_binds = Default::default();
         self.remote = Some(Remote {
             session,
             brand: "unknown".into(),
@@ -2690,6 +2692,9 @@ impl Game<'_> {
             C::OpenScreen(p) => self.remote_open_screen(p),
             C::CustomPayload(p) if p.channel == super::java_screen::CHANNEL => {
                 self.remote_java_screen(&p.data)
+            }
+            C::CustomPayload(p) if p.channel == super::java_screen::KEYS => {
+                self.remote_java_keys(&p.data)
             }
             C::CustomPayload(p) if p.channel == super::java_entities::CHANNEL => {
                 self.remote_java_entities(&p.data)

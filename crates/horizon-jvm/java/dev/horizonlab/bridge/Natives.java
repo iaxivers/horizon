@@ -10,6 +10,9 @@ public final class Natives {
     /** A system message to one player, by {@code UUID.toString()}. */
     public static native void tell(String uuid, String text);
 
+    /** A line for one player's action bar (an overlay system message), as a JSON component. */
+    public static native void overlay(String uuid, String text);
+
     /** Moves a player (by UUID) to a dimension ("minecraft:the_nether"), position and rotation. */
     public static native void teleport(String uuid, String dimension, double x, double y, double z, float yaw, float pitch);
 
@@ -96,6 +99,12 @@ public final class Natives {
      * vanilla's encoding of it, its id first (a VarInt), then its body.
      */
     public static native void packet(String uuid, byte[] data);
+
+    /**
+     * The chunks mods' tickets keep loaded and ticking in a dimension, as forced chunks
+     * (ticket level 31): "x,z;x,z;..." (empty: none). Sent when they change.
+     */
+    public static native void chunkTickets(String dimension, String chunks);
 
     /**
      * An instance of {@code type} made without running a constructor (JNI AllocObject): the

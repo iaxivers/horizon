@@ -90,14 +90,45 @@ public abstract class ServerChunkCacheMixin {
         if (HorizonServer.isMirror(this)) ci.cancel();
     }
 
-    // Chunk tickets: Horizon loads its chunks (mods' chunk loaders don't reach it yet).
-    @Inject(method = {"addTicket", "addTicketWithRadius", "removeTicketWithRadius"}, at = @At("HEAD"), cancellable = true)
-    private void horizon$tickets(CallbackInfo ci) {
-        if (HorizonServer.isMirror(this)) ci.cancel();
+    // Chunk tickets (mods' chunk loaders): the level's own TicketStorage, whose chunks Horizon
+    // keeps loaded and ticking (HorizonTickets).
+    @Inject(method = "addTicket", at = @At("HEAD"), cancellable = true)
+    private void horizon$addTicket(net.minecraft.server.level.Ticket ticket, ChunkPos pos, CallbackInfo ci) {
+        if (!HorizonServer.isMirror(this)) return;
+        ci.cancel();
+        horizon$tickets().addTicket(ticket, pos);
     }
 
+    @Inject(method = "addTicketWithRadius", at = @At("HEAD"), cancellable = true)
+    private void horizon$addTicketWithRadius(net.minecraft.server.level.TicketType type, ChunkPos pos, int radius, CallbackInfo ci) {
+        if (!HorizonServer.isMirror(this)) return;
+        ci.cancel();
+        horizon$tickets().addTicketWithRadius(type, pos, radius);
+    }
+
+    /** The ticket, and the chunks loaded at once (Horizon loads them as it streams). */
+    @Inject(method = "addTicketAndLoadWithRadius", at = @At("HEAD"), cancellable = true)
+    private void horizon$addTicketAndLoad(net.minecraft.server.level.TicketType type, ChunkPos pos, int radius,
+                                          CallbackInfoReturnable<java.util.concurrent.CompletableFuture<?>> cir) {
+        if (!HorizonServer.isMirror(this)) return;
+        horizon$tickets().addTicketWithRadius(type, pos, radius);
+        cir.setReturnValue(java.util.concurrent.CompletableFuture.completedFuture(null));
+    }
+
+    @Inject(method = "removeTicketWithRadius", at = @At("HEAD"), cancellable = true)
+    private void horizon$removeTicketWithRadius(net.minecraft.server.level.TicketType type, ChunkPos pos, int radius, CallbackInfo ci) {
+        if (!HorizonServer.isMirror(this)) return;
+        ci.cancel();
+        horizon$tickets().removeTicketWithRadius(type, pos, radius);
+    }
+
+    /** ServerLevel.setChunkForced (a FORCED ticket, as /forceload's). */
     @Inject(method = "updateChunkForced", at = @At("HEAD"), cancellable = true)
     private void horizon$forced(ChunkPos pos, boolean forced, CallbackInfoReturnable<Boolean> cir) {
-        if (HorizonServer.isMirror(this)) cir.setReturnValue(false);
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(horizon$tickets().updateChunkForced(pos, forced));
+    }
+
+    private net.minecraft.world.level.TicketStorage horizon$tickets() {
+        return dev.horizonlab.platform.HorizonTickets.storage((net.minecraft.server.level.ServerLevel) horizon$level());
     }
 }

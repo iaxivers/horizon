@@ -20,7 +20,16 @@ public abstract class ServerPlayerMixin {
 
     @Inject(method = "sendSystemMessage(Lnet/minecraft/network/chat/Component;Z)V", at = @At("HEAD"), cancellable = true)
     private void horizon$sendSystemMessage(Component message, boolean overlay, CallbackInfo ci) {
-        horizon$tell(message, ci);
+        if (!overlay) {
+            horizon$tell(message, ci);
+            return;
+        }
+        // The action bar's line.
+        ServerPlayer self = (ServerPlayer) (Object) this;
+        if (HorizonServer.isMirror(self)) {
+            Natives.overlay(self.getStringUUID(), HorizonServer.chatJson(message));
+            ci.cancel();
+        }
     }
 
     /** A teleport (to this level or another): the mirror moves, and Horizon moves the player. */

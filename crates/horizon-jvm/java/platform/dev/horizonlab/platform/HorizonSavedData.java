@@ -32,6 +32,7 @@ public final class HorizonSavedData {
         save();
         dir = now;
         LEVELS.clear();
+        HorizonTickets.reset();
         server = storage(now);
         try {
             java.lang.reflect.Field field = MinecraftServer.class.getDeclaredField("savedDataStorage");
@@ -40,6 +41,11 @@ public final class HorizonSavedData {
         } catch (ReflectiveOperationException | RuntimeException e) {
             Natives.log("Java mods: the server's saved data could not be set: " + e);
         }
+    }
+
+    /** Whether a world's folder is known: its levels' saved data can be read. */
+    public static synchronized boolean ready() {
+        return dir != null;
     }
 
     /** ServerLevel.getDataStorage on a mirrored level. */

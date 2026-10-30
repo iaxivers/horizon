@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "horizon_keys",
+  "version": "1.0.0",
+  "name": "Horizon Keys",
+  "description": "A key binding (G) whose client tick tells the server it was pressed, which says so in chat: a check of the Java mod bridge's key bindings.",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["dev.horizonlab.keysmod.KeysMod"],
+    "client": ["dev.horizonlab.keysmod.KeysClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.20",
+    "minecraft": "26.3",
+    "fabric-api": "*"
+  }
+}

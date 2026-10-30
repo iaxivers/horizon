@@ -34,6 +34,8 @@ pub struct Player {
     pub saturation: f32,
     /// Vanilla's permission level, 0 (everyone) to 4 (owner): what the player's commands may do.
     pub permission: u8,
+    /// The sneak key is held (`Player.isShiftKeyDown`: a mod's sneak-click, a wrench's mode).
+    pub sneaking: bool,
     /// The inventory, when it changed since the last tick (None: as it was): the
     /// [`INVENTORY_SLOTS`] slots in vanilla's `Inventory` order (hotbar 0-8, the rest 9-35,
     /// feet, legs, chest, head 36-39, off hand 40), each an item stack as vanilla's
@@ -83,9 +85,18 @@ pub enum Action {
     /// `ServerPlayer.sendSystemMessage`: a line to one player, as a JSON component (the
     /// game resolves its translations: Java's server side has vanilla's English only).
     Tell { uuid: String, text: String },
+    /// `ServerPlayer.sendSystemMessage(_, true)`, a client's `sendOverlayMessage`: a line for one
+    /// player's action bar, a JSON component as `Tell`'s.
+    Overlay { uuid: String, text: String },
     /// `PlayerList.broadcastSystemMessage`: a line to every player, and the server log; a
     /// JSON component, as `Tell`'s.
     Broadcast { text: String },
+    /// Mods' chunk tickets (chunk loaders, `setChunkForced`) in a dimension: every chunk they
+    /// keep loaded and ticking, as forced chunks are. The whole set, sent when it changes.
+    ChunkTickets {
+        dimension: String,
+        chunks: Vec<(i32, i32)>,
+    },
     /// `ServerPlayer.teleport` and the connection's: the player is to be moved there.
     Teleport {
         uuid: String,
@@ -322,7 +333,12 @@ fn call_tick(
         .iter()
         .flat_map(|p| [p.food as f32, p.saturation])
         .collect();
-    let permissions: Vec<i32> = players.iter().map(|p| i32::from(p.permission)).collect();
+    // Per player: the permission level in the low 8 bits, bit 8 the sneak key
+    // (HorizonServer.tick's `permissions`).
+    let permissions: Vec<i32> = players
+        .iter()
+        .map(|p| i32::from(p.permission) | (i32::from(p.sneaking) << 8))
+        .collect();
     // INVENTORY_SLOTS per player; nulls for a player whose inventory didn't change.
     let mut inventories: Vec<Option<&str>> = Vec::with_capacity(players.len() * INVENTORY_SLOTS);
     for p in players {
@@ -666,6 +682,30 @@ pub fn block_entities(dimension: &str, positions: &[[i32; 3]]) -> Result<(), Str
 
 /// Input to the player's open mod screen (JSON: `size`, `move`, `press`, `release`, `drag`,
 /// `scroll`, `key`, `char`), run by the screen's own code.
+/// The keys Java mods' key bindings are set to (`KeyMapping`s they registered), as 26.3's
+/// keyboard scancodes: what a player's game sends while playing (`HorizonClient.input`'s
+/// `bind`). Empty without a headless client.
+pub fn bound_keys() -> Result<Vec<i32>, String> {
+    let Some(class) = client_class() else {
+        return Ok(Vec::new());
+    };
+    let bridge = crate::get().ok_or("Java isn't running")?;
+    let mut env = bridge
+        .vm()
+        .attach_current_thread_permanently()
+        .map_err(|e| e.to_string())?;
+    let json = env
+        .with_local_frame(8, |env| -> jni::errors::Result<String> {
+            let class = <&JClass>::from(class.as_obj());
+            let value = env
+                .call_static_method(class, "boundKeys", "()Ljava/lang/String;", &[])?
+                .l()?;
+            Ok(env.get_string(&JString::from(value))?.into())
+        })
+        .map_err(|e| crate::describe(&mut env, e))?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
 pub fn screen_input(uuid: &str, input: &str) -> Result<(), String> {
     let class = client_class().ok_or("no headless client")?;
     let bridge = crate::get().ok_or("Java isn't running")?;

@@ -289,6 +289,29 @@ public final class HorizonServer {
 
     static ServerLevel level(String dimension) {
         ResourceKey<Level> key = ResourceKey.create(Registries.DIMENSION, Identifier.parse(dimension));
+        ServerLevel level = makeLevel(key);
+        // What mods add at the end of a level's constructor (which the mirror skips), now that
+        // it is set up: once, outside the map's update (their code may ask for levels).
+        // A level made before a world opened (the content export's) waits for its saved data.
+        if (HorizonSavedData.ready() && CONSTRUCTED.add(level)) HorizonHooks.constructed(level);
+        if (started) levelLoaded(level);
+        return level;
+    }
+
+    private static final java.util.Set<ServerLevel> CONSTRUCTED =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+
+    private static final java.util.Set<ServerLevel> LOADED_LEVELS =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+
+    /** Fabric's ServerLevelEvents.LOAD for a level, once (mods set up per level: chunk loaders). */
+    private static void levelLoaded(ServerLevel level) {
+        if (!LOADED_LEVELS.add(level)) return;
+        fireEach("ServerLevelEvents.LOAD", net.fabricmc.fabric.api.event.lifecycle.v1.ServerLevelEvents.LOAD,
+                l -> l.onLevelLoad(server, level));
+    }
+
+    private static ServerLevel makeLevel(ResourceKey<Level> key) {
         return LEVELS.computeIfAbsent(key, k -> {
             ServerLevel level = allocate(ServerLevel.class);
             LevelAccess access = (LevelAccess) level;
@@ -477,6 +500,11 @@ public final class HorizonServer {
     /** The mirrored levels (one a dimension Horizon has). */
     public static java.util.List<ServerLevel> levels() {
         return new ArrayList<>(LEVELS.values());
+    }
+
+    /** The mirrored players Horizon lists now. */
+    public static List<ServerPlayer> players() {
+        return new ArrayList<>(PLAYERS);
     }
 
     /** A mirrored player by id; null when Horizon doesn't list them. */
@@ -730,7 +758,7 @@ public final class HorizonServer {
      *
      * @param world Horizon's world folder
      * @param motion five values per player: x, y, z, yaw, pitch
-     * @param permissions per player: vanilla's permission level, 0 to 4
+     * @param permissions per player: vanilla's permission level, 0 to 4, in the low 8 bits; bit 8 the sneak key
      * @param kinds per event: 0 joined, 1 left, 2 chat, 3 broke a block, 4 placed a block, 5 died
      *     (texts: the damage type), 6 respawned
      * @param who per event: the player's UUID
@@ -769,6 +797,9 @@ public final class HorizonServer {
             for (String dimension : new String[] {"minecraft:overworld", "minecraft:the_nether", "minecraft:the_end"}) {
                 level(dimension);
             }
+            // MinecraftServer.createLevels: Fabric's LOAD for each (a level made before
+            // this first tick too); later levels hear it as they are made (level()).
+            for (ServerLevel made : new ArrayList<>(LEVELS.values())) levelLoaded(made);
             hook(server, MinecraftServer.class, "loadLevel", "()V", "RETURN", NO_ARGUMENTS);
             hook(server, MinecraftServer.class, "loadLevel", "()V", "TAIL", NO_ARGUMENTS);
             fireEach("ServerLifecycleEvents.SERVER_STARTED", ServerLifecycleEvents.SERVER_STARTED, l -> l.onServerStarted(server));
@@ -783,9 +814,21 @@ public final class HorizonServer {
         }
 
         closeForwarded();
-        // Horizon made last tick's writes: its world answers again.
+        currentTick = tick;
+        // Horizon made the writes it has applied: its world answers again there. A write made
+        // between ticks (a block placed by a player's use) is applied after this tick, so it
+        // stays until Horizon's world shows it (a few ticks at most: one Horizon refused goes).
         synchronized (WRITTEN) {
-            WRITTEN.clear();
+            for (var levelWrites : WRITTEN.entrySet()) {
+                String dimension = dimensionOf(levelWrites.getKey());
+                levelWrites.getValue().entrySet().removeIf(w -> {
+                    BlockPos pos = BlockPos.of(w.getKey());
+                    BlockState now = parseState(Natives.blockState(dimension, pos.getX(), pos.getY(), pos.getZ()));
+                    return now == w.getValue() || WRITTEN_AT.getOrDefault(w.getKey(), 0L) < tick - 3;
+                });
+            }
+            WRITTEN.values().removeIf(Map::isEmpty);
+            WRITTEN_AT.keySet().removeIf(k -> WRITTEN.values().stream().noneMatch(m -> m.containsKey(k)));
         }
 
         // Mirror the players: those still on, as Horizon gives them.
@@ -824,7 +867,9 @@ public final class HorizonServer {
                         syncing = false;
                     }
                 }
-                PERMISSIONS.put(uuid, permissions[i]);
+                // The permission level (low 8 bits) and the sneak key (bit 8).
+                PERMISSIONS.put(uuid, permissions[i] & 0xff);
+                player.setShiftKeyDown(((permissions[i] >> 8) & 1) != 0);
                 mirrorInventory(player, inventories, i);
                 now.put(uuid, player);
             } catch (Throwable t) {
@@ -924,6 +969,7 @@ public final class HorizonServer {
             if (level.getBlockTicks() instanceof HorizonTicks<?> ticks) ticks.run(level);
         }
         HorizonBlockEntities.tick();
+        HorizonTickets.tick(new ArrayList<>(LEVELS.values()));
         HorizonSavedData.tick();
         // Mods' entities, as ServerLevel.tick's entity loop runs them.
         HorizonEntities.tick();
@@ -1410,6 +1456,9 @@ public final class HorizonServer {
     private static final Map<String, BlockState> STATES = new ConcurrentHashMap<>();
     /** Per level: what mods set since Horizon last had the world, so they read their writes. */
     private static final Map<ServerLevel, Map<Long, BlockState>> WRITTEN = new IdentityHashMap<>();
+    /** The tick each pending write was made in (writes Horizon refuses go after a few). */
+    private static final Map<Long, Long> WRITTEN_AT = new java.util.HashMap<>();
+    private static volatile long currentTick;
 
     private static String dimensionOf(Level level) {
         return level.dimension().identifier().toString();
@@ -1446,8 +1495,12 @@ public final class HorizonServer {
     /** A mod's Level.setBlock on a mirrored level: Horizon makes it; reads see it at once. */
     public static boolean setBlock(Level level, BlockPos pos, BlockState state) {
         if (level.isOutsideBuildHeight(pos)) return false;
+        // A client half's prediction (a door opened on both sides): the server's change is the
+        // one made, as a client's predicted blocks give way to the server's.
+        if (clientHalf == Thread.currentThread()) return true;
         synchronized (WRITTEN) {
             WRITTEN.computeIfAbsent((ServerLevel) level, l -> new java.util.HashMap<>()).put(pos.asLong(), state);
+            WRITTEN_AT.put(pos.asLong(), currentTick);
         }
         Natives.setBlock(dimensionOf(level), pos.getX(), pos.getY(), pos.getZ(),
                 net.minecraft.commands.arguments.blocks.BlockStateParser.serialize(state));
@@ -1459,6 +1512,7 @@ public final class HorizonServer {
      * live in the level (HorizonEntities); vanilla's others, not yet.
      */
     public static boolean addEntity(Level level, net.minecraft.world.entity.Entity entity) {
+        if (clientHalf == Thread.currentThread()) return false;
         if (HorizonEntities.modded(entity.getType())) return HorizonEntities.add((ServerLevel) level, entity);
         if (entity instanceof net.minecraft.world.entity.item.ItemEntity item && !item.getItem().isEmpty()) {
             var motion = item.getDeltaMovement();
@@ -1502,6 +1556,12 @@ public final class HorizonServer {
         fire("ServerPlayerGameMode.useItemOn", () -> result[0] =
                 player.gameMode.useItemOn(player, level, player.getItemInHand(interaction), interaction, hit));
         syncInventories();
+        // The client half (MultiPlayerGameMode.useItemOn) of using a mod's block: it opens its
+        // screen there (Chunk Loaders' chunk grid). After the server's, as useItem's.
+        if (client && HorizonBlockEntities.modded(blockState(level, hit.getBlockPos()))) {
+            HorizonClient.useBlock(player, interaction, hit);
+            syncInventories();
+        }
         if (!result[0].consumesAction() && !(result[0] instanceof net.minecraft.world.InteractionResult.Fail)) return 0;
         return result[0] instanceof net.minecraft.world.InteractionResult.Success success && success.shouldSwing() ? 2 : 1;
     }
@@ -1724,7 +1784,12 @@ public final class HorizonServer {
         try {
             for (int slot = 0; slot < SLOTS; slot++) {
                 ItemStack stack = item(inventories[i * SLOTS + slot]);
-                inventory.setItem(slot, stack);
+                // An unchanged slot keeps its stack: mods hold on to the stack they were used
+                // with and write to it later (Nature's Compass's search: its samples, its
+                // state, what it found), as a vanilla server never swaps a stack it didn't change.
+                ItemStack held = inventory.getItem(slot);
+                if (ItemStack.matches(held, stack)) stack = held;
+                else inventory.setItem(slot, stack);
                 seen[slot] = stack.copy();
             }
         } finally {
