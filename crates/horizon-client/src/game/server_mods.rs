@@ -690,6 +690,7 @@ mod run {
 
         /// The tick's end: joins and leaves, the tick's events, the tick hook.
         pub(in crate::game) fn tick_server_mods(&mut self) {
+            super::super::java_profile::tick();
             if !self.options.execution_role.is_client() {
                 // A server has no frames to check its dev mods in.
                 self.reload_dev_mods();
@@ -1661,7 +1662,9 @@ mod run {
 
         /// Runs `f`, a call into Java, with the levels as what Java mods read of the world.
         #[cfg(feature = "java-mods")]
+        #[track_caller]
         fn with_java_world<R>(&mut self, f: impl FnOnce() -> R) -> R {
+            let _timed = super::super::java_profile::Timed::here();
             let registry = self.pack.assets.registry;
             let mut dims: Vec<(&'static str, &ChunkMap)> =
                 vec![(self.dim.id(), &self.world.chunks)];

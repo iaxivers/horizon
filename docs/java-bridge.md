@@ -360,6 +360,25 @@ the recipe book lists every recipe (not the player's unlocked ones); sounds from
 side are silent; client HUD mods (Jade, AppleSkin, minimaps) draw nothing in Horizon's window;
 saved data is written every 10 s, not on quit.
 
+### Profiling
+
+`HORIZON_JAVA_PROFILE=1` logs every 200 server ticks where the time goes: the game's calls into
+Java by call site (`game/java_profile.rs`: `Java profile: …`) and the mirror tick's phases and
+each worldgen status (`HorizonProfile`: `Java profile (mirror tick): …`). Worldgen runs on
+Horizon's workers, so its numbers are time summed over threads, not tick time.
+
+```sh
+HORIZON_JAVA_PROFILE=1 MODS=/tmp/pack SCENE=none tools/java_bridge/screen_test.sh \
+  'sleep 40' '$C key w down; $C key ctrl down; sleep 30; $C key w up' 'sleep 15'
+grep "Java profile" <scratch>/home/logs/latest.log
+```
+
+Measured 2026-10-31, 17 mods (FD, BOP, Tom's, Naturalist, Friends&Foes…), 2-core container:
+the mirror tick is ~1 ms (spawner ~0.5, client tick ~0.2). Java worldgen is the cost: 25–50 ms
+of `minecraft:terrain` (noise) per chunk, features ~10–20, structure starts and references
+~20–40 in the first seconds. A mod that adds any overworld biome or feature sends the whole
+overworld through Java; making Horizon's Rust noise feed the Java proto is the big win left.
+
 ## Working on it
 
 - One task a branch (`bridge-<task>` off `java-bridge`); keep PR-sized steps.

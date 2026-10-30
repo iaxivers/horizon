@@ -164,7 +164,11 @@ impl ChunkGenerator for JavaTerrain {
         if !self.modded() {
             return self.inner.proto(worker, x, z);
         }
-        match horizon_jvm::events::worldgen_proto(&self.dimension, x, z) {
+        let made = {
+            let _timed = super::java_profile::Timed::named("worldgen proto");
+            horizon_jvm::events::worldgen_proto(&self.dimension, x, z)
+        };
+        match made {
             Ok(Some(token)) => Box::new(JavaProto {
                 dimension: self.dimension.clone(),
                 x,
@@ -194,9 +198,10 @@ impl ChunkGenerator for JavaTerrain {
         let Some(center) = region[4].downcast_mut::<JavaProto>() else {
             return self.inner.decorate(worker, region);
         };
-        if let Err(e) =
+        if let Err(e) = {
+            let _timed = super::java_profile::Timed::named("worldgen decorate");
             horizon_jvm::events::worldgen_decorate(&center.dimension, center.x, center.z)
-        {
+        } {
             log::warn!(
                 "Java mods' worldgen: decorating {} {}: {e}",
                 center.x,
@@ -241,7 +246,10 @@ impl ChunkGenerator for JavaTerrain {
             Err(other) => return self.inner.finish(other),
         };
         let (x, z) = (proto.x, proto.z);
-        let bytes = horizon_jvm::events::worldgen_finish(&proto.dimension, x, z, proto.token);
+        let bytes = {
+            let _timed = super::java_profile::Timed::named("worldgen finish");
+            horizon_jvm::events::worldgen_finish(&proto.dimension, x, z, proto.token)
+        };
         proto.taken = true;
         match bytes {
             Ok(Some(bytes)) => self.read(x, z, &bytes).unwrap_or_else(|| {

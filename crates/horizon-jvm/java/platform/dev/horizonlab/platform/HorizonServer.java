@@ -233,6 +233,20 @@ public final class HorizonServer {
             ((MinecraftServerAccess) server).horizon$setWorldData(data.worldData());
             // Vanilla's defaults; Horizon's own rules are mirrored over them later.
             ((MinecraftServerAccess) server).horizon$setGameRules(MinecraftServer.DEFAULT_GAME_RULES.get());
+            // Its world clocks (Level.clockManager: structures placing mobs read the difficulty,
+            // which reads the overworld's clock), from the registries just set.
+            try {
+                var make = net.minecraft.world.clock.ServerClockManager.class
+                        .getDeclaredConstructor(net.minecraft.world.clock.PackedClockStates.class);
+                make.setAccessible(true);
+                var clocks = make.newInstance(net.minecraft.world.clock.PackedClockStates.EMPTY);
+                clocks.init(server);
+                java.lang.reflect.Field field = MinecraftServer.class.getDeclaredField("clockManager");
+                field.setAccessible(true);
+                field.set(server, clocks);
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                Natives.log("Horizon's server mirror has no world clocks: " + e);
+            }
             // Teams and objectives: an empty one (Horizon's own come later); display names read it.
             ((MinecraftServerAccess) server).horizon$setScoreboard(new net.minecraft.server.ServerScoreboard(server));
             try {
@@ -805,11 +819,13 @@ public final class HorizonServer {
             return;
         }
         MinecraftServer server = HorizonServer.server;
+        long phase = HorizonProfile.start();
         world(world);
         // The server's tick count follows Horizon's (mods time their tasks with it).
         ((MinecraftServerAccess) server).horizon$setTickCount((int) tick);
         // The headless client's tick (its frame, then its game tick), before the server's.
         if (client) HorizonClient.clientTick();
+        phase = HorizonProfile.add("client tick", phase);
         if (!started) {
             started = true;
             fireEach("ServerLifecycleEvents.SERVER_STARTING", ServerLifecycleEvents.SERVER_STARTING, l -> l.onServerStarting(server));
@@ -970,11 +986,13 @@ public final class HorizonServer {
             }
         }
 
+        phase = HorizonProfile.add("players and events", phase);
         for (ServerLevel level : new ArrayList<>(LEVELS.values())) {
             hook(level, ServerLevel.class, "tick", TICK_SERVER, "RETURN", haveTime);
             hook(level, ServerLevel.class, "tick", TICK_SERVER, "TAIL", haveTime);
             fireEach("ServerTickEvents.END_LEVEL_TICK", ServerTickEvents.END_LEVEL_TICK, l -> l.onEndTick(level));
         }
+        phase = HorizonProfile.add("level tick hooks", phase);
         // Each player's tick (ServerPlayer.tick, Player.tick from doTick), as vanilla's
         // levels and connections run them within the server's tick.
         for (ServerPlayer player : new ArrayList<>(PLAYERS)) {
@@ -985,16 +1003,22 @@ public final class HorizonServer {
             hook(player, ServerPlayer.class, "tick", "()V", "RETURN", NO_ARGUMENTS);
             hook(player, ServerPlayer.class, "tick", "()V", "TAIL", NO_ARGUMENTS);
         }
+        phase = HorizonProfile.add("player tick hooks", phase);
         // Mod blocks' scheduled ticks and block entities, as their levels' ticks run them.
         for (ServerLevel level : new ArrayList<>(LEVELS.values())) {
             if (level.getBlockTicks() instanceof HorizonTicks<?> ticks) ticks.run(level);
         }
+        phase = HorizonProfile.add("scheduled ticks", phase);
         HorizonBlockEntities.tick();
+        phase = HorizonProfile.add("block entities", phase);
         HorizonTickets.tick(new ArrayList<>(LEVELS.values()));
         HorizonSavedData.tick();
+        phase = HorizonProfile.add("tickets, saved data", phase);
         // Mods' entities, as ServerLevel.tick's entity loop runs them.
         HorizonEntities.tick();
+        phase = HorizonProfile.add("entities", phase);
         HorizonSpawner.tick();
+        phase = HorizonProfile.add("spawner", phase);
         // ServerPlayer.tick and doTick: a menu no longer valid closes, and the open menu sends
         // its changes (a mod's menu keeps its block working while it is watched, and syncs its
         // own data there: Tom's Storage's terminal its item list).
@@ -1006,13 +1030,19 @@ public final class HorizonServer {
             });
             if (player.containerMenu == menu) fire("AbstractContainerMenu.broadcastChanges", menu::broadcastChanges);
         }
+        phase = HorizonProfile.add("menus", phase);
         // Mods' own screens: each changed frame to its player.
         if (client) HorizonClient.sendFrames();
+        phase = HorizonProfile.add("screens", phase);
         fireEach("ServerTickEvents.END_SERVER_TICK", ServerTickEvents.END_SERVER_TICK, l -> l.onEndTick(server));
         hook(server, MinecraftServer.class, "tickServer", TICK_SERVER, "RETURN", haveTime);
         hook(server, MinecraftServer.class, "tickServer", TICK_SERVER, "TAIL", haveTime);
+        phase = HorizonProfile.add("end tick hooks", phase);
         runTasks();
+        phase = HorizonProfile.add("tasks", phase);
         syncInventories();
+        HorizonProfile.add("sync", phase);
+        HorizonProfile.tick();
     }
 
     /**

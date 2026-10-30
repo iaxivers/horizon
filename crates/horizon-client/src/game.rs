@@ -80,6 +80,8 @@ mod item_particles;
 #[cfg(feature = "java-mods")]
 mod java_entities;
 mod java_mods;
+#[cfg(feature = "mods")]
+mod java_profile;
 mod java_screen;
 #[cfg(feature = "java-mods")]
 mod java_worldgen;

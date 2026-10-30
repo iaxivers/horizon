@@ -337,7 +337,9 @@ public final class HorizonWorldgen {
             synchronized (chunk) {
                 if (chunk.getPersistedStatus().isOrAfter(status)) continue;
                 ChunkStep step = ChunkPyramid.GENERATION_PYRAMID.getStepTo(status);
+                long started = HorizonProfile.start();
                 step.apply(d.context, around(d, chunk, step), chunk).join();
+                HorizonProfile.add("worldgen " + status.getName(), started);
                 if (!chunk.getPersistedStatus().isOrAfter(status)) chunk.setPersistedStatus(status);
             }
         }
@@ -469,7 +471,14 @@ public final class HorizonWorldgen {
     }
 
     private static void log(Throwable t) {
-        Throwable cause = t.getCause() != null && t instanceof java.util.concurrent.CompletionException ? t.getCause() : t;
+        // CompletionException and ReportedException only wrap: the root says what went wrong.
+        Throwable cause = t;
+        while (cause.getCause() != null && cause.getCause() != cause) cause = cause.getCause();
+        if (t instanceof net.minecraft.ReportedException reported) {
+            for (String line : reported.getReport().getDetails().split("\n")) {
+                if (line.contains("Feature") || line.contains("Location") || line.contains("Biome")) Natives.log("  " + line.trim());
+            }
+        }
         StackTraceElement[] frames = cause.getStackTrace();
         if (cause != t) Natives.log("  caused by " + cause);
         for (int f = 0; f < Math.min(frames.length, 12); f++) Natives.log("    at " + frames[f]);
