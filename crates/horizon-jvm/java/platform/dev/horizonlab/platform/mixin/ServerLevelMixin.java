@@ -53,6 +53,12 @@ public abstract class ServerLevelMixin {
         if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.entities((ServerLevel) (Object) this));
     }
 
+    /** Horizon's world seed. */
+    @Inject(method = "getSeed", at = @At("HEAD"), cancellable = true)
+    private void horizon$seed(CallbackInfoReturnable<Long> cir) {
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.seed());
+    }
+
     /** Its saved data (vanilla's is its chunk source's, which a mirror has none of). */
     @Inject(method = "getDataStorage", at = @At("HEAD"), cancellable = true)
     private void horizon$dataStorage(CallbackInfoReturnable<net.minecraft.world.level.storage.SavedDataStorage> cir) {

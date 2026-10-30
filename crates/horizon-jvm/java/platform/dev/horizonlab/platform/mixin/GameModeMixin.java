@@ -35,4 +35,15 @@ public abstract class GameModeMixin {
         if (HorizonServer.moddedItem(stack) && !HorizonServer.usable(state)) return;
         cir.setReturnValue(InteractionResult.PASS);
     }
+
+    /**
+     * useItem (an item used on nothing), as useItemOn: the mods' injections at its head run,
+     * then a mod's item goes on to its own use; a vanilla item is Horizon's.
+     */
+    @Inject(method = "useItem", at = @At("HEAD"), cancellable = true)
+    private void horizon$useItem(ServerPlayer player, Level level, ItemStack stack, InteractionHand hand,
+                                 CallbackInfoReturnable<InteractionResult> cir) {
+        if (!HorizonServer.isMirror(player)) return;
+        if (!HorizonServer.moddedItem(stack)) cir.setReturnValue(InteractionResult.PASS);
+    }
 }

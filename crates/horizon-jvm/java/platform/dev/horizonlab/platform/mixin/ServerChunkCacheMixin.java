@@ -38,6 +38,21 @@ public abstract class ServerChunkCacheMixin {
         }
     }
 
+    @Inject(method = "getGenerator", at = @At("HEAD"), cancellable = true)
+    private void horizon$generator(CallbackInfoReturnable<net.minecraft.world.level.chunk.ChunkGenerator> cir) {
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.generator((net.minecraft.server.level.ServerLevel) horizon$level()));
+    }
+
+    @Inject(method = "randomState", at = @At("HEAD"), cancellable = true)
+    private void horizon$randomState(CallbackInfoReturnable<net.minecraft.world.level.levelgen.RandomState> cir) {
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.randomState((net.minecraft.server.level.ServerLevel) horizon$level()));
+    }
+
+    @Inject(method = "getGeneratorState", at = @At("HEAD"), cancellable = true)
+    private void horizon$generatorState(CallbackInfoReturnable<net.minecraft.world.level.chunk.ChunkGeneratorStructureState> cir) {
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.generatorState((net.minecraft.server.level.ServerLevel) horizon$level()));
+    }
+
     @Inject(method = "hasChunk", at = @At("HEAD"), cancellable = true)
     private void horizon$hasChunk(int x, int z, CallbackInfoReturnable<Boolean> cir) {
         if (HorizonServer.isMirror(this)) cir.setReturnValue(horizon$level().hasChunk(x, z));

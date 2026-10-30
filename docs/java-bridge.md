@@ -51,6 +51,21 @@ saying something works.
   set in constructors too (`emptyCollections` fills collections). A new NPE in the mirror is
   usually one more such field: set it where the object is made.
 - Javap the real jar instead of guessing: `javap -p -cp .local/minecraft/26.3/jars/client.jar <class>`.
+- Fire Fabric events with `fireEach` (one listener at a time), not `invoker()`: through the
+  invoker one mod throwing each tick silently stops every listener after it.
+- Vanilla's "who sees this" and sync go through the level's chunk source
+  (`getChunkSource().blockChanged`, `PlayerLookup.tracking`, `getDataStorage`, `getGenerator`,
+  `randomState`): mirrored levels have a bare `ServerChunkCache` that `ServerChunkCacheMixin`
+  answers for. Saved data lives in `horizon-java/data/` (`HorizonSavedData`).
+- The headless client's `LocalPlayer`s live in the mirror's *server* levels: code that checks
+  `isClientSide()` takes the server branch there, and Fabric lookups must not treat a client
+  entity as tracked (`PlayerLookupMixin` checks `isMirror(entity)`).
+- `MinecraftServer.getDataStorage()` is a 26.x server-wide storage (field `savedDataStorage`),
+  besides each level's.
+- Chat from Java goes to Horizon as JSON components (`chatJson`): `getString()` on the server
+  side gives a mod's translation key (its Language is vanilla's English only).
+- `Connection.isMemoryConnection()` is true for mirrored players while the headless client runs
+  (as singleplayer's): mods skip remote-only work (config sync expecting a configuration phase).
 
 ## Build and test
 
@@ -94,12 +109,30 @@ logic and block entities, Fabric and vanilla menus in Horizon's window, mods' ow
 clicks, keys, typing, scroll, tooltips, recipe book; creative tabs with Fabric pages; mod
 commands; mods' messages between their two sides; vanilla block entities shared with mods.
 
-Next: mod entities (mobs, their models), a 20–40 mod pack (fix the top failure each round),
-mod screens for LAN/remote players (frames go to the window's own player only), NeoForge later.
+A 40-jar pack (124 Fabric ids: BOP, Waystones, Farmer's Delight, Tom's Storage, JEI, Jade,
+Carry On, Nature's Compass, Xaero's Minimap, Balm, Architectury, Cloth, YACL, Kotlin...; list in
+`bridge-pack`'s commits) starts with one logged failure, renders its blocks, runs block use,
+server-side item use (`events::use_item`), saved data, translated mod chat, and the pot and
+terminal screens still work. `SCENE=pack` in `screen_test.sh` places a row of its blocks.
+
+Next (top failure of the pack, in order):
+1. Client-only screens and the client half of `Item.use`: Nature's Compass opens its screen in
+   `use` when `level.isClientSide()`; the headless client never runs client-side item use, its
+   players sit in server levels, nothing catches `Minecraft.setScreen`, and Horizon's window
+   shows a mod screen only over a container menu. Needs: a client level (or a client-side
+   flag) for the headless player, `setScreen` captured into `SCREENS`, and a menu-less screen
+   mode in `java_screen.rs`. Same gap for config screens and guide books.
+2. The headless client never ticks: no `ClientTickEvents`, no `Minecraft.runTick` (Xaero's
+   lib finishes loading there: "Registry is not frozen yet!" at SERVER_STARTING).
+3. Mod worldgen: TerraBlender/BOP biomes don't generate (Horizon's generator is vanilla's).
+4. Mod chunk loaders: chunk tickets from Java are dropped.
+Then: mod entities (mobs, their models), mod screens for LAN/remote players (frames go to the
+window's own player only), NeoForge later.
 
 Known gaps: extended (Fabric) menus share the server's menu with the screen (no client copy);
 the recipe book lists every recipe (not the player's unlocked ones); sounds from Java's client
-side are silent.
+side are silent; client HUD mods (Jade, AppleSkin, minimaps) draw nothing in Horizon's window;
+saved data is written every 10 s, not on quit.
 
 ## Working on it
 

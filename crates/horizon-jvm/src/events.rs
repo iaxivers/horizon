@@ -568,6 +568,42 @@ pub fn use_block(
     })
 }
 
+/// A player uses the item in `hand` (0 main, 1 off) on nothing (right-click in the air):
+/// vanilla's `ServerPlayerGameMode.useItem` for Java mods (Fabric API's `UseItemCallback`, a
+/// mod item's own use). `yaw` and `pitch` are where the player looked as it clicked.
+pub fn use_item(
+    uuid: &str,
+    dimension: &str,
+    hand: i32,
+    selected: i32,
+    yaw: f32,
+    pitch: f32,
+) -> Result<UseResult, String> {
+    let result = with_server(|env, class| {
+        let uuid = env.new_string(uuid)?;
+        let dimension = env.new_string(dimension)?;
+        env.call_static_method(
+            class,
+            "useItem",
+            "(Ljava/lang/String;Ljava/lang/String;IIFF)I",
+            &[
+                JValue::Object(&uuid),
+                JValue::Object(&dimension),
+                JValue::Int(hand),
+                JValue::Int(selected),
+                JValue::Float(yaw),
+                JValue::Float(pitch),
+            ],
+        )?
+        .i()
+    })?;
+    Ok(match result {
+        Some(2) => UseResult::TakenSwing,
+        Some(1) => UseResult::Taken,
+        _ => UseResult::Pass,
+    })
+}
+
 /// Random ticks that reached Java mods' blocks in `dimension` (`ServerLevel.tickChunk`'s):
 /// each still a mod's block that ticks randomly runs `BlockState.randomTick`.
 pub fn random_ticks(dimension: &str, positions: &[[i32; 3]]) -> Result<(), String> {
@@ -589,9 +625,14 @@ pub fn random_ticks(dimension: &str, positions: &[[i32; 3]]) -> Result<(), Strin
 
 /// The world's game time (`Level.getGameTime`, which mods time their work by: Tom's Storage's
 /// connectors scan every second of it), set before each tick.
-pub fn game_time(time: i64) -> Result<(), String> {
+pub fn game_time(time: i64, seed: i64) -> Result<(), String> {
     with_server(|env, class| {
-        env.call_static_method(class, "gameTime", "(J)V", &[JValue::Long(time)])?;
+        env.call_static_method(
+            class,
+            "gameTime",
+            "(JJ)V",
+            &[JValue::Long(time), JValue::Long(seed)],
+        )?;
         Ok(())
     })?;
     Ok(())

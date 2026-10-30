@@ -131,6 +131,39 @@ public final class HorizonServer {
                 net.minecraft.server.permissions.PermissionLevel.byId(level));
     }
 
+    /**
+     * The server's operators (PlayerList.getOps, which the mirror's skipped constructor never
+     * made; Nature's Compass reads it when used): Horizon's players with a permission level
+     * above 0, as Horizon gave them. Never saved: Horizon keeps ops.json.
+     */
+    public static synchronized net.minecraft.server.players.ServerOpList ops() {
+        if (OPS == null) {
+            OPS = new net.minecraft.server.players.ServerOpList(
+                    new java.io.File(System.getProperty("java.io.tmpdir"), "horizon-mirror-ops.json"),
+                    new net.minecraft.server.notifications.NotificationManager()) {
+                @Override
+                public void save() {
+                    // Horizon's ops.json is the real one.
+                }
+            };
+        }
+        OPS.clear();
+        for (ServerPlayer player : KNOWN.values()) {
+            int level = PERMISSIONS.getOrDefault(player.getUUID(), 0);
+            if (level <= 0) continue;
+            var who = new net.minecraft.server.players.NameAndId(player.getGameProfile());
+            OPS.add(new net.minecraft.server.players.ServerOpListEntry(who, permissions(who), false));
+        }
+        return OPS;
+    }
+
+    private static net.minecraft.server.players.ServerOpList OPS;
+
+    /** PlayerList.isOp: whether Horizon gave the player a permission level above 0. */
+    public static boolean isOp(net.minecraft.server.players.NameAndId player) {
+        return player != null && PERMISSIONS.getOrDefault(player.id(), 0) > 0;
+    }
+
     /** A player's stats: none kept yet (Horizon keeps its own). */
     public static net.minecraft.stats.ServerStatsCounter stats(net.minecraft.world.entity.player.Player player) {
         // The real counter (mods award stats), on a file that isn't there: Horizon keeps the
@@ -314,9 +347,59 @@ public final class HorizonServer {
     }
 
     /** Horizon's world game time, which the mirrored levels read (Level.getGameTime). */
-    public static void gameTime(long time) {
+    public static void gameTime(long time, long seed) {
         if (server == null) return;
         server.getWorldData().overworldData().setGameTime(time);
+        HorizonServer.seed = seed;
+    }
+
+    /** Horizon's world seed (ServerLevel.getSeed on a mirrored level), from its first tick. */
+    private static volatile long seed;
+
+    public static long seed() {
+        return seed;
+    }
+
+    /**
+     * A mirrored level's chunk generator (ServerChunkCache.getGenerator): its level stem's,
+     * from the data packs. Horizon generates the terrain; mods ask the generator about it
+     * (Nature's Compass searches its biome source), and Horizon's generation is vanilla's.
+     */
+    public static net.minecraft.world.level.chunk.ChunkGenerator generator(ServerLevel level) {
+        HorizonData.Loaded data = HorizonData.loaded;
+        if (data == null) return null;
+        return data.registries().compositeAccess().lookupOrThrow(Registries.LEVEL_STEM)
+                .get(ResourceKey.create(Registries.LEVEL_STEM, level.dimension().identifier()))
+                .map(stem -> stem.value().generator()).orElse(null);
+    }
+
+    private static final Map<ServerLevel, net.minecraft.world.level.levelgen.RandomState> RANDOM_STATES = new IdentityHashMap<>();
+    private static final Map<ServerLevel, net.minecraft.world.level.chunk.ChunkGeneratorStructureState> STRUCTURE_STATES = new IdentityHashMap<>();
+    private static long statesSeed;
+
+    /** ServerChunkCache.randomState: the generator's noises with Horizon's seed (ChunkMap's constructor). */
+    public static synchronized net.minecraft.world.level.levelgen.RandomState randomState(ServerLevel level) {
+        if (statesSeed != seed) {
+            RANDOM_STATES.clear();
+            STRUCTURE_STATES.clear();
+            statesSeed = seed;
+        }
+        return RANDOM_STATES.computeIfAbsent(level, l -> {
+            var registries = HorizonData.loaded.registries().compositeAccess();
+            var noises = registries.lookupOrThrow(Registries.NOISE);
+            var settings = generator(l) instanceof net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator noise
+                    ? noise.generatorSettings().value()
+                    : registries.lookupOrThrow(Registries.NOISE_SETTINGS)
+                            .getOrThrow(net.minecraft.world.level.levelgen.NoiseGeneratorSettings.OVERWORLD).value();
+            return net.minecraft.world.level.levelgen.RandomState.create(noises, seed, settings);
+        });
+    }
+
+    /** ServerChunkCache.getGeneratorState: where structures may be (a locator's search). */
+    public static synchronized net.minecraft.world.level.chunk.ChunkGeneratorStructureState generatorState(ServerLevel level) {
+        var random = randomState(level);
+        return STRUCTURE_STATES.computeIfAbsent(level, l -> generator(l).createState(
+                HorizonData.loaded.registries().compositeAccess().lookupOrThrow(Registries.STRUCTURE_SET), random, seed));
     }
 
     /** The mirrored levels (one a dimension Horizon has). */
@@ -1307,6 +1390,30 @@ public final class HorizonServer {
         net.minecraft.world.InteractionResult[] result = {net.minecraft.world.InteractionResult.PASS};
         fire("ServerPlayerGameMode.useItemOn", () -> result[0] =
                 player.gameMode.useItemOn(player, level, player.getItemInHand(interaction), interaction, hit));
+        syncInventories();
+        if (!result[0].consumesAction() && !(result[0] instanceof net.minecraft.world.InteractionResult.Fail)) return 0;
+        return result[0] instanceof net.minecraft.world.InteractionResult.Success success && success.shouldSwing() ? 2 : 1;
+    }
+
+    /**
+     * A player uses the item in a hand on nothing (right-click in the air: a compass, a
+     * scroll), called by Horizon before it does: vanilla's ServerPlayerGameMode.useItem on the
+     * mirrored player, its mods' injections first (Fabric's UseItemCallback), the item's own
+     * use for a mod's item (GameModeMixin: vanilla's items are Horizon's). Results as useBlock's.
+     */
+    public static int useItem(String uuid, String dimension, int hand, int selected, float yaw, float pitch) {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        ServerPlayer player = BY_UUID.get(UUID.fromString(uuid));
+        if (player == null) return 0;
+        ServerLevel level = level(dimension);
+        if (selected >= 0 && selected < 9) player.getInventory().setSelectedSlot(selected);
+        // handleUseItem's rotation: where the client looked as it clicked.
+        player.setYRot(yaw);
+        player.setXRot(pitch);
+        var interaction = hand == 1 ? net.minecraft.world.InteractionHand.OFF_HAND : net.minecraft.world.InteractionHand.MAIN_HAND;
+        net.minecraft.world.InteractionResult[] result = {net.minecraft.world.InteractionResult.PASS};
+        fire("ServerPlayerGameMode.useItem", () -> result[0] =
+                player.gameMode.useItem(player, level, player.getItemInHand(interaction), interaction));
         syncInventories();
         if (!result[0].consumesAction() && !(result[0] instanceof net.minecraft.world.InteractionResult.Fail)) return 0;
         return result[0] instanceof net.minecraft.world.InteractionResult.Success success && success.shouldSwing() ? 2 : 1;

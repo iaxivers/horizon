@@ -813,9 +813,9 @@ mod run {
                 }
             }
             let (ticks, root) = (self.ticks as i64, self.save.root.clone());
-            let game_time = self.world.game_time;
+            let (game_time, seed) = (self.world.game_time, self.level.seed);
             let ticked = self.with_java_world(|| {
-                horizon_jvm::events::game_time(game_time)?;
+                horizon_jvm::events::game_time(game_time, seed)?;
                 horizon_jvm::events::server_tick(ticks, dedicated, &root, &players, &events)
             });
             if let Err(e) = ticked {
@@ -1063,11 +1063,7 @@ mod run {
                             log::info!("{text}");
                         }
                         for p in self.server_players(host.as_deref()) {
-                            self.tell_server_player(
-                                host.as_deref_mut(),
-                                &p.id,
-                                line.clone(),
-                            );
+                            self.tell_server_player(host.as_deref_mut(), &p.id, line.clone());
                         }
                     }
                 }
@@ -1467,6 +1463,53 @@ mod run {
             #[cfg(not(feature = "java-mods"))]
             {
                 let _ = (pos, face, point, off_hand);
+                None
+            }
+        }
+
+        /// The player acting now uses the item in a hand on nothing (vanilla's `useItem`, for
+        /// Java mods: `UseItemCallback`, a mod item's own use), looking at `yaw`/`pitch`.
+        /// Some(swing) when a mod took the click, so the game does nothing more.
+        pub(in crate::game) fn java_use_item(
+            &mut self,
+            off_hand: bool,
+            yaw: f32,
+            pitch: f32,
+        ) -> Option<bool> {
+            #[cfg(feature = "java-mods")]
+            {
+                if !java_mods_on() || !self.hears_players() {
+                    return None;
+                }
+                let uuid = self
+                    .lan_acting_uuid
+                    .map(uuid_string)
+                    .unwrap_or_else(|| self.player_uuid_string());
+                let (dim, selected) = (self.dim.id(), self.selected as i32);
+                let used = self.with_java_world(|| {
+                    horizon_jvm::events::use_item(
+                        &uuid,
+                        dim,
+                        i32::from(off_hand),
+                        selected,
+                        yaw,
+                        pitch,
+                    )
+                });
+                self.apply_java_actor_slots(&uuid);
+                match used {
+                    Ok(horizon_jvm::events::UseResult::Pass) => None,
+                    Ok(horizon_jvm::events::UseResult::Taken) => Some(false),
+                    Ok(horizon_jvm::events::UseResult::TakenSwing) => Some(true),
+                    Err(e) => {
+                        log::warn!("Java mods: using an item failed: {e}");
+                        None
+                    }
+                }
+            }
+            #[cfg(not(feature = "java-mods"))]
+            {
+                let _ = (off_hand, yaw, pitch);
                 None
             }
         }

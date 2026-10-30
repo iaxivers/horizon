@@ -1230,7 +1230,12 @@ impl Game<'_> {
                 let hand = if p.hand == 1 { Hand::Off } else { Hand::Main };
                 let g = &mut host.hub.guests[gi];
                 (g.yaw, g.pitch) = (p.yaw, p.pitch);
+                let (yaw, pitch) = (p.yaw, p.pitch);
                 let swung = self.as_guest(host, conn, |g| {
+                    // ServerPlayerGameMode.useItem's head: a Java mod may take the click.
+                    if let Some(swing) = g.java_use_item(hand == Hand::Off, yaw, pitch) {
+                        return swing;
+                    }
                     g.guest_use = Some(GuestUse::Item(hand));
                     let swings = g.swings_started;
                     let _ = g.use_item();

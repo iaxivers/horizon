@@ -37,6 +37,17 @@ public abstract class PlayerListMixin {
         }
     }
 
+    /** The operators are Horizon's (its permission levels). */
+    @Inject(method = "getOps", at = @At("HEAD"), cancellable = true)
+    private void horizon$ops(CallbackInfoReturnable<net.minecraft.server.players.ServerOpList> cir) {
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.ops());
+    }
+
+    @Inject(method = "isOp", at = @At("HEAD"), cancellable = true)
+    private void horizon$isOp(net.minecraft.server.players.NameAndId player, CallbackInfoReturnable<Boolean> cir) {
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.isOp(player));
+    }
+
     @Inject(method = "getPlayerStats", at = @At("HEAD"), cancellable = true)
     private void horizon$stats(Player player, CallbackInfoReturnable<ServerStatsCounter> cir) {
         if (HorizonServer.isMirror((PlayerList) (Object) this)) cir.setReturnValue(HorizonServer.stats(player));
