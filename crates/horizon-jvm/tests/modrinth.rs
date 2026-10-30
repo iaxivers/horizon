@@ -91,6 +91,7 @@ fn real_mods_in_a_scripted_session() {
         food: 20,
         saturation: 5.0,
         permission: 4,
+        sneaking: false,
         // An iron axe in hand (FallingTree fells with an axe), the rest empty.
         // HORIZON_TEST_EMPTY=1: nothing at all (a first join, for kit mods).
         inventory: Some(

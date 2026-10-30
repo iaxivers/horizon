@@ -289,6 +289,29 @@ public final class HorizonServer {
 
     static ServerLevel level(String dimension) {
         ResourceKey<Level> key = ResourceKey.create(Registries.DIMENSION, Identifier.parse(dimension));
+        ServerLevel level = makeLevel(key);
+        // What mods add at the end of a level's constructor (which the mirror skips), now that
+        // it is set up: once, outside the map's update (their code may ask for levels).
+        // A level made before a world opened (the content export's) waits for its saved data.
+        if (HorizonSavedData.ready() && CONSTRUCTED.add(level)) HorizonHooks.constructed(level);
+        if (started) levelLoaded(level);
+        return level;
+    }
+
+    private static final java.util.Set<ServerLevel> CONSTRUCTED =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+
+    private static final java.util.Set<ServerLevel> LOADED_LEVELS =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+
+    /** Fabric's ServerLevelEvents.LOAD for a level, once (mods set up per level: chunk loaders). */
+    private static void levelLoaded(ServerLevel level) {
+        if (!LOADED_LEVELS.add(level)) return;
+        fireEach("ServerLevelEvents.LOAD", net.fabricmc.fabric.api.event.lifecycle.v1.ServerLevelEvents.LOAD,
+                l -> l.onLevelLoad(server, level));
+    }
+
+    private static ServerLevel makeLevel(ResourceKey<Level> key) {
         return LEVELS.computeIfAbsent(key, k -> {
             ServerLevel level = allocate(ServerLevel.class);
             LevelAccess access = (LevelAccess) level;
@@ -689,7 +712,7 @@ public final class HorizonServer {
      *
      * @param world Horizon's world folder
      * @param motion five values per player: x, y, z, yaw, pitch
-     * @param permissions per player: vanilla's permission level, 0 to 4
+     * @param permissions per player: vanilla's permission level, 0 to 4, in the low 8 bits; bit 8 the sneak key
      * @param kinds per event: 0 joined, 1 left, 2 chat, 3 broke a block, 4 placed a block, 5 died
      *     (texts: the damage type), 6 respawned
      * @param who per event: the player's UUID
@@ -729,6 +752,9 @@ public final class HorizonServer {
             for (String dimension : new String[] {"minecraft:overworld", "minecraft:the_nether", "minecraft:the_end"}) {
                 level(dimension);
             }
+            // MinecraftServer.createLevels: Fabric's LOAD for each (a level made before
+            // this first tick too); later levels hear it as they are made (level()).
+            for (ServerLevel made : new ArrayList<>(LEVELS.values())) levelLoaded(made);
             hook(server, MinecraftServer.class, "loadLevel", "()V", "RETURN", NO_ARGUMENTS);
             hook(server, MinecraftServer.class, "loadLevel", "()V", "TAIL", NO_ARGUMENTS);
             fireEach("ServerLifecycleEvents.SERVER_STARTED", ServerLifecycleEvents.SERVER_STARTED, l -> l.onServerStarted(server));
@@ -784,7 +810,9 @@ public final class HorizonServer {
                         syncing = false;
                     }
                 }
-                PERMISSIONS.put(uuid, permissions[i]);
+                // The permission level (low 8 bits) and the sneak key (bit 8).
+                PERMISSIONS.put(uuid, permissions[i] & 0xff);
+                player.setShiftKeyDown(((permissions[i] >> 8) & 1) != 0);
                 mirrorInventory(player, inventories, i);
                 now.put(uuid, player);
             } catch (Throwable t) {
@@ -884,6 +912,7 @@ public final class HorizonServer {
             if (level.getBlockTicks() instanceof HorizonTicks<?> ticks) ticks.run(level);
         }
         HorizonBlockEntities.tick();
+        HorizonTickets.tick(new ArrayList<>(LEVELS.values()));
         HorizonSavedData.tick();
         // Mods' entities, as ServerLevel.tick's entity loop runs them.
         HorizonEntities.tick();

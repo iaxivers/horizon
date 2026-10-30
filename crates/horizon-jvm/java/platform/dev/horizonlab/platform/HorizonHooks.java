@@ -248,6 +248,75 @@ public final class HorizonHooks {
         return new Result(info.isCancelled(), value);
     }
 
+    /**
+     * The mods' injections at the end (TAIL, RETURN) of the constructors of {@code self}'s
+     * classes, superclass first, as its constructors would run them: for an object the mirror
+     * made without its constructor (a level), once it is set up. Mods give vanilla's objects
+     * fields there (Chunk Loaders' per-level loaders). The constructor's own arguments aren't
+     * there to give: a handler that takes them gets nulls (zeros), and may fail (logged).
+     */
+    public static void constructed(Object self) {
+        // A level can be made before the census ran (the content export's).
+        scan();
+        List<Class<?>> chain = new ArrayList<>();
+        for (Class<?> c = self.getClass(); c != null && c != Object.class; c = c.getSuperclass()) chain.add(0, c);
+        for (Class<?> owner : chain) {
+            List<Hook> hooks = HOOKS.get(owner.getName().replace('.', '/') + ".<init>");
+            if (hooks == null) continue;
+            for (String at : new String[] {"RETURN", "TAIL"}) {
+                for (Method handler : constructorHandlers(owner, hooks, at)) {
+                    Class<?>[] params = handler.getParameterTypes();
+                    Object[] call = new Object[params.length];
+                    for (int i = 0; i < params.length - 1; i++) call[i] = zero(params[i]);
+                    call[params.length - 1] = new CallbackInfo("<init>", false);
+                    try {
+                        handler.invoke(Modifier.isStatic(handler.getModifiers()) ? null : self, call);
+                    } catch (Throwable t) {
+                        Throwable cause = t instanceof java.lang.reflect.InvocationTargetException ite && ite.getCause() != null ? ite.getCause() : t;
+                        Natives.log("A mod failed at the end of " + owner.getSimpleName() + "'s constructor ("
+                                + handler.getName() + "): " + cause);
+                    }
+                }
+            }
+        }
+    }
+
+    private static Object zero(Class<?> type) {
+        if (!type.isPrimitive()) return null;
+        if (type == boolean.class) return false;
+        if (type == char.class) return (char) 0;
+        if (type == long.class) return 0L;
+        if (type == float.class) return 0f;
+        if (type == double.class) return 0d;
+        if (type == byte.class) return (byte) 0;
+        if (type == short.class) return (short) 0;
+        return 0;
+    }
+
+    /** The merged constructor handlers at {@code at}, priority first; each ends with its CallbackInfo. */
+    private static List<Method> constructorHandlers(Class<?> owner, List<Hook> hooks, String at) {
+        return RESOLVED.computeIfAbsent(owner.getName() + ".<init>|" + at, k -> {
+            List<Method> found = new ArrayList<>();
+            Map<Method, Integer> priority = new HashMap<>();
+            for (Method m : owner.getDeclaredMethods()) {
+                MixinMerged merged = m.getAnnotation(MixinMerged.class);
+                if (merged == null) continue;
+                for (Hook h : hooks) {
+                    if (!h.at().equals(at) || h.mod().equals("horizon")) continue;
+                    if (!merged.mixin().equals(h.mixin())) continue;
+                    if (!m.getName().equals(h.handler()) && !m.getName().endsWith("$" + h.handler())) continue;
+                    Class<?>[] params = m.getParameterTypes();
+                    if (params.length == 0 || !CallbackInfo.class.isAssignableFrom(params[params.length - 1])) continue;
+                    m.setAccessible(true);
+                    found.add(m);
+                    priority.put(m, merged.priority());
+                }
+            }
+            found.sort(Comparator.comparingInt(priority::get));
+            return found;
+        });
+    }
+
     /** The merged handlers of these hooks in the target class, priority first, for one call shape. */
     private static List<Method> resolve(Class<?> owner, List<Hook> hooks, String method, String desc, String at,
                                         int arguments, boolean skipFabric) {

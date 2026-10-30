@@ -40,9 +40,11 @@ impl Game<'_> {
 
 /// The side Fabric runs as: the client's, with the platform's headless client (no window, no
 /// GPU) for mods' client code, whose screens Horizon shows; the server mirror runs beside it.
-/// A dedicated server has no screens to show.
+/// A dedicated server too: its players' mod screens are drawn there and sent to their games,
+/// as a LAN host's guests' are. `HORIZON_JAVA_SIDE=server` runs Fabric as a dedicated
+/// server's (no client code: lighter, and mods' screens show only as plain menus or not at all).
 fn bridge_side() -> horizon_jvm::Side {
-    if std::env::args().any(|a| a == "--dedicated") {
+    if std::env::var("HORIZON_JAVA_SIDE").is_ok_and(|s| s == "server") {
         horizon_jvm::Side::Server
     } else {
         horizon_jvm::Side::Client

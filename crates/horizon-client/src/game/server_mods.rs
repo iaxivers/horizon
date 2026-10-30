@@ -52,6 +52,30 @@ static JAVA_RANDOM_TICKS: std::sync::Mutex<Vec<horizon_core::position::BlockPos>
 static JAVA_STATES: std::sync::OnceLock<Vec<bool>> = std::sync::OnceLock::new();
 
 /// horizon-world's RANDOM_TICK_HOOK: a random tick of a Java mod's block is kept for the mods.
+/// The chunks Java mods' tickets keep in each dimension (`Action::ChunkTickets`), kept here
+/// too for a level that opens later.
+#[cfg(feature = "java-mods")]
+static JAVA_TICKETS: std::sync::Mutex<Option<std::collections::HashMap<String, Vec<(i32, i32)>>>> =
+    std::sync::Mutex::new(None);
+
+/// The chunks Java mods' chunk loaders keep in `dimension` (none without Java mods).
+pub(super) fn java_tickets(dimension: &str) -> Vec<(i32, i32)> {
+    #[cfg(feature = "java-mods")]
+    {
+        JAVA_TICKETS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(|m| m.get(dimension).cloned())
+            .unwrap_or_default()
+    }
+    #[cfg(not(feature = "java-mods"))]
+    {
+        let _ = dimension;
+        Vec::new()
+    }
+}
+
 #[cfg(feature = "java-mods")]
 pub(super) fn java_random_tick(
     pos: horizon_core::position::BlockPos,
@@ -787,6 +811,11 @@ mod run {
                         .flat_map(|h| &h.hub.guests)
                         .find(|g| uuid_string(g.uuid) == p.id)
                         .map_or(4, |g| g.permission),
+                    sneaking: self
+                        .lan
+                        .iter()
+                        .flat_map(|h| &h.hub.guests)
+                        .any(|g| uuid_string(g.uuid) == p.id && g.sneaking),
                     inventory: self
                         .lan
                         .iter()
@@ -853,6 +882,13 @@ mod run {
                 }
             }
             let (ticks, root) = (self.ticks as i64, self.save.root.clone());
+            // The level in place keeps what Java mods' chunk loaders last asked for, though its
+            // streaming was made after they asked (a world loading, a level swapped in).
+            let wanted = super::java_tickets(self.dim.id());
+            let held = self.streaming.ticketed();
+            if wanted.len() != held.len() || wanted.iter().any(|c| !held.contains(c)) {
+                self.streaming.set_ticketed(wanted);
+            }
             let (game_time, seed) = (self.world.game_time, self.level.seed);
             let ticked = self.with_java_world(|| {
                 horizon_jvm::events::game_time(game_time, seed)?;
@@ -1209,6 +1245,19 @@ mod run {
                         {
                             // The hub sends the changed slot with the tick's other changes.
                             *at = stack;
+                        }
+                    }
+                    horizon_jvm::events::Action::ChunkTickets { dimension, chunks } => {
+                        super::JAVA_TICKETS
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .get_or_insert_with(Default::default)
+                            .insert(dimension.clone(), chunks.clone());
+                        let dim = super::super::Dim::from_id(&dimension);
+                        if dim == self.dim {
+                            self.streaming.set_ticketed(chunks);
+                        } else if let Some(level) = self.levels.parked_mut(dim) {
+                            level.set_ticketed(chunks);
                         }
                     }
                     horizon_jvm::events::Action::Broadcast { text } => {
