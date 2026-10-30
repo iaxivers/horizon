@@ -50,6 +50,19 @@ pub struct VanillaTerrain {
     /// `created`: the ring search waits for a pause in generation.
     last_proto: std::sync::atomic::AtomicU64,
     created: std::time::Instant,
+    /// Where this dimension's biomes really come from, when mods generate it (the Java mod
+    /// bridge): biome queries of places not generated yet ask it first.
+    biome_oracle: std::sync::OnceLock<Arc<dyn BiomeOracle>>,
+}
+/// A dimension's biomes as another generator makes them (Java mods' biome sources).
+pub trait BiomeOracle: Send + Sync {
+    /// `BiomeSource.getNoiseBiome` at each quart position; None to use Horizon's own.
+    fn noise_biomes(&self, quarts: &[[i32; 3]]) -> Option<Vec<Option<String>>>;
+    /// `BiomeSource.findClosestBiome3d`; None to use Horizon's own search.
+    fn find_closest_biome(
+        &self,
+        search: &horizon_world::worldgen::generator::BiomeSearch<'_>,
+    ) -> Option<Option<(String, [i32; 3])>>;
 }
 /// A proto chunk, or the position of one whose generation failed.
 enum VanillaProto {
@@ -202,6 +215,7 @@ impl VanillaTerrain {
             dimension: dimension.to_owned(),
             last_proto: std::sync::atomic::AtomicU64::new(0),
             created: std::time::Instant::now(),
+            biome_oracle: std::sync::OnceLock::new(),
         })
     }
     /// The difficulty (0 peaceful to 3 hard) and overworld clock structure
@@ -322,13 +336,27 @@ impl VanillaTerrain {
         &self,
         search: &horizon_world::worldgen::generator::BiomeSearch<'_>,
     ) -> Option<(String, [i32; 3])> {
+        if let Some(found) = self
+            .biome_oracle
+            .get()
+            .and_then(|o| o.find_closest_biome(search))
+        {
+            return found;
+        }
         let mut worker = self.query.lock().unwrap_or_else(|e| e.into_inner());
         let worker = worker.get_or_insert_with(|| self.generator.worker());
         worker.find_closest_biome(search)
     }
+    /// Makes `oracle` the source of this dimension's biome queries (once).
+    pub fn set_biome_oracle(&self, oracle: Arc<dyn BiomeOracle>) {
+        let _ = self.biome_oracle.set(oracle);
+    }
     /// `BiomeSource.getNoiseBiome` at quart positions, for places that may not
     /// be generated yet (`MapItem.renderBiomePreviewMap`).
     pub fn noise_biomes(&self, quarts: &[[i32; 3]]) -> Vec<Option<String>> {
+        if let Some(biomes) = self.biome_oracle.get().and_then(|o| o.noise_biomes(quarts)) {
+            return biomes;
+        }
         let mut worker = self.query.lock().unwrap_or_else(|e| e.into_inner());
         let worker = worker.get_or_insert_with(|| self.generator.worker());
         worker.noise_biomes(quarts)

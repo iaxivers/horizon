@@ -69,6 +69,19 @@ public final class Natives {
      */
     public static native String blockState(String dimension, int x, int y, int z);
 
+    /**
+     * A loaded chunk's blocks at once, from minY up: out[((y - minY) * 16 + z) * 16 + x] is an
+     * index into the returned palette of states; null where the chunk isn't loaded (or outside
+     * a call that lent the world).
+     */
+    public static native String[] chunkBlocks(String dimension, int cx, int cz, int minY, int[] out);
+
+    /** A loaded chunk's biomes, one a quart: out[((qy - minY / 4) * 4 + qz) * 4 + qx], as chunkBlocks. */
+    public static native String[] chunkBiomes(String dimension, int cx, int cz, int minY, int[] out);
+
+    /** The number of the world view Horizon lent last: what was read of an older one may be stale. */
+    public static native long viewEpoch();
+
     /** A mod set a block of a mirrored level: Horizon makes it, as /setblock does. */
     public static native void setBlock(String dimension, int x, int y, int z, String state);
 

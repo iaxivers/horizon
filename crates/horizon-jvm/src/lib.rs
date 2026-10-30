@@ -450,6 +450,21 @@ fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
                 fn_ptr: native_block_state as *mut c_void,
             },
             NativeMethod {
+                name: "chunkBlocks".into(),
+                sig: "(Ljava/lang/String;III[I)[Ljava/lang/String;".into(),
+                fn_ptr: native_chunk_blocks as *mut c_void,
+            },
+            NativeMethod {
+                name: "chunkBiomes".into(),
+                sig: "(Ljava/lang/String;III[I)[Ljava/lang/String;".into(),
+                fn_ptr: native_chunk_biomes as *mut c_void,
+            },
+            NativeMethod {
+                name: "viewEpoch".into(),
+                sig: "()J".into(),
+                fn_ptr: native_view_epoch as *mut c_void,
+            },
+            NativeMethod {
                 name: "setBlock".into(),
                 sig: "(Ljava/lang/String;IIILjava/lang/String;)V".into(),
                 fn_ptr: native_set_block as *mut c_void,
@@ -908,6 +923,83 @@ extern "system" fn native_block_state<'local>(
         }
     }))
     .unwrap_or(std::ptr::null_mut())
+}
+
+/// `Natives.chunkBlocks(String dimension, int cx, int cz, int minY, int[] out)`: a loaded
+/// chunk's blocks at once (`world::Blocks::column`), or null.
+extern "system" fn native_chunk_blocks<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    dimension: JString<'local>,
+    cx: sys::jint,
+    cz: sys::jint,
+    min_y: sys::jint,
+    out: jni::objects::JIntArray<'local>,
+) -> sys::jobjectArray {
+    chunk_palette(env, dimension, cx, cz, min_y, out, world::column)
+}
+
+/// `Natives.chunkBiomes(String dimension, int cx, int cz, int minY, int[] out)`: a loaded
+/// chunk's biomes at once (`world::Blocks::column_biomes`), or null.
+extern "system" fn native_chunk_biomes<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    dimension: JString<'local>,
+    cx: sys::jint,
+    cz: sys::jint,
+    min_y: sys::jint,
+    out: jni::objects::JIntArray<'local>,
+) -> sys::jobjectArray {
+    chunk_palette(env, dimension, cx, cz, min_y, out, world::column_biomes)
+}
+
+type ColumnRead = fn(&str, i32, i32, i32, &mut [i32]) -> Option<Vec<String>>;
+
+fn chunk_palette<'local>(
+    mut env: JNIEnv<'local>,
+    dimension: JString<'local>,
+    cx: sys::jint,
+    cz: sys::jint,
+    min_y: sys::jint,
+    out: jni::objects::JIntArray<'local>,
+    read: ColumnRead,
+) -> sys::jobjectArray {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Ok(dimension) = env.get_string(&dimension).map(String::from) else {
+            return std::ptr::null_mut();
+        };
+        let Ok(len) = env.get_array_length(&out) else {
+            return std::ptr::null_mut();
+        };
+        let mut indices = vec![0i32; len as usize];
+        let Some(palette) = read(&dimension, cx, cz, min_y, &mut indices) else {
+            return std::ptr::null_mut();
+        };
+        if env.set_int_array_region(&out, 0, &indices).is_err() {
+            return std::ptr::null_mut();
+        }
+        let Ok(array) = env.new_object_array(
+            palette.len() as sys::jsize,
+            "java/lang/String",
+            JObject::null(),
+        ) else {
+            return std::ptr::null_mut();
+        };
+        for (i, name) in palette.iter().enumerate() {
+            let Ok(s) = env.new_string(name) else {
+                return std::ptr::null_mut();
+            };
+            let _ = env.set_object_array_element(&array, i as sys::jsize, &s);
+            let _ = env.delete_local_ref(s);
+        }
+        array.into_raw()
+    }))
+    .unwrap_or(std::ptr::null_mut())
+}
+
+/// `Natives.viewEpoch()`: the number of the world view lent last (`world::epoch`).
+extern "system" fn native_view_epoch(_env: JNIEnv, _class: JClass) -> sys::jlong {
+    world::epoch()
 }
 
 /// `Natives.setBlock(String dimension, int x, int y, int z, String state)`.

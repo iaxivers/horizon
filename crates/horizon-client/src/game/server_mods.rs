@@ -366,6 +366,7 @@ mod run {
         dims: Vec<(&'static str, &'a ChunkMap)>,
         /// The level running now (the first of `dims`) and its block entities.
         entities: &'a horizon_client::block_entities::BlockEntities,
+        biomes: &'a horizon_client::biome::Biomes,
     }
     #[cfg(feature = "java-mods")]
     impl horizon_jvm::world::Blocks for JavaBlocks<'_> {
@@ -392,6 +393,54 @@ mod run {
         fn light(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<u8> {
             let (_, chunks) = self.dims.iter().find(|(d, _)| *d == dimension)?;
             Some(chunks.get(&(x >> 4, z >> 4))?.light(x & 15, y, z & 15))
+        }
+        fn column(
+            &self,
+            dimension: &str,
+            cx: i32,
+            cz: i32,
+            min_y: i32,
+            out: &mut [i32],
+        ) -> Option<Vec<String>> {
+            let (_, chunks) = self.dims.iter().find(|(d, _)| *d == dimension)?;
+            let chunk = chunks.get(&(cx, cz))?;
+            let mut palette = Vec::new();
+            let mut index: std::collections::HashMap<u32, i32> = std::collections::HashMap::new();
+            for (i, slot) in out.iter_mut().enumerate() {
+                let (x, z, y) = (
+                    (i & 15) as i32,
+                    ((i >> 4) & 15) as i32,
+                    min_y + (i >> 8) as i32,
+                );
+                let state = chunk.block(x, y, z);
+                *slot = *index.entry(state.0).or_insert_with(|| {
+                    palette.push(state_string(self.registry, state));
+                    palette.len() as i32 - 1
+                });
+            }
+            Some(palette)
+        }
+        fn column_biomes(
+            &self,
+            dimension: &str,
+            cx: i32,
+            cz: i32,
+            min_y: i32,
+            out: &mut [i32],
+        ) -> Option<Vec<String>> {
+            let (_, chunks) = self.dims.iter().find(|(d, _)| *d == dimension)?;
+            let chunk = chunks.get(&(cx, cz))?;
+            let mut palette = Vec::new();
+            let mut index: std::collections::HashMap<u16, i32> = std::collections::HashMap::new();
+            for (i, slot) in out.iter_mut().enumerate() {
+                let (qx, qz, qy) = ((i & 3) as i32, ((i >> 2) & 3) as i32, (i >> 4) as i32);
+                let biome = chunk.biome(qx * 4, min_y + qy * 4, qz * 4);
+                *slot = *index.entry(biome).or_insert_with(|| {
+                    palette.push(self.biomes.get(biome).name.clone());
+                    palette.len() as i32 - 1
+                });
+            }
+            Some(palette)
         }
     }
 
@@ -1489,6 +1538,7 @@ mod run {
                     registry,
                     dims,
                     entities,
+                    biomes: self.res.biomes(),
                 },
                 f,
             )

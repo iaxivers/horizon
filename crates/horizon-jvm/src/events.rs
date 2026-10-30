@@ -766,6 +766,36 @@ pub fn hurt(uuid: &str, damage_type: &str, amount: f32) -> Result<Option<f32>, S
 /// to `out` (`HorizonContent.exportFacts`): the namespaces the mods register in.
 /// The creative inventory as the mods change it (HorizonContent.exportCreative), written to
 /// `out` in horizon-prepare's `creative-inventory.json` form.
+/// Writes the mods' block tints (`HorizonTints.export`: their BlockColors tint sources by
+/// block, as the mesher's kinds) to `out`. Needs the headless client's side (client classes).
+pub fn export_tints(out: &std::path::Path) -> Result<(), String> {
+    let bridge = crate::get().ok_or("the JVM is not running")?;
+    let mut env = bridge
+        .vm()
+        .attach_current_thread_permanently()
+        .map_err(|e| format!("attach: {e}"))?;
+    let result = env.with_local_frame(16, |env| -> jni::errors::Result<()> {
+        let name = env.new_string("dev.horizonlab.platform.HorizonTints")?;
+        let class = env
+            .call_static_method(
+                "dev/horizonlab/bridge/fabric/FabricBoot",
+                "gameClass",
+                "(Ljava/lang/String;)Ljava/lang/Class;",
+                &[JValue::Object(&name)],
+            )?
+            .l()?;
+        let out = env.new_string(out.to_string_lossy())?;
+        env.call_static_method(
+            JClass::from(class),
+            "export",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&out)],
+        )?;
+        Ok(())
+    });
+    result.map_err(|e| crate::describe(&mut env, e))
+}
+
 pub fn export_creative(out: &std::path::Path) -> Result<(), String> {
     let bridge = crate::get().ok_or("the JVM is not running")?;
     let mut env = bridge
@@ -1021,4 +1051,119 @@ pub fn worldgen_forget(dimension: &str, x: i32, z: i32, token: i64) -> Result<()
         Ok(())
     })?;
     Ok(())
+}
+
+/// The mods' biomes at quart positions of a dimension they generate (`HorizonWorldgen.biomes`):
+/// one name a position (None where it has no id), or None if the mods don't generate it.
+pub fn worldgen_biomes(
+    dimension: &str,
+    quarts: &[[i32; 3]],
+) -> Result<Option<Vec<Option<String>>>, String> {
+    let flat: Vec<i32> = quarts.iter().flatten().copied().collect();
+    let names = with_server(|env, class| {
+        let dimension = env.new_string(dimension)?;
+        let array = env.new_int_array(flat.len() as sys::jsize)?;
+        env.set_int_array_region(&array, 0, &flat)?;
+        let names = env
+            .call_static_method(
+                class,
+                "worldgenBiomes",
+                "(Ljava/lang/String;[I)[Ljava/lang/String;",
+                &[JValue::Object(&dimension), JValue::Object(&array)],
+            )?
+            .l()?;
+        optional_string_array(env, names)
+    })?;
+    Ok(names.flatten())
+}
+
+/// The biomes a dimension the mods generate can have; None if they don't generate it.
+pub fn worldgen_possible_biomes(dimension: &str) -> Result<Option<Vec<String>>, String> {
+    let names = with_server(|env, class| {
+        let dimension = env.new_string(dimension)?;
+        let names = env
+            .call_static_method(
+                class,
+                "worldgenPossibleBiomes",
+                "(Ljava/lang/String;)[Ljava/lang/String;",
+                &[JValue::Object(&dimension)],
+            )?
+            .l()?;
+        if names.is_null() {
+            return Ok(None);
+        }
+        string_array(env, names).map(Some)
+    })?;
+    Ok(names.flatten())
+}
+
+/// `/locate biome` with the mods' biome source (`BiomeSource.findClosestBiome3d`) for any of
+/// `names`: Some(None) when none is in range, None if the mods don't generate `dimension`.
+#[allow(clippy::too_many_arguments)]
+pub fn worldgen_find_biome(
+    dimension: &str,
+    names: &[String],
+    origin: [i32; 3],
+    radius: i32,
+    horizontal: i32,
+    vertical: i32,
+) -> Result<Option<Option<(String, [i32; 3])>>, String> {
+    let found = with_server(|env, class| {
+        let dimension = env.new_string(dimension)?;
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let names = strings(env, &names)?;
+        let found = env
+            .call_static_method(
+                class,
+                "worldgenFindBiome",
+                "(Ljava/lang/String;[Ljava/lang/String;IIIIII)[Ljava/lang/String;",
+                &[
+                    JValue::Object(&dimension),
+                    JValue::Object(&names),
+                    JValue::Int(origin[0]),
+                    JValue::Int(origin[1]),
+                    JValue::Int(origin[2]),
+                    JValue::Int(radius),
+                    JValue::Int(horizontal),
+                    JValue::Int(vertical),
+                ],
+            )?
+            .l()?;
+        if found.is_null() {
+            return Ok(None);
+        }
+        let found = string_array(env, found)?;
+        let parsed = (found.len() == 4)
+            .then(|| {
+                let n = |i: usize| found[i].parse::<i32>().ok();
+                Some((found[0].clone(), [n(1)?, n(2)?, n(3)?]))
+            })
+            .flatten();
+        Ok(Some(parsed))
+    })?;
+    Ok(found.flatten())
+}
+
+/// A Java `String[]` that may be null and hold nulls.
+fn optional_string_array(
+    env: &mut JNIEnv,
+    array: JObject,
+) -> jni::errors::Result<Option<Vec<Option<String>>>> {
+    if array.is_null() {
+        return Ok(None);
+    }
+    let array = jni::objects::JObjectArray::from(array);
+    let len = env.get_array_length(&array)?;
+    let mut out = Vec::with_capacity(len as usize);
+    for i in 0..len {
+        let item = env.get_object_array_element(&array, i)?;
+        if item.is_null() {
+            out.push(None);
+        } else {
+            let item = jni::objects::JString::from(item);
+            out.push(Some(env.get_string(&item)?.into()));
+            env.delete_local_ref(item)?;
+        }
+    }
+    Ok(Some(out))
 }
