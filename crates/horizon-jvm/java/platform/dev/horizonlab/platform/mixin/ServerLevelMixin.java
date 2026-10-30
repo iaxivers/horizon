@@ -113,4 +113,17 @@ public abstract class ServerLevelMixin {
     private void horizon$entitiesLoaded(CallbackInfoReturnable<Boolean> cir) {
         if (HorizonServer.isMirror(this)) cir.setReturnValue(true);
     }
+
+    /**
+     * An entity's event for the clients tracking it: a mod entity's death poof (EntityEvent.POOF,
+     * which vanilla's client turns into particles) goes to Horizon's players as particles; the
+     * rest are Horizon's to send.
+     */
+    @Inject(method = "broadcastEntityEvent", at = @At("HEAD"), cancellable = true)
+    private void horizon$entityEvent(net.minecraft.world.entity.Entity entity, byte event,
+                                     org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        if (!HorizonServer.isMirror(this)) return;
+        ci.cancel();
+        dev.horizonlab.platform.HorizonEntities.entityEvent((ServerLevel) (Object) this, entity, event);
+    }
 }

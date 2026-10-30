@@ -1186,6 +1186,30 @@ mod run {
                             drops.push((dimension.clone(), drop));
                         }
                     }
+                    horizon_jvm::events::Action::Packet { uuid, data } => {
+                        let Some(host) = host.as_deref_mut().or(self.lan.as_mut()) else {
+                            continue;
+                        };
+                        // The packet's id (a VarInt), then its body, as vanilla encoded it.
+                        let (mut id, mut shift, mut at) = (0i32, 0, 0);
+                        while let Some(&b) = data.get(at) {
+                            id |= i32::from(b & 0x7F) << shift;
+                            at += 1;
+                            shift += 7;
+                            if b & 0x80 == 0 || shift >= 35 {
+                                break;
+                            }
+                        }
+                        let conn = host
+                            .hub
+                            .guests
+                            .iter()
+                            .find(|g| uuid_string(g.uuid) == uuid)
+                            .map(|g| g.conn);
+                        if let Some(conn) = conn {
+                            host.hub.send_to(conn, &C::Unknown(id, data[at..].to_vec()));
+                        }
+                    }
                     horizon_jvm::events::Action::SetSlot { uuid, slot, item } => {
                         let Some(host) = host.as_deref_mut().or(self.lan.as_mut()) else {
                             continue;
@@ -1416,13 +1440,26 @@ mod run {
             let Some(java) = java_commands() else {
                 return false;
             };
-            // /summon of a mod's entity type: the mods' server makes it (vanilla's command).
-            let summon = name == "summon"
-                && line
-                    .split_whitespace()
-                    .nth(1)
-                    .is_some_and(|kind| java_entity_types().contains(kind));
-            if !java.names.contains(name) && !summon {
+            // A command naming a mod's entity type (`/summon mod:x`, `@e[type=mod:x]`): the
+            // mods' server runs it (vanilla's command); Horizon knows no such type.
+            let types = java_entity_types();
+            let names_type = line
+                .split(|c: char| {
+                    c.is_whitespace() || matches!(c, '[' | ']' | ',' | '=' | '!' | '{')
+                })
+                .any(|word| types.contains(word));
+            if !java.names.contains(name) && !names_type {
+                // `@e`/`@n` may mean mods' entities too: the mods run the command first, for
+                // their entities only and quietly; Horizon then runs it for its own.
+                #[cfg(feature = "java-mods")]
+                if !types.is_empty() && (line.contains("@e") || line.contains("@n")) {
+                    let ran =
+                        self.with_java_world(|| horizon_jvm::events::run_for_entities(uuid, line));
+                    if let Err(e) = ran {
+                        log::warn!("Java mods: /{line} for their entities failed: {e}");
+                    }
+                    self.apply_java_actions(host);
+                }
                 return false;
             }
             #[cfg(feature = "java-mods")]

@@ -40,6 +40,15 @@ struct Drawn {
     skip: Vec<String>,
 }
 
+/// An item its renderer submitted (held, worn on the head): the stack, how it is shown and
+/// the pose stack's matrix then, relative to the entity's position.
+#[derive(Clone)]
+struct Item {
+    stack: horizon_client::items::ItemStack,
+    context: horizon_assets::item_model::DisplayContext,
+    matrix: [f32; 16],
+}
+
 #[derive(Clone)]
 struct Shown {
     id: i32,
@@ -47,6 +56,12 @@ struct Shown {
     width: f64,
     height: f64,
     models: Vec<Drawn>,
+    items: Vec<Item>,
+    /// Its custom name, and whether it always shows (`isCustomNameVisible`).
+    name: Option<horizon_client::text::Text>,
+    name_visible: bool,
+    /// The shadow's radius its renderer gives (0: none).
+    shadow: f32,
 }
 
 /// The Java entities this game was last told of, and the tick before (to move between them).
@@ -103,9 +118,33 @@ fn drawn(v: &Value) -> Option<Drawn> {
     })
 }
 
+fn item(v: &Value) -> Option<Item> {
+    let (tag, _) = horizon_world::nbt::parse_snbt(v.get("item")?.as_str()?).ok()?;
+    Some(Item {
+        stack: horizon_items::item_nbt::item_from_nbt(&tag)?,
+        context: horizon_assets::item_model::DisplayContext::by_name(v.get("ctx")?.as_str()?)?,
+        matrix: floats(v.get("m")?)?,
+    })
+}
+
 fn shown(v: &Value) -> Option<Shown> {
     let f = |k: &str| v.get(k).and_then(Value::as_f64);
     Some(Shown {
+        items: v
+            .get("items")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(item)
+            .collect(),
+        name: v.get("name").map(|n| {
+            horizon_client::component::to_text(n, &mut |k| horizon_client::text::Text::literal(k))
+        }),
+        name_visible: v
+            .get("name_visible")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        shadow: f("shadow").unwrap_or(0.0) as f32,
         id: v.get("id")?.as_i64()? as i32,
         position: [f("x")?, f("y")?, f("z")?],
         width: f("w").unwrap_or(0.6),
@@ -280,7 +319,43 @@ impl Game<'_> {
                     out,
                 );
             }
+            // ItemInHandLayer and the like: the items, as Horizon's item renderer draws them
+            // (ItemModelResolver.updateForLiving's seed: the entity id plus the context).
+            for item in &s.items {
+                let seed = s.id.wrapping_add(item.context as i32);
+                let state = self.resolve_item(&item.stack, item.context, None, seed);
+                let pose = glam::Mat4::from_translation(d.as_vec3())
+                    * glam::Mat4::from_cols_array(&item.matrix);
+                self.submit_item_world(&state, pose, packed, out);
+            }
         }
+    }
+
+    /// Where each Java entity's shadow is (between the last two ticks) and its radius.
+    pub(super) fn java_entity_shadows(&self, alpha: f64) -> Vec<(glam::DVec3, f32)> {
+        let java = &self.java_entities;
+        java.now
+            .iter()
+            .filter(|s| s.shadow > 0.0)
+            .map(|s| (glam::DVec3::from_array(java.position(s, alpha)), s.shadow))
+            .collect()
+    }
+
+    /// The Java entities with a custom name: id, position, height, the name and whether it
+    /// always shows.
+    pub(super) fn java_entity_names(
+        &self,
+        alpha: f64,
+    ) -> Vec<(i32, glam::DVec3, f64, horizon_client::text::Text, bool)> {
+        let java = &self.java_entities;
+        java.now
+            .iter()
+            .filter_map(|s| {
+                let name = s.name.clone()?;
+                let at = glam::DVec3::from_array(java.position(s, alpha));
+                Some((s.id, at, s.height, name, s.name_visible))
+            })
+            .collect()
     }
 
     /// The Java entity the crosshair is on, nearer than `reach`: its id and distance.

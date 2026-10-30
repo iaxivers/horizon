@@ -89,6 +89,11 @@ public abstract class PacketListenerMixin {
             }
             if (info.actions().size() == 1) return;
         }
+        // Sounds and particles (mods' mobs' steps, hurts, deaths): Horizon sends them on.
+        if (self instanceof ServerGamePacketListenerImpl game && game.player != null
+                && dev.horizonlab.platform.HorizonPackets.forward(game.player, packet)) {
+            return;
+        }
         HorizonServer.dropped(packet);
     }
 

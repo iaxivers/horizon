@@ -334,6 +334,20 @@ public final class HorizonEntities {
     }
 
     /**
+     * Level.broadcastEntityEvent of a mirrored level: a mod entity's death poof
+     * (LivingEntity.makePoofParticles, which vanilla's client does for EntityEvent.POOF) as
+     * twenty poof particles in its box, sent to the players within 64 blocks.
+     */
+    public static void entityEvent(ServerLevel level, Entity entity, byte event) {
+        if (event != net.minecraft.world.entity.EntityEvent.POOF || !modded(entity.getType())) return;
+        float w = entity.getBbWidth(), h = entity.getBbHeight();
+        HorizonPackets.near(level, entity.getX(), entity.getY(), entity.getZ(), 64.0,
+                new net.minecraft.network.protocol.game.ClientboundLevelParticlesPacket(
+                        net.minecraft.core.particles.ParticleTypes.POOF, false, false,
+                        entity.getX(), entity.getY() + h / 2.0, entity.getZ(), w / 2.0F, h / 2.0F, w / 2.0F, 0.02F, 20));
+    }
+
+    /**
      * LivingEntity.detectEquipmentUpdates, which a mirrored player (not ticked) misses: the held
      * item's attribute modifiers (a sword's damage) apply before it hits.
      */

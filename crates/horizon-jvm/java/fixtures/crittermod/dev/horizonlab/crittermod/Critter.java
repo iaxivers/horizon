@@ -24,4 +24,13 @@ public class Critter extends PathfinderMob {
         goalSelector.addGoal(6, new LookAtPlayerGoal(this, Player.class, 6.0F));
         goalSelector.addGoal(7, new RandomLookAroundGoal(this));
     }
+
+    /** It holds a stick (ItemInHandLayer draws it) and says hello when hit. */
+    @Override
+    public net.minecraft.world.entity.SpawnGroupData finalizeSpawn(net.minecraft.world.level.ServerLevelAccessor level,
+            net.minecraft.world.DifficultyInstance difficulty, net.minecraft.world.entity.EntitySpawnReason reason,
+            net.minecraft.world.entity.SpawnGroupData data) {
+        setItemSlot(net.minecraft.world.entity.EquipmentSlot.MAINHAND, new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.STICK));
+        return super.finalizeSpawn(level, difficulty, reason, data);
+    }
 }

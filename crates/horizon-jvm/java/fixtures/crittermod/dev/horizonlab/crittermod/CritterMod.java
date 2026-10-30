@@ -1,6 +1,8 @@
 package dev.horizonlab.crittermod;
 
 import net.fabricmc.api.ModInitializer;
+import net.fabricmc.fabric.api.biome.v1.BiomeModifications;
+import net.fabricmc.fabric.api.biome.v1.BiomeSelectors;
 import net.fabricmc.fabric.api.object.builder.v1.entity.FabricDefaultAttributeRegistry;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -29,5 +31,7 @@ public final class CritterMod implements ModInitializer {
         ResourceKey<Item> egg = ResourceKey.create(Registries.ITEM,
                 Identifier.fromNamespaceAndPath("horizon_critters", "critter_spawn_egg"));
         Registry.register(BuiltInRegistries.ITEM, egg, new SpawnEggItem(new Item.Properties().spawnEgg(CRITTER).setId(egg)));
+        // Natural spawns in every overworld biome, in groups of 2 to 4.
+        BiomeModifications.addSpawn(BiomeSelectors.foundInOverworld(), MobCategory.CREATURE, CRITTER, 60, 2, 4);
     }
 }

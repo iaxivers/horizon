@@ -188,6 +188,27 @@ impl Game<'_> {
                 discrete,
             });
         }
+        // Java mods' entities: a visible custom name, or the one under the crosshair
+        // (MobRenderer.shouldShowName), within 64 blocks.
+        let java_target = self.java_entity_hit().map(|(id, _)| id);
+        for (id, at, height, name, visible) in self.java_entity_names(alpha) {
+            if at.distance_squared(camera) >= 64.0 * 64.0
+                || self.ui.hide_gui
+                || !(visible || Some(id) == java_target)
+            {
+                continue;
+            }
+            tags.push(NameTag {
+                at: at + glam::DVec3::new(0.0, height + 0.5, 0.0),
+                lines: vec![(name.resolve_legacy(), 0.0)],
+                light: self.world.light(
+                    at.x.floor() as i32,
+                    (at.y + height).floor() as i32,
+                    at.z.floor() as i32,
+                ),
+                discrete: false,
+            });
+        }
         // Armor stands name themselves: an invisible one with a visible name
         // is a hologram (its model is skipped, its name tag is not).
         for a in &self.armor_stands {

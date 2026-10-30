@@ -8160,8 +8160,13 @@ impl Game<'_> {
                     .iter()
                     .map(|o| (lerp(o.previous, o.position), "minecraft:experience_orb")),
             );
-            for (pos, id) in casters {
-                let (radius, strength) = horizon_client::shadows::shadow_params(id);
+            // Java mods' entities: the radius their renderers give.
+            let java = self.java_entity_shadows(alpha);
+            let casters = casters
+                .into_iter()
+                .map(|(pos, id)| (pos, horizon_client::shadows::shadow_params(id)))
+                .chain(java.into_iter().map(|(pos, radius)| (pos, (radius, 1.0))));
+            for (pos, (radius, strength)) in casters {
                 horizon_client::shadows::shadow(
                     &self.world,
                     self.res.facts(),

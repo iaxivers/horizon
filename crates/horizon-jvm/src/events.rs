@@ -177,6 +177,9 @@ pub enum Action {
         slot: usize,
         item: Option<String>,
     },
+    /// A clientbound packet a mod sent the player, to send as it is (a mod entity's sound,
+    /// particles): vanilla's encoding, its id (a VarInt) then its body.
+    Packet { uuid: String, data: Vec<u8> },
 }
 
 static ACTIONS: Mutex<Vec<Action>> = Mutex::new(Vec::new());
@@ -900,4 +903,21 @@ pub fn interact_entity(
         2 => UseResult::TakenSwing,
         _ => UseResult::Pass,
     })
+}
+
+/// Runs a command line as the player for the mods' entities only (`@e` and `@n` selectors
+/// find no players), its output not shown: what Horizon's own run of it can't reach.
+pub fn run_for_entities(uuid: &str, line: &str) -> Result<(), String> {
+    with_server(|env, class| {
+        let uuid = env.new_string(uuid)?;
+        let line = env.new_string(line)?;
+        env.call_static_method(
+            class,
+            "runForEntities",
+            "(Ljava/lang/String;Ljava/lang/String;)V",
+            &[JValue::Object(&uuid), JValue::Object(&line)],
+        )?;
+        Ok(())
+    })?;
+    Ok(())
 }

@@ -23,7 +23,7 @@ saying something works.
 | Screen drawing | `HorizonGraphics.java` records `GuiGraphicsExtractor` calls as JSON ops (blit, sprite, fill, gradient, text, item, decorations, tooltips, pose, `typing`) |
 | Mods' messages | `HorizonLoop.java`: server→client payloads queued and delivered after `syncMenus` (`flush`); client→server run at once. Mixins: `PlayNetworkingMixin` (server side), `ClientPlayNetworkingMixin` |
 | Mixins | `java/platform/horizon-platform.mixins.json` (`client` list: headless-client only) |
-| Mods' entities | `HorizonEntities.java` (live per level, ticked as `tickNonPassenger`, saved in `horizon-java/entities/`, attack/interact), `HorizonEntityRender.java` (the mod's renderer submits into a recording collector: part trees once, poses + matrix + texture per tick), mixins `ServerChunkCacheMixin` (a chunk source holding nothing), `PathNavigationRegionMixin`, `ItemModelResolverMixin`; Rust: `game/java_entities.rs` (draw, aim), `server_mods.rs` (`send_java_entities`, `java_entity_attack`/`interact`, `/summon`) |
+| Mods' entities | `HorizonEntities.java` (live per level, ticked as `tickNonPassenger`, saved in `horizon-java/entities/`, attack/interact), `HorizonEntityRender.java` (the mod's renderer submits into a recording collector: part trees once, poses + matrix + texture per tick), `HorizonSpawner.java` (natural spawning, the levels' biomes), `HorizonPackets.java` (sounds and particles to Horizon's players), mixins `ServerChunkCacheMixin` (a chunk source holding nothing), `PathNavigationRegionMixin`, `BlockScanMixin`, `ItemModelResolverMixin` + `ItemStackRenderStateMixin` (held items), `EntitySelectorMixin`; Rust: `game/java_entities.rs` (draw, aim), `server_mods.rs` (`send_java_entities`, `java_entity_attack`/`interact`, `/summon`) |
 | Content conversion | `crates/horizon-port-pack` (`oracle.rs`, `carry.rs`), `HorizonContent.java` (facts, creative tabs), `crates/horizon-client/src/mod_content.rs` (content root) |
 | Game side (Rust) | `crates/horizon-client/src/game/java_mods.rs` (start, content, creative), `server_mods.rs` (actions from Java, menus, block entities, random ticks, `JAVA_STATES`), `java_screen.rs` (draws frames, sends input, key maps) |
 
@@ -43,7 +43,11 @@ saying something works.
    each connection (its level, within 160 blocks) on `horizon:java_entities` with the model
    trees it lacks. The client keeps two ticks and lerps positions, matrices and poses.
    Attack/Interact packets with ids from `0x7fff0000` go to Java (`Player.attack`,
-   `Player.interactOn`).
+   `Player.interactOn`). A command naming a mod's entity type goes to the mods' server
+   (vanilla's command); one with `@e`/`@n` runs there first, quietly, with selectors finding
+   no players (`runForEntities`), then in Horizon. Sound and particle packets mods send
+   mirrored players are encoded with vanilla's codec and sent on as they are
+   (`Natives.packet` → `Action::Packet` → `C::Unknown`).
 
 ## 26.3 facts that cost time
 
@@ -88,6 +92,17 @@ saying something works.
   and `ModelFeatureRenderer` calls `model.setupAnim(state)` only then. A `Proxy` collector
   runs the defaults with `InvocationHandler.invokeDefault`.
 - The texture of a `RenderType`: `state` (RenderSetup) → `textures` → `Sampler0` → `location()`.
+- 26.3 has no `Biome.getMobSettings`: spawn lists are the environment attribute
+  `NATURAL_MOB_SPAWNS` (a biome layer). The mirror gets a `Level.biomeManager` from the
+  dimension's biome source with Horizon's seed, and `addStaticLayers` for its attributes.
+  Fabric applies `BiomeModifications` from a mixin into `MinecraftServer`'s constructor,
+  which the mirror skips: `BiomeModificationImpl.INSTANCE.finalizeWorldGen` is called once.
+- Block scans (`containsAnyLiquid`, `checkSpawnObstruction`) read chunk sections
+  (`BlockScanUtils.sectionBasedScan`): on the mirror they read the level block by block.
+- `/summon` with NBT doesn't run `finalizeSpawn` (no equipment); without NBT it does.
+- An item an entity renderer holds goes through `ItemModelResolver.updateForLiving` into an
+  `ItemStackRenderState`, then `state.submit(pose, …)` from its layer: keep the stack on the
+  state, make `isEmpty` false, and record the pose at `submit`.
 - Commands through `horizon-ctl command` run as the owner's console; server mods' commands
   (and `/summon` of a mod entity) now go to the mods first (`owner_console_command`).
 
@@ -164,13 +179,18 @@ Next (top failure of the pack, in order):
 Then: mod screens for LAN/remote players (frames go to the window's own player only), NeoForge
 later.
 
-Known gaps of mod entities: no natural spawning (NaturalSpawner doesn't run on the mirror),
-Horizon's selectors (`@e[type=mod:x]`, `/kill`) don't see them, nor do vanilla mobs (a mod's
-wolf won't hunt Horizon's sheep); held/worn items, name tags, shadows, fire, leashes and
-sprite-atlas models (`UvMapping`) aren't drawn; GeckoLib-style renderers that don't submit
-ModelPart models draw nothing; sounds and particles from them are silent; one tick of
-snapshot per server tick as JSON (fine for tens of mobs); entities save every 10 s (not at
-quit); in-frame single player is untested.
+Mod entities also spawn naturally (their biomes' spawn lists, per player, under the caps,
+creatures every 400 ticks), Horizon's commands reach them (`@e[type=mod:x]`, `/kill @e`),
+and their held items, custom name tags, shadows, sounds and death poof show (tested with the
+critter fixture, which spawns in every overworld biome and holds a stick).
+
+Known gaps of mod entities: vanilla mobs don't see them nor they vanilla mobs (a mod's wolf
+won't hunt Horizon's sheep); worn armour, fire, leashes and sprite-atlas models
+(`UvMapping`) aren't drawn; GeckoLib-style renderers that don't submit ModelPart models draw
+nothing; particles of a mod's own particle types and entity events other than the poof
+(a wolf's hearts) are left out; a mod's own sounds need their files in the content mod;
+natural spawns pick a height near the player (no heightmap), and spawn on world generation
+doesn't happen; entities save every 10 s (not at quit); in-frame single player is untested.
 
 Known gaps: extended (Fabric) menus share the server's menu with the screen (no client copy);
 the recipe book lists every recipe (not the player's unlocked ones); sounds from Java's client
