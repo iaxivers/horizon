@@ -59,6 +59,17 @@ case "$SCENE" in
     'q "summon ${ENTITY:-horizon_critters:critter} ~3 ~ ~2"' \
     'q "summon ${ENTITY:-horizon_critters:critter} ~2 ~ ~ {NoAI:1b}"' \
     'q "tp @s ~ ~ ~ -90 25"' 'sleep 3' ;;
+  # Farmer's Delight's block entity renderers: beef on a lit stove's grill, a carrot on a
+  # cutting board beside it; the player looking at both.
+  ber) "$R/tools/java_bridge/around.sh" \
+    'q "setblock $((X+2)) $Y $Z farmersdelight:stove[facing=west,lit=true]"' \
+    'q "setblock $((X+2)) $Y $((Z+1)) farmersdelight:cutting_board[facing=west]"' \
+    'q "item replace entity @s hotbar.0 with minecraft:beef 3"' \
+    'q "item replace entity @s hotbar.1 with minecraft:carrot 2"' \
+    'q "tp @s $(p $X+0.5) $Y $(p $Z+1.5)"' \
+    '$C key 1 tap >/dev/null; $C look-at $(p $X+2.5) $((Y+1)) $(p $Z+0.5) >/dev/null' '$C mouse right click >/dev/null' \
+    '$C key 2 tap >/dev/null; $C look-at $(p $X+2.5) $(p $Y+0.06) $(p $Z+1.5) >/dev/null' '$C mouse right click >/dev/null' \
+    '$C look-at $(p $X+2.5) $Y $(p $Z+0.9) >/dev/null' 'sleep 1' ;;
   none) ;;
 esac
 n=0; for step in "$@"; do eval "$step"; sleep 1; n=$((n+1)); $C screenshot "$S/s$n.png" >/dev/null; cp "$S/s$n.png" "$OUT/$SCENE-$n.png"; done

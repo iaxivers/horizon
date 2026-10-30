@@ -62,6 +62,9 @@ struct Shown {
     name_visible: bool,
     /// The shadow's radius its renderer gives (0: none).
     shadow: f32,
+    /// A mod's block entity its renderer draws (a cutting board's item), at its block's
+    /// corner: no box to hit, drawn as block entities are (their range, the light above).
+    block: bool,
 }
 
 /// The Java entities this game was last told of, and the tick before (to move between them).
@@ -145,6 +148,7 @@ fn shown(v: &Value) -> Option<Shown> {
             .and_then(Value::as_bool)
             .unwrap_or(false),
         shadow: f("shadow").unwrap_or(0.0) as f32,
+        block: v.get("block").and_then(Value::as_bool).unwrap_or(false),
         id: v.get("id")?.as_i64()? as i32,
         position: [f("x")?, f("y")?, f("z")?],
         width: f("w").unwrap_or(0.6),
@@ -256,14 +260,26 @@ impl Game<'_> {
         for s in &java.now {
             let at = java.position(s, alpha);
             let d = glam::DVec3::from_array(at) - camera;
-            // Entity.shouldRenderAtSqrDistance: 64 times the box's mean edge.
-            let range = (s.width * 2.0 + s.height) / 3.0 * 64.0 * self.view_scale();
+            // Entity.shouldRenderAtSqrDistance: 64 times the box's mean edge; a block entity:
+            // BlockEntityRenderer.getViewDistance's 64 blocks.
+            let range = if s.block {
+                64.0
+            } else {
+                (s.width * 2.0 + s.height) / 3.0 * 64.0 * self.view_scale()
+            };
             if d.length_squared() >= range * range {
                 continue;
             }
+            // A block entity's light: the block above it (a full block's own is dark inside,
+            // and what its renderer draws sits on top: a stove's grill).
+            let lit_y = if s.block {
+                at[1] + 1.0
+            } else {
+                at[1] + s.height * 0.85
+            };
             let light = self.world.light(
                 at[0].floor() as i32,
-                (at[1] + s.height * 0.85).floor() as i32,
+                lit_y.floor() as i32,
                 at[2].floor() as i32,
             );
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
@@ -336,7 +352,7 @@ impl Game<'_> {
         let java = &self.java_entities;
         java.now
             .iter()
-            .filter(|s| s.shadow > 0.0)
+            .filter(|s| s.shadow > 0.0 && !s.block)
             .map(|s| (glam::DVec3::from_array(java.position(s, alpha)), s.shadow))
             .collect()
     }
@@ -366,6 +382,7 @@ impl Game<'_> {
         let java = &self.java_entities;
         java.now
             .iter()
+            .filter(|s| !s.block)
             .filter_map(|s| Some((s.id, super::ray_box(eye, dir, reach, java.bounds(s, 1.0))?)))
             .min_by(|a, b| a.1.total_cmp(&b.1))
     }

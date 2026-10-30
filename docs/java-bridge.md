@@ -93,6 +93,8 @@ saying something works.
 - Objects made with `Natives.allocate` have no constructor-set fields; mods' mixins add fields
   set in constructors too (`emptyCollections` fills collections). A new NPE in the mirror is
   usually one more such field: set it where the object is made.
+- Scene coordinates: write `$(p $X+0.5)` (around.sh's `p`), never `$X.5`: for X = -20 that is
+  -20.5, a block off. Scratch worlds have seed `SEED` (default 1234) so scenes land the same.
 - Javap the real jar instead of guessing: `javap -p -cp .local/minecraft/26.3/jars/client.jar <class>`.
 - Fire Fabric events with `fireEach` (one listener at a time), not `invoker()`: through the
   invoker one mod throwing each tick silently stops every listener after it.
@@ -221,6 +223,13 @@ Works (tested): content (blocks with their own states, items, food, crops, light
 logic and block entities, Fabric and vanilla menus in Horizon's window, mods' own screens with
 clicks, keys, typing, scroll, tooltips, recipe book; creative tabs with Fabric pages; mod
 commands; mods' messages between their two sides; vanilla block entities shared with mods.
+
+Mods' block entity renderers (tested with Farmer's Delight: a stove's food, a cutting board's
+item; `SCENE=ber`): each tick, mod block entities within 64 blocks of a player go through the
+renderer the mod registered (`BlockEntityRenderers.PROVIDERS`, a context with no block models
+or sprites) into the entities' recording collector; they join the entity snapshot as entries
+marked `block` (no hit box, no shadow, lit from the block above). Renderers that draw block
+models or atlas sprites (signs) draw nothing yet.
 
 Mod entities (tested with the critter fixture, server thread): `/summon` and spawn eggs make
 them, they tick in Java (goals, paths, physics against Horizon's blocks), their own renderers'

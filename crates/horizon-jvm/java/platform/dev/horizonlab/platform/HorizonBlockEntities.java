@@ -96,6 +96,12 @@ public final class HorizonBlockEntities {
         return made;
     }
 
+    /** The live mod block entities of a level (a copy: its renderers' snapshot reads them). */
+    public static synchronized java.util.List<BlockEntity> live(ServerLevel level) {
+        Map<Long, BlockEntity> live = LIVE.get(level);
+        return live == null ? java.util.List.of() : new ArrayList<>(live.values());
+    }
+
     /** A mod block placed at {@code pos}: its block entity made, if it has one and none is up. */
     public static synchronized void ensure(Level level, BlockPos pos) {
         BlockState state = HorizonServer.blockState(level, pos);

@@ -1,7 +1,8 @@
 #!/bin/bash
 # Starts the game headless with the Java mods of MODS (a folder of jars), in a fresh scratch
 # folder (CLAUDE.md: never real player data), driven by horizon-ctl. Prints the scratch folder;
-# its ctl.sock is the socket. Usage: MODS=~/mods tools/java_bridge/launch.sh [game args...]
+# its ctl.sock is the socket. The world has seed SEED (default 1234: the same land each run).
+# Usage: MODS=~/mods tools/java_bridge/launch.sh [game args...]
 set -e
 R=$(cd "$(dirname "$0")/../.." && pwd)
 : "${MODS:?MODS: a folder of mod jars}"
@@ -24,6 +25,6 @@ fi
 cd "$S"
 export HORIZON_HOME=$S/home HORIZON_LAUNCHER_HOME=$S/lh XDG_DATA_HOME=$S/data XDG_CONFIG_HOME=$S/conf \
   HORIZON_LAUNCHER_NO_SELF_UPDATE=1 HORIZON_NO_AUDIO=1 HORIZON_ROOT=$R
-"$R/target/fast/horizon-ctl" --socket "$S/ctl.sock" launch --world W --creative --offscreen --wait \
+"$R/target/fast/horizon-ctl" --socket "$S/ctl.sock" launch --world W --seed "${SEED:-1234}" --creative --offscreen --wait \
   --game "$R/target/fast/horizon-client" --resources "$R/.local/horizon-client/26.3" "$@" > "$S/ctl.out" 2>&1
 echo "$S"

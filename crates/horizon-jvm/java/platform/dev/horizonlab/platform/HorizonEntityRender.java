@@ -116,6 +116,123 @@ public final class HorizonEntityRender {
         return made;
     }
 
+    // ---- Block entities -------------------------------------------------------------------
+
+    /** How far from a player a block entity is drawn (BlockEntityRenderer.getViewDistance's default). */
+    private static final int BLOCK_RANGE = 64;
+    private static net.minecraft.client.renderer.blockentity.BlockEntityRendererProvider.Context blockContext;
+    private static final Map<net.minecraft.world.level.block.entity.BlockEntityType<?>,
+            net.minecraft.client.renderer.blockentity.BlockEntityRenderer<?, ?>> BLOCK_RENDERERS = new IdentityHashMap<>();
+    private static final Map<net.minecraft.world.level.block.entity.BlockEntityType<?>, Boolean> NO_BLOCK_RENDERER =
+            new IdentityHashMap<>();
+    /** A stable id a block entity's position (negative: never an entity's), for Horizon's tweening. */
+    private static final Map<Long, Integer> BLOCK_IDS = new java.util.HashMap<>();
+
+    /**
+     * The block entity renderers' context, as BlockEntityRenderDispatcher makes it on a
+     * resource reload: the entity renderers' item resolver and model set, the headless
+     * client's font; no block models or sprites (renderers that need them fail alone).
+     */
+    private static net.minecraft.client.renderer.blockentity.BlockEntityRendererProvider.Context blockContext()
+            throws ReflectiveOperationException {
+        if (blockContext != null) return blockContext;
+        var entities = context();
+        var dispatcher = (net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher)
+                Natives.allocate(net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher.class);
+        blockContext = new net.minecraft.client.renderer.blockentity.BlockEntityRendererProvider.Context(
+                dispatcher, null, entities.getItemModelResolver(), entities.getEntityRenderDispatcher(),
+                entities.getModelSet(), entities.getFont(), null, null);
+        return blockContext;
+    }
+
+    /** The renderer the mod registered for a block entity type (BlockEntityRenderers.PROVIDERS). */
+    @SuppressWarnings("unchecked")
+    private static net.minecraft.client.renderer.blockentity.BlockEntityRenderer<?, ?> blockRenderer(
+            net.minecraft.world.level.block.entity.BlockEntityType<?> type) {
+        var made = BLOCK_RENDERERS.get(type);
+        if (made != null || NO_BLOCK_RENDERER.containsKey(type)) return made;
+        try {
+            Field field = net.minecraft.client.renderer.blockentity.BlockEntityRenderers.class.getDeclaredField("PROVIDERS");
+            field.setAccessible(true);
+            var providers = (Map<net.minecraft.world.level.block.entity.BlockEntityType<?>,
+                    net.minecraft.client.renderer.blockentity.BlockEntityRendererProvider<?, ?>>) field.get(null);
+            var provider = providers.get(type);
+            if (provider == null) {
+                // Most block entities draw only their block's model: Horizon's already.
+                NO_BLOCK_RENDERER.put(type, true);
+                return null;
+            }
+            made = provider.create(blockContext());
+            BLOCK_RENDERERS.put(type, made);
+        } catch (Throwable t) {
+            NO_BLOCK_RENDERER.put(type, true);
+            Natives.log("Java mods: no renderer for " + BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(type) + ": " + t);
+            StackTraceElement[] frames = t.getStackTrace();
+            for (int f = 0; f < Math.min(frames.length, 8); f++) Natives.log("    at " + frames[f]);
+        }
+        return made;
+    }
+
+    /** A level's mod block entities near its players, as their renderers submit them. */
+    private static JsonArray blockEntities(ServerLevel level) {
+        JsonArray out = new JsonArray();
+        var players = level.players();
+        if (players.isEmpty()) return out;
+        for (var be : HorizonBlockEntities.live(level)) {
+            if (be.isRemoved()) continue;
+            var pos = be.getBlockPos();
+            boolean near = false;
+            for (var p : players) {
+                if (p.distanceToSqr(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5) < BLOCK_RANGE * BLOCK_RANGE) {
+                    near = true;
+                    break;
+                }
+            }
+            if (!near) continue;
+            var renderer = blockRenderer(be.getType());
+            if (renderer == null) continue;
+            JsonArray itemsHere = new JsonArray();
+            JsonArray models = blockModels(renderer, be, itemsHere);
+            if (models.isEmpty() && itemsHere.isEmpty()) continue;
+            JsonObject o = new JsonObject();
+            o.addProperty("id", BLOCK_IDS.computeIfAbsent(pos.asLong(), k -> -1 - BLOCK_IDS.size()));
+            o.addProperty("type", BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(be.getType()).toString());
+            o.addProperty("block", true);
+            o.addProperty("x", pos.getX());
+            o.addProperty("y", pos.getY());
+            o.addProperty("z", pos.getZ());
+            o.add("models", models);
+            if (!itemsHere.isEmpty()) o.add("items", itemsHere);
+            out.add(o);
+        }
+        return out;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static JsonArray blockModels(net.minecraft.client.renderer.blockentity.BlockEntityRenderer renderer,
+                                         net.minecraft.world.level.block.entity.BlockEntity be, JsonArray heldItems) {
+        JsonArray out = new JsonArray();
+        items = heldItems;
+        try {
+            var state = renderer.createRenderState();
+            renderer.extractRenderState(be, state, 1.0F, net.minecraft.world.phys.Vec3.ZERO, null);
+            CameraRenderState camera = new CameraRenderState();
+            camera.orientation = new org.joml.Quaternionf();
+            camera.pos = net.minecraft.world.phys.Vec3.ZERO;
+            renderer.submit(state, new PoseStack(), collector(out), camera);
+        } catch (Throwable t) {
+            String key = BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(be.getType()) + " " + t;
+            if (FAILURES.merge(key, 1, Integer::sum) == 1) {
+                Natives.log("Java mods: drawing " + key);
+                StackTraceElement[] frames = t.getStackTrace();
+                for (int f = 0; f < Math.min(frames.length, 12); f++) Natives.log("    at " + frames[f]);
+            }
+        } finally {
+            items = null;
+        }
+        return out;
+    }
+
     /** The snapshot of every level's mods' entities (see the class), for Horizon. */
     public static String snapshot() {
         JsonObject dims = new JsonObject();
@@ -145,6 +262,16 @@ public final class HorizonEntityRender {
                 list.add(o);
             }
             if (!list.isEmpty()) dims.add(level.dimension().identifier().toString(), list);
+        }
+        // Mods' block entities their renderers draw (a cutting board's item, a stove's food),
+        // as entities marked "block" at the block's corner.
+        for (ServerLevel level : HorizonServer.levels()) {
+            JsonArray blocks = blockEntities(level);
+            if (blocks.isEmpty()) continue;
+            String key = level.dimension().identifier().toString();
+            JsonArray list = dims.has(key) ? dims.getAsJsonArray(key) : new JsonArray();
+            list.addAll(blocks);
+            dims.add(key, list);
         }
         JsonObject out = new JsonObject();
         out.add("dims", dims);

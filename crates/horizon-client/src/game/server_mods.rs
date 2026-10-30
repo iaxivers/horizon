@@ -880,7 +880,9 @@ mod run {
                 showing: HashSet<u32>,
             }
             static SENT: std::sync::Mutex<Option<Sent>> = std::sync::Mutex::new(None);
-            if java_entity_types().is_empty() {
+            // Mods with no entities of their own may still draw block entities (the snapshot
+            // has those too): only no Java mods at all skips it.
+            if !java_mods_on() {
                 return;
             }
             let json = match self.with_java_world(horizon_jvm::events::entities) {
