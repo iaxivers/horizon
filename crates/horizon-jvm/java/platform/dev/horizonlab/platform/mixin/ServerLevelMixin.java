@@ -5,6 +5,7 @@ import net.minecraft.server.level.ServerLevel;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /** What Horizon's mirrored levels answer in place of chunks they don't hold. */
@@ -112,5 +113,14 @@ public abstract class ServerLevelMixin {
             at = @At("HEAD"), cancellable = true)
     private void horizon$entitiesLoaded(CallbackInfoReturnable<Boolean> cir) {
         if (HorizonServer.isMirror(this)) cir.setReturnValue(true);
+    }
+
+    /**
+     * Points of interest (villagers' beds, workstations) are Horizon's: a block change on the
+     * mirror doesn't schedule vanilla's update, which reads the chunk map a mirror has none of.
+     */
+    @Inject(method = "updatePOIOnBlockStateChange", at = @At("HEAD"), cancellable = true)
+    private void horizon$poi(CallbackInfo ci) {
+        if (HorizonServer.isMirror(this)) ci.cancel();
     }
 }

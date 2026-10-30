@@ -27,7 +27,8 @@
     "GameListenerMixin",
     "MirrorPacketContextMixin",
     "ServerChunkCacheMixin",
-    "PathNavigationRegionMixin"
+    "PathNavigationRegionMixin",
+    "WorldGenRegionMixin"
   ],
   "injectors": {
     "defaultRequire": 1

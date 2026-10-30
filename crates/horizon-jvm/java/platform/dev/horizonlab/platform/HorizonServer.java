@@ -391,6 +391,11 @@ public final class HorizonServer {
         return seed;
     }
 
+    /** Horizon's world seed before any tick (world generation asks first: HorizonWorldgen). */
+    public static void worldSeed(long seed) {
+        HorizonServer.seed = seed;
+    }
+
     /**
      * A mirrored level's chunk generator (ServerChunkCache.getGenerator): its level stem's,
      * from the data packs. Horizon generates the terrain; mods ask the generator about it
@@ -431,6 +436,42 @@ public final class HorizonServer {
         var random = randomState(level);
         return STRUCTURE_STATES.computeIfAbsent(level, l -> generator(l).createState(
                 HorizonData.loaded.registries().compositeAccess().lookupOrThrow(Registries.STRUCTURE_SET), random, seed));
+    }
+
+    // The mods' world generation (HorizonWorldgen), for horizon-jvm's events.rs.
+    /**
+     * The world Horizon has open (its folder): where the mods' block entities, saved data and
+     * entities are kept. Before anything runs in it: its tick, or its worldgen's start (whose
+     * mods' hooks, Fabric's data attachments among them, read the server's saved data).
+     */
+    static void world(String world) {
+        if (world != null && !world.isEmpty()) worldDir = java.nio.file.Paths.get(world).toAbsolutePath();
+        HorizonBlockEntities.world(worldDir);
+        HorizonSavedData.world(server, worldDir);
+        HorizonEntities.world(worldDir);
+    }
+
+    public static boolean worldgenStart(String dimension, long seed, boolean structures, String world) {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        ensureServer();
+        world(world);
+        return HorizonWorldgen.start(dimension, seed, structures);
+    }
+
+    public static long worldgenProto(String dimension, int x, int z) {
+        return HorizonWorldgen.proto(dimension, x, z);
+    }
+
+    public static void worldgenDecorate(String dimension, int x, int z) {
+        HorizonWorldgen.decorate(dimension, x, z);
+    }
+
+    public static byte[] worldgenFinish(String dimension, int x, int z, long token) {
+        return HorizonWorldgen.finish(dimension, x, z, token);
+    }
+
+    public static void worldgenForget(String dimension, int x, int z, long token) {
+        HorizonWorldgen.forget(dimension, x, z, token);
     }
 
     /** The mirrored levels (one a dimension Horizon has). */
@@ -715,10 +756,7 @@ public final class HorizonServer {
             return;
         }
         MinecraftServer server = HorizonServer.server;
-        if (world != null && !world.isEmpty()) worldDir = java.nio.file.Paths.get(world).toAbsolutePath();
-        HorizonBlockEntities.world(worldDir);
-        HorizonSavedData.world(server, worldDir);
-        HorizonEntities.world(worldDir);
+        world(world);
         // The server's tick count follows Horizon's (mods time their tasks with it).
         ((MinecraftServerAccess) server).horizon$setTickCount((int) tick);
         // The headless client's tick (its frame, then its game tick), before the server's.

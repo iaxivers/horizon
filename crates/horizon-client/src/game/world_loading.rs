@@ -341,6 +341,30 @@ pub(super) fn make_streaming(
             inner.search_rings_behind();
         }
         locator = Some(inner.clone());
+        // With Java mods, the mods' chunk steps generate the dimensions they change.
+        #[cfg(feature = "java-mods")]
+        if let Some(java) = super::java_worldgen::JavaTerrain::wrap(
+            inner.clone(),
+            dim.id(),
+            seed,
+            structures,
+            world_root,
+            pack.assets.registry,
+            res.biomes().clone(),
+        ) {
+            let mut streaming = Streaming::new(
+                Arc::new(Persistent {
+                    inner: Arc::new(java),
+                    save: save.clone(),
+                    registry: pack.assets.clone(),
+                    biomes: res.biomes().clone(),
+                }),
+                pack.context.clone(),
+                res.threads(),
+            );
+            finish_streaming(&mut streaming, &save, settings, options, dim, seed);
+            return Ok((streaming, save, locator));
+        }
         Streaming::new(
             Arc::new(Persistent {
                 inner,
@@ -352,6 +376,19 @@ pub(super) fn make_streaming(
             res.threads(),
         )
     };
+    finish_streaming(&mut streaming, &save, settings, options, dim, seed);
+    Ok((streaming, save, locator))
+}
+
+/// A new dimension's streaming settings, whatever generates it.
+fn finish_streaming(
+    streaming: &mut Streaming,
+    save: &SaveDir,
+    settings: &Settings,
+    options: &Options,
+    dim: Dim,
+    seed: i64,
+) {
     streaming.forced = save.load_forced_chunks();
     streaming.radius = settings.render_distance;
     streaming.biome_blend = settings.biome_blend;
@@ -363,7 +400,6 @@ pub(super) fn make_streaming(
     // A server draws nothing: neither the integrated server nor the
     // dedicated one meshes sections.
     streaming.mesh = options.execution_role.is_client();
-    Ok((streaming, save, locator))
 }
 
 #[cfg(test)]

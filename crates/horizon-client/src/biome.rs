@@ -166,6 +166,34 @@ fn sample(map: &[u32], temperature: f32, downfall: f32, fallback: u32) -> u32 {
     let index = (y << 8 | x) as usize;
     map.get(index).copied().unwrap_or(fallback)
 }
+/// The biome files of every namespace but vanilla's under `root/data`, by namespace then name.
+pub fn mod_biomes(root: &Path) -> Vec<(String, std::path::PathBuf)> {
+    let mut out = Vec::new();
+    let Ok(namespaces) = fs::read_dir(root.join("data")) else {
+        return out;
+    };
+    let mut namespaces: Vec<String> = namespaces
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n != "minecraft")
+        .collect();
+    namespaces.sort();
+    for namespace in namespaces {
+        let Ok(files) = fs::read_dir(root.join("data").join(&namespace).join("worldgen/biome"))
+        else {
+            continue;
+        };
+        let mut files: Vec<_> = files
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "json"))
+            .collect();
+        files.sort();
+        out.extend(files.into_iter().map(|p| (namespace.clone(), p)));
+    }
+    out
+}
+
 impl Biomes {
     pub fn load(root: &Path) -> Result<Self> {
         let grass = colormap(root, "grass")?;
@@ -176,11 +204,15 @@ impl Biomes {
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|e| e == "json"))
+            .map(|p| ("minecraft".to_owned(), p))
             .collect();
         names.sort();
-        for path in names {
+        // Mods' biomes (a content mod's data/<ns>/worldgen/biome, as Java mods' carry them)
+        // after vanilla's, so vanilla's keep their ids.
+        names.extend(mod_biomes(root));
+        for (namespace, path) in names {
             let name = format!(
-                "minecraft:{}",
+                "{namespace}:{}",
                 path.file_stem()
                     .and_then(|s| s.to_str())
                     .ok_or("bad biome")?

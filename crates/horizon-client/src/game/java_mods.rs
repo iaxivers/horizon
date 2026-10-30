@@ -114,6 +114,29 @@ pub(super) fn java_creative(out: &Path) {
 /// the "Java mods" thread, or before the resources load when the mods' content is made. Whether
 /// they run.
 fn start(root: &Path, dir: &Path, jars: Vec<PathBuf>, side: horizon_jvm::Side) -> bool {
+    let started = start_once(root, dir, jars, side);
+    SETTLED.store(true, std::sync::atomic::Ordering::SeqCst);
+    started
+}
+
+/// Set once Java's start has ended, whether it started or not.
+static SETTLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Waits (up to `limit`) for the Java mods' start to end: whether the platform mod runs.
+pub(super) fn wait_for_java(limit: std::time::Duration) -> bool {
+    let until = std::time::Instant::now() + limit;
+    while !SETTLED.load(std::sync::atomic::Ordering::SeqCst) && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    horizon_jvm::events::ready()
+}
+
+/// Whether `mods-java/` holds jars (the Java mods start, or started).
+pub(super) fn has_java_mods() -> bool {
+    !horizon_jvm::jars(&Game::options_path().with_file_name(horizon_jvm::DIR)).is_empty()
+}
+
+fn start_once(root: &Path, dir: &Path, jars: Vec<PathBuf>, side: horizon_jvm::Side) -> bool {
     if horizon_jvm::get().is_some() {
         return true;
     }

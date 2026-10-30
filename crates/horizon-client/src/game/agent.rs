@@ -335,6 +335,11 @@ impl Game<'_> {
             "state": self.state_string(state),
             "loaded": self.world.chunks.contains_key(&(pos[0] >> 4, pos[2] >> 4)),
         });
+        // The biome there, as this client has it (F3's "Biome").
+        if let Some(chunk) = self.world.chunks.get(&(pos[0] >> 4, pos[2] >> 4)) {
+            let id = chunk.biome(pos[0], pos[1], pos[2]);
+            v["biome"] = json!(self.res.biomes().get(id).name);
+        }
         // How far a chest's or a shulker box's lid is open, 0..1, as drawn.
         match self.be_anims.ticker(state.0) {
             Some(Ticker::Lid) => v["lid"] = json!(self.chest_lid(pos, 1.0)),

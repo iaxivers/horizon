@@ -81,6 +81,8 @@ mod item_particles;
 mod java_entities;
 mod java_mods;
 mod java_screen;
+#[cfg(feature = "java-mods")]
+mod java_worldgen;
 mod jukebox;
 mod lan;
 mod lan_actions;

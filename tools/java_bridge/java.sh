@@ -10,7 +10,12 @@ if ! "${JAVA_HOME:-/nonexistent}/bin/java" -version 2>&1 | grep -q '"25'; then
 fi
 export JAVA_HOME HORIZON_JAVA_HOME=$JAVA_HOME PATH=$JAVA_HOME/bin:$PATH
 cd "$R"
-cargo build -q --profile fast -p horizon-jvm 2>&1 | grep -vE "Picked up JAVA_TOOL" | grep -E "^error|error:|\.java:[0-9]+" -A6 | head -30
+# Errors to stderr, and a failed build stops here: the old jars must never run as new ones.
+if ! cargo build -q --profile fast -p horizon-jvm > /tmp/hz-java-build.log 2>&1; then
+  grep -vE "Picked up JAVA_TOOL" /tmp/hz-java-build.log | grep -E "^error|error:|\.java:[0-9]+" -A6 | head -30 >&2
+  echo "java.sh: the Java build failed (full log: /tmp/hz-java-build.log)" >&2
+  exit 1
+fi
 dev="$R/.local/bridge/dev"; mkdir -p "$dev"
 for jar in horizon-bridge.jar horizon-platform.jar; do
   newest=$(ls -t "$R"/target/fast/build/horizon-jvm-*/out/$jar 2>/dev/null | head -1)
