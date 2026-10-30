@@ -292,6 +292,10 @@ Next (top failure of the pack, in order):
    Java proto dropped unfinished isn't saved (a neighbour's tree cut at the edge of where the
    player went); block/fluid ticks and post-processing of generated chunks aren't carried;
    the Nether and End through TerraBlender untested.
+   Seen once in five `SCENE=ber` runs (with FD, whose features route the overworld through
+   Java): the stove placed by the scene was gone a few seconds later, its outline left. A
+   chunk generated on the Java side landing after a block was set in it would do that: check
+   that a finished proto never replaces a chunk Horizon already has.
 2. No client level: `Minecraft.level` is null. Chunk Loaders' screen opens (sneak-place or
    place, then use) but its grid reads the client's level for the loaders it shows
    (`ChunkLoadingCapability.get(ClientUtils.getWorld())`); mods' key handlers that check the
