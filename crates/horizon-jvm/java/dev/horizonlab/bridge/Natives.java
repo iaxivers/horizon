@@ -92,6 +92,12 @@ public final class Natives {
     public static native void broadcast(String text);
 
     /**
+     * A clientbound packet a mod sent a player that Horizon sends as it is (a sound, particles):
+     * vanilla's encoding of it, its id first (a VarInt), then its body.
+     */
+    public static native void packet(String uuid, byte[] data);
+
+    /**
      * An instance of {@code type} made without running a constructor (JNI AllocObject): the
      * game objects Horizon's state is mirrored into. Every field starts at its default.
      */

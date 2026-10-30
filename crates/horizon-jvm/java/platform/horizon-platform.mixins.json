@@ -28,7 +28,9 @@
     "MirrorPacketContextMixin",
     "ServerChunkCacheMixin",
     "PathNavigationRegionMixin",
-    "WorldGenRegionMixin"
+    "WorldGenRegionMixin",
+    "EntitySelectorMixin",
+    "BlockScanMixin"
   ],
   "injectors": {
     "defaultRequire": 1
@@ -44,6 +46,7 @@
     "RecipeBookComponentMixin",
     "TextInputManagerMixin",
     "ClientPlayNetworkingMixin",
-    "ItemModelResolverMixin"
+    "ItemModelResolverMixin",
+    "ItemStackRenderStateMixin"
   ]
 }

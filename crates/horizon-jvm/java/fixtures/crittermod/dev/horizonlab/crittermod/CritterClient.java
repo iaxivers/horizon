@@ -68,14 +68,42 @@ public final class CritterClient implements ClientModInitializer {
         }
     }
 
+    static final class State extends LivingEntityRenderState {
+        final net.minecraft.client.renderer.item.ItemStackRenderState held = new net.minecraft.client.renderer.item.ItemStackRenderState();
+    }
+
     static final class Renderer extends MobRenderer<Critter, LivingEntityRenderState, Model> {
         Renderer(EntityRendererProvider.Context context) {
             super(context, new Model(context.bakeLayer(LAYER)), 0.4F);
+            // Its held item, in front of its face, as vanilla's foxes hold theirs.
+            addLayer(new net.minecraft.client.renderer.entity.layers.RenderLayer<>(this) {
+                @Override
+                public void submit(com.mojang.blaze3d.vertex.PoseStack pose, net.minecraft.client.renderer.SubmitNodeCollector collector,
+                                   int light, LivingEntityRenderState state, float yRot, float xRot) {
+                    if (held(state).isEmpty()) return;
+                    pose.pushPose();
+                    pose.translate(0.0F, 1.1F, -0.85F);
+                    pose.rotateDegrees(com.mojang.math.Axis.XP, 90.0F);
+                    held(state).submit(pose, collector, light, net.minecraft.client.renderer.texture.OverlayTexture.NO_OVERLAY, state.outlineColor);
+                    pose.popPose();
+                }
+            });
+        }
+
+        private static net.minecraft.client.renderer.item.ItemStackRenderState held(LivingEntityRenderState state) {
+            return ((State) state).held;
+        }
+
+        @Override
+        public void extractRenderState(Critter critter, LivingEntityRenderState state, float partialTick) {
+            super.extractRenderState(critter, state, partialTick);
+            itemModelResolver.updateForLiving(((State) state).held, critter.getMainHandItem(),
+                    net.minecraft.world.item.ItemDisplayContext.GROUND, critter);
         }
 
         @Override
         public LivingEntityRenderState createRenderState() {
-            return new LivingEntityRenderState();
+            return new State();
         }
 
         @Override

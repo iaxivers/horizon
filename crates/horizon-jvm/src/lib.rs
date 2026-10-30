@@ -470,6 +470,11 @@ fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
                 fn_ptr: native_set_slot as *mut c_void,
             },
             NativeMethod {
+                name: "packet".into(),
+                sig: "(Ljava/lang/String;[B)V".into(),
+                fn_ptr: native_packet as *mut c_void,
+            },
+            NativeMethod {
                 name: "broadcast".into(),
                 sig: "(Ljava/lang/String;)V".into(),
                 fn_ptr: native_broadcast as *mut c_void,
@@ -1013,6 +1018,23 @@ extern "system" fn native_set_slot(
         };
         if let Ok(slot) = usize::try_from(slot) {
             events::push(events::Action::SetSlot { uuid, slot, item });
+        }
+    }));
+}
+
+/// `Natives.packet(String uuid, byte[] data)`.
+extern "system" fn native_packet(
+    mut env: JNIEnv,
+    _class: JClass,
+    uuid: JString,
+    data: jni::objects::JByteArray,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Ok(uuid) = env.get_string(&uuid).map(String::from) else {
+            return;
+        };
+        if let Ok(data) = env.convert_byte_array(&data) {
+            events::push(events::Action::Packet { uuid, data });
         }
     }));
 }

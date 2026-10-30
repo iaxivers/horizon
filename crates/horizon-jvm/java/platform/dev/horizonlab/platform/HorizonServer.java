@@ -706,7 +706,7 @@ public final class HorizonServer {
     }
 
     /** Runs a mod event, logging (not throwing) what a mod throws, ten times per event at most. */
-    private static void fire(String event, Runnable run) {
+    static void fire(String event, Runnable run) {
         try {
             run.run();
         } catch (Throwable t) {
@@ -927,6 +927,7 @@ public final class HorizonServer {
         HorizonSavedData.tick();
         // Mods' entities, as ServerLevel.tick's entity loop runs them.
         HorizonEntities.tick();
+        HorizonSpawner.tick();
         // ServerPlayer.tick and doTick: a menu no longer valid closes, and the open menu sends
         // its changes (a mod's menu keeps its block working while it is watched, and syncs its
         // own data there: Tom's Storage's terminal its item list).
@@ -1298,6 +1299,32 @@ public final class HorizonServer {
                 vanillaParsers(entry.getValue().getAsJsonObject());
             }
         }
+    }
+
+    /**
+     * While a command runs for the mods' entities only (runForEntities): selectors find no
+     * players (EntitySelectorMixin), Horizon's run of the command has them.
+     */
+    public static final ThreadLocal<Boolean> ENTITIES_ONLY = ThreadLocal.withInitial(() -> false);
+
+    /**
+     * A command with {@code @e} or {@code @n} that Horizon runs for its own entities: run here
+     * too, quietly, for the mods' entities (a {@code /kill @e} kills theirs as well).
+     */
+    public static void runForEntities(String uuid, String line) {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        ServerPlayer player = KNOWN.get(UUID.fromString(uuid));
+        HorizonData.Loaded data = HorizonData.loaded;
+        if (player == null || data == null || !BY_UUID.containsKey(player.getUUID())) return;
+        ENTITIES_ONLY.set(true);
+        try {
+            data.reloadable().getCommands().performPrefixedCommand(player.createCommandSourceStack().withSuppressedOutput(), line);
+        } catch (Throwable t) {
+            // Horizon's run of it says what went wrong.
+        } finally {
+            ENTITIES_ONLY.set(false);
+        }
+        syncInventories();
     }
 
     /**

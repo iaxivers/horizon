@@ -132,7 +132,16 @@ public final class HorizonEntityRender {
                 o.addProperty("z", entity.getZ());
                 o.addProperty("w", entity.getBbWidth());
                 o.addProperty("h", entity.getBbHeight());
-                o.add("models", models(entity));
+                JsonArray items = new JsonArray();
+                o.add("models", models(entity, items));
+                if (!items.isEmpty()) o.add("items", items);
+                // Its custom name (Horizon shows it as its own mobs': visible, or looked at).
+                if (entity.getCustomName() != null) {
+                    o.add("name", com.google.gson.JsonParser.parseString(HorizonServer.json(entity.getCustomName())));
+                    o.addProperty("name_visible", entity.isCustomNameVisible());
+                }
+                float shadow = lastShadow;
+                if (shadow > 0.0F) o.addProperty("shadow", shadow);
                 list.add(o);
             }
             if (!list.isEmpty()) dims.add(level.dimension().identifier().toString(), list);
@@ -150,13 +159,82 @@ public final class HorizonEntityRender {
      * What the entity's renderer submits (EntityRenderDispatcher.submit without the camera's
      * translation: matrices are relative to the entity's position), at the tick's end.
      */
+    // ---- Items (ItemModelResolverMixin, ItemStackRenderStateMixin) ----------------------
+
+    /** Items render states hold for Horizon: the stack and how it is shown. */
+    private record Kept(net.minecraft.world.item.ItemStack stack, net.minecraft.world.item.ItemDisplayContext context) {}
+
+    private static final Map<Object, Kept> KEPT = java.util.Collections.synchronizedMap(new IdentityHashMap<>());
+    /** Where the entity being drawn puts its items. */
+    private static JsonArray items;
+
+    public static void keepItem(Object state, net.minecraft.world.item.ItemStack stack,
+                                net.minecraft.world.item.ItemDisplayContext context) {
+        if (!stack.isEmpty()) KEPT.put(state, new Kept(stack.copy(), context));
+    }
+
+    public static boolean keptItem(Object state) {
+        return KEPT.containsKey(state);
+    }
+
+    public static void forgetItem(Object state) {
+        KEPT.remove(state);
+    }
+
+    /** A kept item submitted: its stack, context and the pose then. False for other items. */
+    public static boolean submitItem(Object state, PoseStack pose) {
+        Kept kept = KEPT.get(state);
+        if (kept == null) return false;
+        if (items == null) return true;
+        String snbt = HorizonServer.snbt(kept.stack());
+        if (snbt == null) return true;
+        JsonObject o = new JsonObject();
+        o.addProperty("item", snbt);
+        o.addProperty("ctx", kept.context().getSerializedName());
+        JsonArray matrix = new JsonArray();
+        float[] m = new float[16];
+        pose.last().pose().get(m);
+        for (float f : m) matrix.add(f);
+        o.add("m", matrix);
+        items.add(o);
+        return true;
+    }
+
+    private static java.lang.reflect.Method shadowRadius;
+    /** The shadow radius of the entity drawn last (EntityRenderer.getShadowRadius). */
+    private static float lastShadow;
+
+    private static float shadow(EntityRenderer<?, ?> renderer, EntityRenderState state) {
+        try {
+            if (shadowRadius == null) {
+                shadowRadius = EntityRenderer.class.getDeclaredMethod("getShadowRadius", EntityRenderState.class);
+                shadowRadius.setAccessible(true);
+            }
+            return (Float) shadowRadius.invoke(renderer, state);
+        } catch (Throwable t) {
+            return 0.0F;
+        }
+    }
+
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private static JsonArray models(Entity entity) {
+    private static JsonArray models(Entity entity, JsonArray heldItems) {
+        items = heldItems;
+        lastShadow = 0.0F;
+        try {
+            return modelsOf(entity);
+        } finally {
+            items = null;
+        }
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static JsonArray modelsOf(Entity entity) {
         JsonArray out = new JsonArray();
         EntityRenderer renderer = renderer(entity.getType());
         if (renderer == null) return out;
         try {
             EntityRenderState state = renderer.createRenderState(entity, 1.0F);
+            lastShadow = shadow(renderer, state);
             PoseStack pose = new PoseStack();
             var offset = renderer.getRenderOffset(state);
             pose.translate(offset.x, offset.y, offset.z);
