@@ -1239,7 +1239,9 @@ impl Game<'_> {
                 });
                 self.lan_swing_back(host, conn, swung);
             }
+            S::Attack(p) if self.java_entity_attack(host, conn, p.id) => {}
             S::Attack(p) => self.guest_attack(host, conn, p.id),
+            S::Interact(p) if self.java_entity_interact(host, conn, &p) => {}
             S::Interact(p) => {
                 let before = host.hub.guests[gi].vehicle;
                 if self

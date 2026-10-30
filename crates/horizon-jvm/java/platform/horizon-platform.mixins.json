@@ -22,7 +22,9 @@
     "IntegratedServerMixin",
     "PacketListenerMixin",
     "GameListenerMixin",
-    "MirrorPacketContextMixin"
+    "MirrorPacketContextMixin",
+    "ServerChunkCacheMixin",
+    "PathNavigationRegionMixin"
   ],
   "injectors": {
     "defaultRequire": 1
@@ -35,6 +37,7 @@
     "ClientPlayerMixin",
     "RecipeBookComponentMixin",
     "TextInputManagerMixin",
-    "ClientPlayNetworkingMixin"
+    "ClientPlayNetworkingMixin",
+    "ItemModelResolverMixin"
   ]
 }

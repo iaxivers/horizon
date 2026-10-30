@@ -476,10 +476,21 @@ impl Game<'_> {
             return Vec::new();
         };
         let mut out = Vec::new();
-        if let Some(g) = host.hub.guests.iter().find(|g| g.uuid == owner && g.placed) {
-            let conn = g.conn;
+        let found = host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.uuid == owner && g.placed)
+            .map(|g| (g.conn, g.dimension.clone()));
+        if let Some((conn, dimension)) = found {
+            // A server mod's command (a Java mod's own, or /summon of a Java mod's entity), as
+            // the owner typing it: what it says goes to their chat.
+            if self.guest_server_mod_command(&mut host, conn, command.trim_start_matches('/')) {
+                self.lan = Some(host);
+                return vec![String::from("(run by a server mod)")];
+            }
             // Commands.performCommand runs in the player's level.
-            let (back, theirs) = (self.dim, super::Dim::from_id(&g.dimension));
+            let (back, theirs) = (self.dim, super::Dim::from_id(&dimension));
             let entered = theirs == back || self.enter_level(Some(&mut host), theirs).is_ok();
             if entered && let Some(swap) = self.enter_guest(&mut host, conn) {
                 let command = command.trim_start_matches('/').to_owned();

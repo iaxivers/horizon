@@ -781,3 +781,80 @@ pub fn export_facts(out: &std::path::Path) -> Result<Vec<String>, String> {
         .map(str::to_string)
         .collect())
 }
+
+/// Every mod entity type's id (`HorizonEntities.types`): `/summon` of one runs on the mods'
+/// server.
+pub fn entity_types() -> Result<Vec<String>, String> {
+    let types = with_server(|env, class| {
+        let types = env
+            .call_static_method(class, "entityTypes", "()[Ljava/lang/String;", &[])?
+            .l()?;
+        string_array(env, types)
+    })?;
+    Ok(types.unwrap_or_default())
+}
+
+/// The mods' entities of every level as JSON (`HorizonEntityRender.snapshot`): per dimension
+/// each one's id, type, position, box and the models its renderer submitted, and the model
+/// trees not given before. Call it after [`server_tick`].
+pub fn entities() -> Result<String, String> {
+    let json = with_server(|env, class| {
+        let json = env
+            .call_static_method(class, "entities", "()Ljava/lang/String;", &[])?
+            .l()?;
+        Ok(String::from(
+            env.get_string(&jni::objects::JString::from(json))?,
+        ))
+    })?;
+    Ok(json.unwrap_or_else(|| "{}".into()))
+}
+
+/// A player hit the mod entity with this id (`Player.attack` on the mods' server). False when
+/// no mod entity has it.
+pub fn attack_entity(uuid: &str, id: i32) -> Result<bool, String> {
+    let hit = with_server(|env, class| {
+        let uuid = env.new_string(uuid)?;
+        env.call_static_method(
+            class,
+            "attackEntity",
+            "(Ljava/lang/String;I)Z",
+            &[JValue::Object(&uuid), JValue::Int(id)],
+        )?
+        .z()
+    })?;
+    Ok(hit.unwrap_or(false))
+}
+
+/// A player used the mod entity with this id (`Player.interactOn`), at `point` (the world
+/// position looked at), with the hand (1: off hand) and the hotbar slot selected.
+pub fn interact_entity(
+    uuid: &str,
+    id: i32,
+    off_hand: bool,
+    point: [f64; 3],
+    selected: i32,
+) -> Result<UseResult, String> {
+    let result = with_server(|env, class| {
+        let uuid = env.new_string(uuid)?;
+        env.call_static_method(
+            class,
+            "interactEntity",
+            "(Ljava/lang/String;IIDDDI)I",
+            &[
+                JValue::Object(&uuid),
+                JValue::Int(id),
+                JValue::Int(i32::from(off_hand)),
+                JValue::Double(point[0]),
+                JValue::Double(point[1]),
+                JValue::Double(point[2]),
+                JValue::Int(selected),
+            ],
+        )?
+        .i()
+    })?;
+    Ok(match result.unwrap_or(0) {
+        1 => UseResult::Taken,
+        2 => UseResult::TakenSwing,
+        _ => UseResult::Pass,
+    })
+}

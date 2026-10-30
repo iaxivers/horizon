@@ -4,6 +4,8 @@
 # log's failures. Steps see C (horizon-ctl). Click at GUI pixels: '$C click-at X Y'.
 #   MODS=~/fd SCENE=pot   tools/java_bridge/screen_test.sh '$C click-at 141 187'
 #   MODS=~/toms SCENE=terminal tools/java_bridge/screen_test.sh '$C click-at 149 45'
+#   MODS=~/critters SCENE=entity tools/java_bridge/screen_test.sh '$C mouse left click'
+#   MODS=~/nat SCENE=entity ENTITY=naturalist:bear tools/java_bridge/screen_test.sh
 R=$(cd "$(dirname "$0")/../.." && pwd)
 : "${SCENE:=pot}" "${OUT:=/tmp}"
 # Java 25 (26.3's classes are version 69): JAVA_HOME if it is one, else the first installed.
@@ -34,6 +36,12 @@ case "$SCENE" in
     'q "setblock $((X+2)) $Y $Z toms_storage:inventory_connector"' \
     'q "setblock $((X+2)) $((Y+1)) $Z toms_storage:storage_terminal[facing=west,pos=down]"' \
     '$C look-at-block $((X+2)) $((Y+1)) $Z >/dev/null' '$C mouse right click >/dev/null' 'sleep 3' ;;
+  # Mods' entities: two of ENTITY (default the critter fixture: tools/java_bridge/fixture_mod.sh
+  # crittermod) summoned ahead, the player facing them; one standing still (NoAI) to hit.
+  entity) "$R/tools/java_bridge/around.sh" \
+    'q "summon ${ENTITY:-horizon_critters:critter} $((X+3)) $Y $((Z+2))"' \
+    'q "summon ${ENTITY:-horizon_critters:critter} $((X+2)).5 $Y $Z.5 {NoAI:1b}"' \
+    'q "tp @s ~ ~ ~ -90 25"' 'sleep 3' ;;
   none) ;;
 esac
 n=0; for step in "$@"; do eval "$step"; sleep 1; n=$((n+1)); $C screenshot "$S/s$n.png" >/dev/null; cp "$S/s$n.png" "$OUT/$SCENE-$n.png"; done

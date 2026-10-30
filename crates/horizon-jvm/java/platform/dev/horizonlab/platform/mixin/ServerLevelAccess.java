@@ -48,4 +48,8 @@ public interface ServerLevelAccess {
     @Mutable
     @Accessor("fluidTicks")
     void horizon$setFluidTicks(net.minecraft.world.ticks.LevelTicks<net.minecraft.world.level.material.Fluid> ticks);
+
+    @Mutable
+    @Accessor("chunkSource")
+    void horizon$setChunkSource(net.minecraft.server.level.ServerChunkCache source);
 }

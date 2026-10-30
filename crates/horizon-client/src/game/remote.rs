@@ -2691,6 +2691,9 @@ impl Game<'_> {
             C::CustomPayload(p) if p.channel == super::java_screen::CHANNEL => {
                 self.remote_java_screen(&p.data)
             }
+            C::CustomPayload(p) if p.channel == super::java_entities::CHANNEL => {
+                self.remote_java_entities(&p.data)
+            }
             C::MountScreenOpen(p) => self.remote_open_mount(p),
             C::RecipeBookAdd(p) => self.remote_recipe_book_add(p),
             C::RecipeBookRemove(p) => self.remote_recipe_book_remove(p),
@@ -4606,6 +4609,24 @@ impl Game<'_> {
             self.swing_arm();
             return true;
         }
+        // A Java mod's entity: the server's mods use it (Player.interactOn); this client has
+        // no copy of it to ask, so the click ends here.
+        if let Some((id, distance)) = self.java_entity_hit()
+            && self.mob_hit().is_none_or(|(_, d)| distance < d)
+            && self.before_block(distance)
+        {
+            if hand == Hand::Off {
+                return false;
+            }
+            self.send(S::Interact(play::Interact {
+                id,
+                hand: hand_id(hand),
+                location: self.java_entity_location(id, distance),
+                secondary: sneaking,
+            }));
+            self.swing_arm();
+            return true;
+        }
         if let Some((i, distance)) = self.mob_hit()
             && self.before_block(distance)
         {
@@ -5291,6 +5312,13 @@ impl Game<'_> {
             // VehicleEntity.hurtServer, ItemFrame and ArmorStand hurtServer,
             // a painting broken or an EndCrystal hurtServer: the server decides.
             self.send(S::Attack(play::Attack { id: hit.id }));
+            self.reset_attack_strength();
+        } else if let Some((id, distance)) = self.java_entity_hit()
+            && self.mob_hit().is_none_or(|(_, d)| distance < d)
+            && self.before_block(distance)
+        {
+            // A Java mod's entity: the server's mods attack it (Player.attack).
+            self.send(S::Attack(play::Attack { id }));
             self.reset_attack_strength();
         } else if let Some((i, distance)) = self.mob_hit()
             && self.before_block(distance)
