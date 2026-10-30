@@ -1077,6 +1077,9 @@ mod run {
                     horizon_jvm::events::Action::Tell { uuid, text } => {
                         self.tell_server_player(host.as_deref_mut(), &uuid, java_chat(&text));
                     }
+                    horizon_jvm::events::Action::Overlay { uuid, text } => {
+                        self.overlay_server_player(host.as_deref_mut(), &uuid, java_chat(&text));
+                    }
                     teleport @ horizon_jvm::events::Action::Teleport { .. } => {
                         if host.is_some() {
                             // The hub is out of `self.lan` (a connection's command): the
@@ -2318,6 +2321,36 @@ mod run {
         /// Sends a server mod's line to the player with this id: the
         /// window's own chat for the local player, a system message for a
         /// connection's. `host` is the hub when it is out of `self.lan`.
+        /// A line for one player's action bar (`SystemChat` with `overlay`); the window's own
+        /// player in-frame gets it in chat.
+        #[cfg(feature = "java-mods")]
+        fn overlay_server_player(&mut self, host: Option<&mut LanHost>, id: &str, line: Text) {
+            let local = self.options.execution_role.is_client()
+                && self.remote.is_none()
+                && self.player.is_some();
+            if local && self.player_uuid_string() == id {
+                self.add_mod_chat_line(line);
+                return;
+            }
+            let Some(host) = host.or(self.lan.as_mut()) else {
+                return;
+            };
+            let to = host
+                .hub
+                .guests
+                .iter()
+                .find(|g| g.placed && uuid_string(g.uuid) == id);
+            if let Some(conn) = to.map(|g| g.conn) {
+                host.hub.send_to(
+                    conn,
+                    &C::SystemChat(play::SystemChat {
+                        content: component_nbt(&line.component()),
+                        overlay: true,
+                    }),
+                );
+            }
+        }
+
         pub(in crate::game) fn tell_server_player(
             &mut self,
             host: Option<&mut LanHost>,

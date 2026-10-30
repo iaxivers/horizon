@@ -389,6 +389,11 @@ fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
                 fn_ptr: native_tell as *mut c_void,
             },
             NativeMethod {
+                name: "overlay".into(),
+                sig: "(Ljava/lang/String;Ljava/lang/String;)V".into(),
+                fn_ptr: native_overlay as *mut c_void,
+            },
+            NativeMethod {
                 name: "teleport".into(),
                 sig: "(Ljava/lang/String;Ljava/lang/String;DDDFF)V".into(),
                 fn_ptr: native_teleport as *mut c_void,
@@ -625,6 +630,17 @@ extern "system" fn native_log(mut env: JNIEnv, _class: JClass, text: JString) {
         if let Ok(text) = env.get_string(&text) {
             emit(&String::from(text));
         }
+    }));
+}
+
+/// `Natives.overlay(String uuid, String text)`.
+extern "system" fn native_overlay(mut env: JNIEnv, _class: JClass, uuid: JString, text: JString) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (Ok(uuid), Ok(text)) = (env.get_string(&uuid), env.get_string(&text)) else {
+            return;
+        };
+        let (uuid, text) = (String::from(uuid), String::from(text));
+        events::push(events::Action::Overlay { uuid, text });
     }));
 }
 

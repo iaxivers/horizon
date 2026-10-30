@@ -10,6 +10,9 @@ public final class Natives {
     /** A system message to one player, by {@code UUID.toString()}. */
     public static native void tell(String uuid, String text);
 
+    /** A line for one player's action bar (an overlay system message), as a JSON component. */
+    public static native void overlay(String uuid, String text);
+
     /** Moves a player (by UUID) to a dimension ("minecraft:the_nether"), position and rotation. */
     public static native void teleport(String uuid, String dimension, double x, double y, double z, float yaw, float pitch);
 

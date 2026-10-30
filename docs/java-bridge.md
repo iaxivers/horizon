@@ -114,6 +114,13 @@ saying something works.
 - `Player.isShiftKeyDown` follows the player's sneak key (bit 8 of `tick`'s per-player
   `permissions`): mods' sneak-clicks (Chunk Loaders' owner, wrenches).
 - `tools/java_bridge/java.sh` fails when javac does (it used to copy the last jars and go on).
+- A mod's block write made between ticks (a player's use: `useBlock`) is applied by Horizon
+  after the next tick starts; pending writes (`WRITTEN`) stay until Horizon's world shows them
+  (a block entity read as air in between was thrown away: a placed Chunk Loader lost its owner).
+- The headless client's `LocalPlayer` is set up on each use (`localPlayer`): position, box,
+  rotation, `input` (sneak) from the server player. A field it lacks shows as an NPE in a mod's
+  client code; Java's own errors (log4j) go to the game folder's `logs/latest.log`, not
+  Horizon's.
 - `Connection.isMemoryConnection()` is true for mirrored players while the headless client runs
   (as singleplayer's): mods skip remote-only work (config sync expecting a configuration phase).
 - Entities need more of a level than blocks: `getChunkSource()` (broadcasts, path regions:
@@ -243,9 +250,12 @@ Next (top failure of the pack, in order):
    the player went); block/fluid ticks and post-processing of generated chunks aren't
    carried; the Nether and End through TerraBlender untested; "flowering" leaves of BOP
    (an untinted overlay layer) draw grey patches (content conversion, not worldgen).
-2. Mods' key bindings with a client level: the client tick runs as each player but with no
-   `Minecraft.level` (mods that check it, Xaero's keys, still do nothing). No list of Java
-   mods' settings in Horizon's own menus yet (`/modconfig` is the way in).
+2. No client level: `Minecraft.level` is null. Chunk Loaders' screen opens (sneak-place or
+   place, then use) but its grid reads the client's level for the loaders it shows
+   (`ChunkLoadingCapability.get(ClientUtils.getWorld())`); mods' key handlers that check the
+   level (Xaero's keys) do nothing. Needs a mirrored `ClientLevel` per dimension (blocks from
+   Horizon, its constructor injections run: `HorizonHooks.constructed`) as `Minecraft.level`.
+   No list of Java mods' settings in Horizon's own menus yet (`/modconfig` is the way in).
 Then: NeoForge later.
 
 Nature's Compass searches (tested: right-click, pick a biome, Search; it samples and finds,
@@ -270,6 +280,14 @@ the chunks they reach loaded and ticking, as forced chunks (`Streaming::set_tick
 `/forceload`'s list), a level with only those ticking too. The ticket's levels are vanilla's:
 a radius-3 ticket entity-ticks 3x3 chunks, a forced chunk only itself. Gaps: load-only
 tickets (no simulation) don't load; a ticket at level 33 loads nothing.
+
+Block use has a client half too (`HorizonClient.useBlock`, mod blocks only, after the
+server's): Fabric's `UseBlockCallback`, the block's `useItemOn`/`useWithoutItem` with the level
+answering `isClientSide()`; what it would write to the world (blocks, entities, level events)
+is dropped as a client's prediction, the server's change being the one made. Messages a mod's
+client code gives its player (`LocalPlayer.sendSystemMessage`, `sendOverlayMessage`) go to the
+player's game, and overlay system messages (the server's too, dropped before) reach the action
+bar (`Natives.overlay`, `Action::Overlay`).
 
 Mod screens for players of a server: a dedicated server now runs Fabric with the headless client
 too (as a LAN host does), so its players' mod screens are drawn there and sent to their games

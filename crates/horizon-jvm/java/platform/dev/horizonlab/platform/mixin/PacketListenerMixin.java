@@ -37,8 +37,10 @@ public abstract class PacketListenerMixin {
         if (!HorizonServer.isMirror(self)) return;
         ci.cancel();
         if (packet instanceof ClientboundSystemChatPacket chat && self instanceof ServerGamePacketListenerImpl game
-                && game.player != null && !chat.overlay()) {
-            Natives.tell(game.player.getStringUUID(), HorizonServer.chatJson(chat.content()));
+                && game.player != null) {
+            // Chat, or the action bar's line (overlay).
+            if (chat.overlay()) Natives.overlay(game.player.getStringUUID(), HorizonServer.chatJson(chat.content()));
+            else Natives.tell(game.player.getStringUUID(), HorizonServer.chatJson(chat.content()));
             return;
         }
         if (packet instanceof ClientboundOpenScreenPacket open && self instanceof ServerGamePacketListenerImpl game

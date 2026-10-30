@@ -384,6 +384,11 @@ public final class HorizonClient {
         local.xRotO = player.getXRot();
         local.yHeadRot = player.getYHeadRot();
         local.yBodyRot = player.yBodyRot;
+        // Its keys (LocalPlayer.isShiftKeyDown reads them): the sneak key as the server
+        // player has it.
+        if (local.input == null) local.input = new net.minecraft.client.player.ClientInput();
+        local.input.keyPresses = new net.minecraft.world.entity.player.Input(
+                false, false, false, false, false, player.isShiftKeyDown(), false);
         return local;
     }
 
@@ -568,6 +573,63 @@ public final class HorizonClient {
     private static void shut(java.util.UUID id, net.minecraft.server.level.ServerPlayer player) throws Throwable {
         if (!CLIENT_ONLY.contains(id)) return;
         as(player, () -> setScreen(null));
+    }
+
+    /** A client player's own message (LocalPlayerMessagesMixin): to its player's game. */
+    public static boolean clientMessage(net.minecraft.client.player.LocalPlayer local,
+                                        net.minecraft.network.chat.Component message, boolean overlay) {
+        var player = SERVER_PLAYERS.get(local);
+        if (player == null) return false;
+        String json = HorizonServer.chatJson(message);
+        if (overlay) Natives.overlay(player.getStringUUID(), json);
+        else Natives.tell(player.getStringUUID(), json);
+        return true;
+    }
+
+    /**
+     * The client half of using a mod's block (MultiPlayerGameMode.performUseItemOn, after the
+     * server's): Fabric's UseBlockCallback, then the block's useItemOn and, passed to an empty
+     * hand, useWithoutItem, on the player's client player with the level answering
+     * isClientSide() true. What it opens is the player's screen; what it would change in the
+     * world is the client's prediction, dropped (HorizonServer.setBlock): the server's is
+     * made. The item's own useOn is left out (a placement predicted on the shared inventory).
+     */
+    public static void useBlock(net.minecraft.server.level.ServerPlayer player,
+                                net.minecraft.world.InteractionHand hand,
+                                net.minecraft.world.phys.BlockHitResult hit) {
+        if (minecraft == null || minecraft.font == null) return;
+        try {
+            as(player, () -> {
+                var local = minecraft.player;
+                var level = local.level();
+                HorizonServer.clientHalf = Thread.currentThread();
+                try {
+                    var event = net.fabricmc.fabric.api.event.player.UseBlockCallback.EVENT;
+                    Object[] listeners = HorizonServer.listeners(event);
+                    for (Object listener : listeners != null ? listeners : new Object[] {event.invoker()}) {
+                        var r = ((net.fabricmc.fabric.api.event.player.UseBlockCallback) listener).interact(local, level, hand, hit);
+                        if (r != net.minecraft.world.InteractionResult.PASS) return;
+                    }
+                    var state = level.getBlockState(hit.getBlockPos());
+                    var stack = local.getItemInHand(hand);
+                    boolean secondary = local.isSecondaryUseActive() && !(local.getMainHandItem().isEmpty() && local.getOffhandItem().isEmpty());
+                    if (secondary) return;
+                    var r = state.useItemOn(stack, level, local, hand, hit);
+                    if (r.consumesAction()) return;
+                    if (r instanceof net.minecraft.world.InteractionResult.TryEmptyHandInteraction
+                            && hand == net.minecraft.world.InteractionHand.MAIN_HAND) {
+                        state.useWithoutItem(level, local, hit);
+                    }
+                } finally {
+                    HorizonServer.clientHalf = null;
+                }
+            });
+        } catch (Throwable t) {
+            Throwable root = t;
+            while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+            Natives.log("Horizon's client: the client side of using a block failed: " + root);
+            for (StackTraceElement frame : root.getStackTrace()) Natives.log("    at " + frame);
+        }
     }
 
     /**

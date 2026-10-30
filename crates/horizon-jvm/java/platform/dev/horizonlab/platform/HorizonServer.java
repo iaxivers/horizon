@@ -814,9 +814,21 @@ public final class HorizonServer {
         }
 
         closeForwarded();
-        // Horizon made last tick's writes: its world answers again.
+        currentTick = tick;
+        // Horizon made the writes it has applied: its world answers again there. A write made
+        // between ticks (a block placed by a player's use) is applied after this tick, so it
+        // stays until Horizon's world shows it (a few ticks at most: one Horizon refused goes).
         synchronized (WRITTEN) {
-            WRITTEN.clear();
+            for (var levelWrites : WRITTEN.entrySet()) {
+                String dimension = dimensionOf(levelWrites.getKey());
+                levelWrites.getValue().entrySet().removeIf(w -> {
+                    BlockPos pos = BlockPos.of(w.getKey());
+                    BlockState now = parseState(Natives.blockState(dimension, pos.getX(), pos.getY(), pos.getZ()));
+                    return now == w.getValue() || WRITTEN_AT.getOrDefault(w.getKey(), 0L) < tick - 3;
+                });
+            }
+            WRITTEN.values().removeIf(Map::isEmpty);
+            WRITTEN_AT.keySet().removeIf(k -> WRITTEN.values().stream().noneMatch(m -> m.containsKey(k)));
         }
 
         // Mirror the players: those still on, as Horizon gives them.
@@ -1417,6 +1429,9 @@ public final class HorizonServer {
     private static final Map<String, BlockState> STATES = new ConcurrentHashMap<>();
     /** Per level: what mods set since Horizon last had the world, so they read their writes. */
     private static final Map<ServerLevel, Map<Long, BlockState>> WRITTEN = new IdentityHashMap<>();
+    /** The tick each pending write was made in (writes Horizon refuses go after a few). */
+    private static final Map<Long, Long> WRITTEN_AT = new java.util.HashMap<>();
+    private static volatile long currentTick;
 
     private static String dimensionOf(Level level) {
         return level.dimension().identifier().toString();
@@ -1453,8 +1468,12 @@ public final class HorizonServer {
     /** A mod's Level.setBlock on a mirrored level: Horizon makes it; reads see it at once. */
     public static boolean setBlock(Level level, BlockPos pos, BlockState state) {
         if (level.isOutsideBuildHeight(pos)) return false;
+        // A client half's prediction (a door opened on both sides): the server's change is the
+        // one made, as a client's predicted blocks give way to the server's.
+        if (clientHalf == Thread.currentThread()) return true;
         synchronized (WRITTEN) {
             WRITTEN.computeIfAbsent((ServerLevel) level, l -> new java.util.HashMap<>()).put(pos.asLong(), state);
+            WRITTEN_AT.put(pos.asLong(), currentTick);
         }
         Natives.setBlock(dimensionOf(level), pos.getX(), pos.getY(), pos.getZ(),
                 net.minecraft.commands.arguments.blocks.BlockStateParser.serialize(state));
@@ -1466,6 +1485,7 @@ public final class HorizonServer {
      * live in the level (HorizonEntities); vanilla's others, not yet.
      */
     public static boolean addEntity(Level level, net.minecraft.world.entity.Entity entity) {
+        if (clientHalf == Thread.currentThread()) return false;
         if (HorizonEntities.modded(entity.getType())) return HorizonEntities.add((ServerLevel) level, entity);
         if (entity instanceof net.minecraft.world.entity.item.ItemEntity item && !item.getItem().isEmpty()) {
             var motion = item.getDeltaMovement();
@@ -1509,6 +1529,12 @@ public final class HorizonServer {
         fire("ServerPlayerGameMode.useItemOn", () -> result[0] =
                 player.gameMode.useItemOn(player, level, player.getItemInHand(interaction), interaction, hit));
         syncInventories();
+        // The client half (MultiPlayerGameMode.useItemOn) of using a mod's block: it opens its
+        // screen there (Chunk Loaders' chunk grid). After the server's, as useItem's.
+        if (client && HorizonBlockEntities.modded(blockState(level, hit.getBlockPos()))) {
+            HorizonClient.useBlock(player, interaction, hit);
+            syncInventories();
+        }
         if (!result[0].consumesAction() && !(result[0] instanceof net.minecraft.world.InteractionResult.Fail)) return 0;
         return result[0] instanceof net.minecraft.world.InteractionResult.Success success && success.shouldSwing() ? 2 : 1;
     }

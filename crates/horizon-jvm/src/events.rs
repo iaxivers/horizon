@@ -85,6 +85,9 @@ pub enum Action {
     /// `ServerPlayer.sendSystemMessage`: a line to one player, as a JSON component (the
     /// game resolves its translations: Java's server side has vanilla's English only).
     Tell { uuid: String, text: String },
+    /// `ServerPlayer.sendSystemMessage(_, true)`, a client's `sendOverlayMessage`: a line for one
+    /// player's action bar, a JSON component as `Tell`'s.
+    Overlay { uuid: String, text: String },
     /// `PlayerList.broadcastSystemMessage`: a line to every player, and the server log; a
     /// JSON component, as `Tell`'s.
     Broadcast { text: String },
