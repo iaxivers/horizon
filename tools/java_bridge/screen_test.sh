@@ -43,10 +43,10 @@ case "$SCENE" in
     'q "setblock $((X+2)) $((Y+1)) $Z toms_storage:storage_terminal[facing=west,pos=down]"' \
     '$C look-at-block $((X+2)) $((Y+1)) $Z >/dev/null' '$C mouse right click >/dev/null' 'sleep 3' ;;
   # Mods' entities: two of ENTITY (default the critter fixture: tools/java_bridge/fixture_mod.sh
-  # crittermod) summoned ahead, the player facing them; one standing still (NoAI) to hit.
+  # crittermod) summoned ahead, the player facing them; one standing still (NoAI) under the crosshair.
   entity) "$R/tools/java_bridge/around.sh" \
-    'q "summon ${ENTITY:-horizon_critters:critter} $((X+3)) $Y $((Z+2))"' \
-    'q "summon ${ENTITY:-horizon_critters:critter} $((X+2)).5 $Y $Z.5 {NoAI:1b}"' \
+    'q "summon ${ENTITY:-horizon_critters:critter} ~3 ~ ~2"' \
+    'q "summon ${ENTITY:-horizon_critters:critter} ~2 ~ ~ {NoAI:1b}"' \
     'q "tp @s ~ ~ ~ -90 25"' 'sleep 3' ;;
   none) ;;
 esac
