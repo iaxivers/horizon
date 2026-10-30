@@ -64,4 +64,53 @@ public abstract class ServerLevelMixin {
     private void horizon$dataStorage(CallbackInfoReturnable<net.minecraft.world.level.storage.SavedDataStorage> cir) {
         if (HorizonServer.isMirror(this)) cir.setReturnValue(dev.horizonlab.platform.HorizonSavedData.level((ServerLevel) (Object) this));
     }
+
+    /**
+     * The world's difficulty here: Horizon's world has no chunk inhabited time to add, and the
+     * mirror no world clocks (getOverworldClockTime reads the server's ClockManager): its game
+     * time stands for the day's.
+     */
+    @Inject(method = "getCurrentDifficultyAt", at = @At("HEAD"), cancellable = true)
+    private void horizon$difficulty(net.minecraft.core.BlockPos pos, CallbackInfoReturnable<net.minecraft.world.DifficultyInstance> cir) {
+        if (!HorizonServer.isMirror(this)) return;
+        ServerLevel level = (ServerLevel) (Object) this;
+        cir.setReturnValue(new net.minecraft.world.DifficultyInstance(level.getDifficulty(), level.getGameTime(), 0L,
+                level.getMoonBrightness(pos)));
+    }
+
+    /** /summon's add: the entity and its riders, unless one of them is there already. */
+    @Inject(method = "tryAddFreshEntityWithPassengers", at = @At("HEAD"), cancellable = true)
+    private void horizon$addWithPassengers(net.minecraft.world.entity.Entity entity, CallbackInfoReturnable<Boolean> cir) {
+        if (!HorizonServer.isMirror(this)) return;
+        ServerLevel level = (ServerLevel) (Object) this;
+        boolean there = entity.getSelfAndPassengers().anyMatch(e -> level.getEntity(e.getUUID()) != null);
+        if (!there) level.addFreshEntityWithPassengers(entity);
+        cir.setReturnValue(!there);
+    }
+
+    private static final net.minecraft.world.level.border.WorldBorder HORIZON$BORDER = new net.minecraft.world.level.border.WorldBorder();
+
+    /**
+     * The world border mods' entities collide with: vanilla's default one (the mirror keeps no
+     * saved data, where the level's is). Horizon keeps the real border for its players.
+     */
+    @Inject(method = "getWorldBorder", at = @At("HEAD"), cancellable = true)
+    private void horizon$border(CallbackInfoReturnable<net.minecraft.world.level.border.WorldBorder> cir) {
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(HORIZON$BORDER);
+    }
+
+    /**
+     * Entities tick wherever Horizon has the world (the level's entity manager, which a mirror
+     * has none of, would say per chunk).
+     */
+    @Inject(method = "isPositionEntityTicking", at = @At("HEAD"), cancellable = true)
+    private void horizon$entityTicking(net.minecraft.core.BlockPos pos, CallbackInfoReturnable<Boolean> cir) {
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(((ServerLevel) (Object) this).isLoaded(pos));
+    }
+
+    @Inject(method = {"areEntitiesLoaded", "areEntitiesActuallyLoadedAndTicking", "canSpawnEntitiesInChunk"},
+            at = @At("HEAD"), cancellable = true)
+    private void horizon$entitiesLoaded(CallbackInfoReturnable<Boolean> cir) {
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(true);
+    }
 }

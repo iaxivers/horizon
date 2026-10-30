@@ -4,6 +4,8 @@
 # log's failures. Steps see C (horizon-ctl). Click at GUI pixels: '$C click-at X Y'.
 #   MODS=~/fd SCENE=pot   tools/java_bridge/screen_test.sh '$C click-at 141 187'
 #   MODS=~/toms SCENE=terminal tools/java_bridge/screen_test.sh '$C click-at 149 45'
+#   MODS=~/critters SCENE=entity tools/java_bridge/screen_test.sh '$C mouse left click'
+#   MODS=~/nat SCENE=entity ENTITY=naturalist:bear tools/java_bridge/screen_test.sh
 #   JAVA_ONLY=1 ... : after a Java-only change (no game rebuild; see java.sh)
 R=$(cd "$(dirname "$0")/../.." && pwd)
 : "${SCENE:=pot}" "${OUT:=/tmp}"
@@ -51,6 +53,12 @@ case "$SCENE" in
     'q "setblock $((X+3)) $((Y+1)) $((Z-2)) biomesoplenty:blue_hydrangea"' \
     'q "setblock $((X+3)) $((Y+1)) $((Z+2)) farmersdelight:cooking_pot"' \
     '$C look-at-block $((X+3)) $Y $Z >/dev/null' 'sleep 2' ;;
+  # Mods' entities: two of ENTITY (default the critter fixture: tools/java_bridge/fixture_mod.sh
+  # crittermod) summoned ahead, the player facing them; one standing still (NoAI) under the crosshair.
+  entity) "$R/tools/java_bridge/around.sh" \
+    'q "summon ${ENTITY:-horizon_critters:critter} ~3 ~ ~2"' \
+    'q "summon ${ENTITY:-horizon_critters:critter} ~2 ~ ~ {NoAI:1b}"' \
+    'q "tp @s ~ ~ ~ -90 25"' 'sleep 3' ;;
   none) ;;
 esac
 n=0; for step in "$@"; do eval "$step"; sleep 1; n=$((n+1)); $C screenshot "$S/s$n.png" >/dev/null; cp "$S/s$n.png" "$OUT/$SCENE-$n.png"; done

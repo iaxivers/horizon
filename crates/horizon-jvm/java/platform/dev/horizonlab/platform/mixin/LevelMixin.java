@@ -96,4 +96,10 @@ public abstract class LevelMixin {
     private void horizon$setBlock(BlockPos pos, BlockState state, int flags, int recursion, CallbackInfoReturnable<Boolean> cir) {
         if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.setBlock((Level) (Object) this, pos, state));
     }
+
+    /** Entities collide with Horizon's blocks: the level is its own chunk for collisions. */
+    @Inject(method = "getChunkForCollisions", at = @At("HEAD"), cancellable = true)
+    private void horizon$collisions(int x, int z, CallbackInfoReturnable<net.minecraft.world.level.BlockGetter> cir) {
+        if (HorizonServer.isMirror(this)) cir.setReturnValue((Level) (Object) this);
+    }
 }

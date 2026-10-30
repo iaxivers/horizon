@@ -59,6 +59,20 @@ public abstract class ServerChunkCacheMixin {
     }
 
     /** The mirror holds no chunk objects: none is loaded, to a mod that would read one. */
+    @Inject(method = "getChunk(IILnet/minecraft/world/level/chunk/status/ChunkStatus;Z)Lnet/minecraft/world/level/chunk/ChunkAccess;",
+            at = @At("HEAD"), cancellable = true)
+    private void horizon$chunk(int x, int z, net.minecraft.world.level.chunk.status.ChunkStatus status, boolean load,
+                               CallbackInfoReturnable<net.minecraft.world.level.chunk.ChunkAccess> cir) {
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(null);
+    }
+
+    /** Horizon ticks what it has (ServerChunkCache.isPositionTicking: entities' own checks). */
+    @Inject(method = "isPositionTicking", at = @At("HEAD"), cancellable = true)
+    private void horizon$ticking(long chunk, CallbackInfoReturnable<Boolean> cir) {
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(true);
+    }
+
+
     @Inject(method = "getChunkNow", at = @At("HEAD"), cancellable = true)
     private void horizon$chunkNow(int x, int z, CallbackInfoReturnable<net.minecraft.world.level.chunk.LevelChunk> cir) {
         if (HorizonServer.isMirror(this)) cir.setReturnValue(null);
@@ -71,7 +85,7 @@ public abstract class ServerChunkCacheMixin {
 
     // Entities are Horizon's (it tracks them and sends their packets).
     @Inject(method = {"sendToTrackingPlayers", "sendToTrackingPlayersAndSelf", "sendToTrackingPlayersFiltered",
-            "addEntity", "removeEntity", "move"}, at = @At("HEAD"), cancellable = true)
+            "addEntity", "removeEntity", "move", "onLightUpdate"}, at = @At("HEAD"), cancellable = true, require = 0)
     private void horizon$entities(CallbackInfo ci) {
         if (HorizonServer.isMirror(this)) ci.cancel();
     }

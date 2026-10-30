@@ -4,6 +4,11 @@ Minecraft: Java Edition 26.3 rewritten in Rust (wgpu). Vanilla is the specificat
 feature. Read [CONTRIBUTING.md](CONTRIBUTING.md) once; this page tells you where things are.
 Feature → files → harness for the most-changed areas: [docs/architecture.md](docs/architecture.md).
 
+**This fork's branch `java-bridge`: Fabric Java mods running inside Horizon.** Working on the
+bridge (crates `horizon-jvm`, `game/java_*.rs`, `game/server_mods.rs`)? Read
+[docs/java-bridge.md](docs/java-bridge.md) first: where everything is, the tick flow, 26.3 facts
+that cost time, and `tools/java_bridge/` to test headless with screenshots.
+
 ## Rules that bite
 
 - **Never commit Mojang's files**: game jars, assets, decompiled source, prepared resources (`.local/`).

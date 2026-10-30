@@ -214,7 +214,8 @@ pub struct Part {
     pub children: Vec<Part>,
 }
 impl Part {
-    fn parse(name: &str, v: &Value) -> Self {
+    /// A part tree from `entity-models.json`'s form (VanillaEntityModelExporter's).
+    pub fn parse(name: &str, v: &Value) -> Self {
         let pose: Vec<f32> = v["pose"]
             .as_array()
             .into_iter()

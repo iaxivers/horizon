@@ -23,6 +23,7 @@ saying something works.
 | Screen drawing | `HorizonGraphics.java` records `GuiGraphicsExtractor` calls as JSON ops (blit, sprite, fill, gradient, text, item, decorations, tooltips, pose, `typing`) |
 | Mods' messages | `HorizonLoop.java`: server→client payloads queued and delivered after `syncMenus` (`flush`); client→server run at once. Mixins: `PlayNetworkingMixin` (server side), `ClientPlayNetworkingMixin` |
 | Mixins | `java/platform/horizon-platform.mixins.json` (`client` list: headless-client only) |
+| Mods' entities | `HorizonEntities.java` (live per level, ticked as `tickNonPassenger`, saved in `horizon-java/entities/`, attack/interact), `HorizonEntityRender.java` (the mod's renderer submits into a recording collector: part trees once, poses + matrix + texture per tick), mixins `ServerChunkCacheMixin` (a chunk source holding nothing), `PathNavigationRegionMixin`, `ItemModelResolverMixin`; Rust: `game/java_entities.rs` (draw, aim), `server_mods.rs` (`send_java_entities`, `java_entity_attack`/`interact`, `/summon`) |
 | Content conversion | `crates/horizon-port-pack` (`oracle.rs`, `carry.rs`), `HorizonContent.java` (facts, creative tabs), `crates/horizon-client/src/mod_content.rs` (content root) |
 | Game side (Rust) | `crates/horizon-client/src/game/java_mods.rs` (start, content, creative), `server_mods.rs` (actions from Java, menus, block entities, random ticks, `JAVA_STATES`), `java_screen.rs` (draws frames, sends input, key maps) |
 
@@ -37,6 +38,12 @@ saying something works.
    `server_mods.rs` (`apply_java_actions`).
 3. Horizon's world changes of Java mod blocks reach Java through `world::SET_HOOK` →
    `events::block_entities` (block entities exist from placement).
+4. Mods' entities: `HorizonEntities.tick` in the server tick; after it `events::entities`
+   gives a JSON snapshot (`HorizonEntityRender.snapshot`), which `send_java_entities` sends
+   each connection (its level, within 160 blocks) on `horizon:java_entities` with the model
+   trees it lacks. The client keeps two ticks and lerps positions, matrices and poses.
+   Attack/Interact packets with ids from `0x7fff0000` go to Java (`Player.attack`,
+   `Player.interactOn`).
 
 ## 26.3 facts that cost time
 
@@ -66,6 +73,23 @@ saying something works.
   side gives a mod's translation key (its Language is vanilla's English only).
 - `Connection.isMemoryConnection()` is true for mirrored players while the headless client runs
   (as singleplayer's): mods skip remote-only work (config sync expecting a configuration phase).
+- Entities need more of a level than blocks: `getChunkSource()` (broadcasts, path regions:
+  a mirror `ServerChunkCache`), `getWaypointManager()` (removal), `server.debugSubscribers()`
+  (`checkInsideBlocks`), `environmentAttributes()` (moon brightness, difficulty: the
+  dimension layer only), `getWorldBorder()` (saved data: a default border),
+  `isPositionEntityTicking` (entity manager). `getOverworldClockTime()` needs the server's
+  `ClockManager`, which the mirror lacks: use `getGameTime()`.
+- Vanilla's entity ids count from 1 (`Entity.ENTITY_COUNTER`, not the level): mirrored
+  entities get the bridge's ids (`setId`) so they never clash with Horizon's.
+- A mirrored player isn't ticked: `detectEquipmentUpdates` (the held sword's damage) and its
+  attack strength must be set before `Player.attack`.
+- Renderers submit through `SubmitNodeCollector`; every model submit ends in the abstract
+  `submitModel(model, state, pose, renderType, light, overlay, tint, UvMapping, outline)`,
+  and `ModelFeatureRenderer` calls `model.setupAnim(state)` only then. A `Proxy` collector
+  runs the defaults with `InvocationHandler.invokeDefault`.
+- The texture of a `RenderType`: `state` (RenderSetup) → `textures` → `Sampler0` → `location()`.
+- Commands through `horizon-ctl command` run as the owner's console; server mods' commands
+  (and `/summon` of a mod entity) now go to the mods first (`owner_console_command`).
 
 ## Build and test
 
@@ -100,7 +124,12 @@ Java's lines start `[java]`. The first start of a mod set builds its content (~2
 `.horizon-cache/java-content`; bump `FORMAT` in `content.rs` when the content format changes).
 
 Test mods (Modrinth, 26.3 Fabric): Farmer's Delight Refabricated (blocks, cooking pot screen,
-recipe book), Tom's Simple Storage (block entities, terminal screen, client↔server messages).
+recipe book), Tom's Simple Storage (block entities, terminal screen, client↔server messages),
+Naturalist (mobs with ModelPart models, Fabric API only). The repo's own critter mod
+(`java/fixtures/crittermod`: goals, a walking model, a spawn egg) builds with
+`tools/java_bridge/fixture_mod.sh crittermod ~/critters/critters.jar`; then
+`MODS=~/critters SCENE=entity tools/java_bridge/screen_test.sh '$C mouse left click'`
+(`ENTITY=naturalist:bear` for another mod's).
 
 ## Status
 
@@ -108,6 +137,12 @@ Works (tested): content (blocks with their own states, items, food, crops, light
 logic and block entities, Fabric and vanilla menus in Horizon's window, mods' own screens with
 clicks, keys, typing, scroll, tooltips, recipe book; creative tabs with Fabric pages; mod
 commands; mods' messages between their two sides; vanilla block entities shared with mods.
+
+Mod entities (tested with the critter fixture, server thread): `/summon` and spawn eggs make
+them, they tick in Java (goals, paths, physics against Horizon's blocks), their own renderers'
+models are drawn by Horizon (parts posed each tick, textures from the mods' `textures/entity/`),
+players hit them (red flash, knockback, death, removal) and use them, and they are saved and
+come back with their chunks.
 
 A 40-jar pack (124 Fabric ids: BOP, Waystones, Farmer's Delight, Tom's Storage, JEI, Jade,
 Carry On, Nature's Compass, Xaero's Minimap, Balm, Architectury, Cloth, YACL, Kotlin...; list in
@@ -126,8 +161,16 @@ Next (top failure of the pack, in order):
    lib finishes loading there: "Registry is not frozen yet!" at SERVER_STARTING).
 3. Mod worldgen: TerraBlender/BOP biomes don't generate (Horizon's generator is vanilla's).
 4. Mod chunk loaders: chunk tickets from Java are dropped.
-Then: mod entities (mobs, their models), mod screens for LAN/remote players (frames go to the
-window's own player only), NeoForge later.
+Then: mod screens for LAN/remote players (frames go to the window's own player only), NeoForge
+later.
+
+Known gaps of mod entities: no natural spawning (NaturalSpawner doesn't run on the mirror),
+Horizon's selectors (`@e[type=mod:x]`, `/kill`) don't see them, nor do vanilla mobs (a mod's
+wolf won't hunt Horizon's sheep); held/worn items, name tags, shadows, fire, leashes and
+sprite-atlas models (`UvMapping`) aren't drawn; GeckoLib-style renderers that don't submit
+ModelPart models draw nothing; sounds and particles from them are silent; one tick of
+snapshot per server tick as JSON (fine for tens of mobs); entities save every 10 s (not at
+quit); in-frame single player is untested.
 
 Known gaps: extended (Fabric) menus share the server's menu with the screen (no client copy);
 the recipe book lists every recipe (not the player's unlocked ones); sounds from Java's client

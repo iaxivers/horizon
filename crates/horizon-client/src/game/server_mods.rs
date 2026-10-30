@@ -155,6 +155,17 @@ impl Game<'_> {
         false
     }
     pub(super) fn java_screen_input(&mut self, _host: &mut LanHost, _conn: u32, _data: &[u8]) {}
+    pub(super) fn java_entity_attack(&mut self, _host: &mut LanHost, _conn: u32, _id: i32) -> bool {
+        false
+    }
+    pub(super) fn java_entity_interact(
+        &mut self,
+        _host: &mut LanHost,
+        _conn: u32,
+        _p: &horizon_protocol::packets::play::Interact,
+    ) -> bool {
+        false
+    }
 }
 
 #[cfg(feature = "mods")]
@@ -231,6 +242,35 @@ mod run {
         #[cfg(not(feature = "java-mods"))]
         {
             false
+        }
+    }
+
+    /// The Java mods' entity types (`/summon` of one goes to their server), once the bridge
+    /// has its registries.
+    fn java_entity_types() -> &'static std::collections::HashSet<String> {
+        static NONE: std::sync::LazyLock<std::collections::HashSet<String>> =
+            std::sync::LazyLock::new(Default::default);
+        #[cfg(feature = "java-mods")]
+        {
+            static TYPES: std::sync::OnceLock<std::collections::HashSet<String>> =
+                std::sync::OnceLock::new();
+            if let Some(types) = TYPES.get() {
+                return types;
+            }
+            if !horizon_jvm::events::enabled() {
+                return &NONE;
+            }
+            match horizon_jvm::events::entity_types() {
+                Ok(types) => TYPES.get_or_init(|| types.into_iter().collect()),
+                Err(e) => {
+                    log::warn!("Java mods: their entity types could not be read: {e}");
+                    &NONE
+                }
+            }
+        }
+        #[cfg(not(feature = "java-mods"))]
+        {
+            &NONE
         }
     }
 
@@ -822,6 +862,123 @@ mod run {
                 log::warn!("Java mods: a tick failed: {e}");
             }
             self.apply_java_actions(None);
+            self.send_java_entities();
+        }
+
+        /// The mods' entities after their tick (`HorizonEntityRender.snapshot`), to each
+        /// player whose level they are in, within 160 blocks of it, on
+        /// java_entities::CHANNEL, with the model trees its game has not had; the window's own
+        /// player in-frame gets them straight.
+        #[cfg(feature = "java-mods")]
+        fn send_java_entities(&mut self) {
+            use std::collections::{HashMap, HashSet};
+            /// Every model tree Java gave, by key, and per connection those sent to it.
+            struct Sent {
+                trees: HashMap<String, Value>,
+                to: HashMap<u32, HashSet<String>>,
+                /// Connections last sent some entities (an empty list clears theirs).
+                showing: HashSet<u32>,
+            }
+            static SENT: std::sync::Mutex<Option<Sent>> = std::sync::Mutex::new(None);
+            if java_entity_types().is_empty() {
+                return;
+            }
+            let json = match self.with_java_world(horizon_jvm::events::entities) {
+                Ok(json) => json,
+                Err(e) => {
+                    log::warn!("Java mods: their entities could not be read: {e}");
+                    return;
+                }
+            };
+            let Ok(snapshot) = serde_json::from_str::<Value>(&json) else {
+                return;
+            };
+            let mut sent = SENT.lock().unwrap_or_else(|e| e.into_inner());
+            let sent = sent.get_or_insert_with(|| Sent {
+                trees: HashMap::new(),
+                to: HashMap::new(),
+                showing: HashSet::new(),
+            });
+            if let Some(trees) = snapshot.get("models").and_then(Value::as_object) {
+                for (key, tree) in trees {
+                    sent.trees.insert(key.clone(), tree.clone());
+                }
+            }
+            let near = |dimension: &str, at: [f64; 3]| -> Vec<Value> {
+                snapshot
+                    .get("dims")
+                    .and_then(|d| d.get(dimension))
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|e| {
+                        let f = |k: &str| e.get(k).and_then(Value::as_f64).unwrap_or(0.0);
+                        let d = [f("x") - at[0], f("y") - at[1], f("z") - at[2]];
+                        d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= 160.0 * 160.0
+                    })
+                    .cloned()
+                    .collect()
+            };
+            let payload = |sent: &mut Sent, who: u32, entities: Vec<Value>| -> Vec<u8> {
+                let have = sent.to.entry(who).or_default();
+                let mut trees = serde_json::Map::new();
+                for e in &entities {
+                    for m in e
+                        .get("models")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        let Some(key) = m.get("key").and_then(Value::as_str) else {
+                            continue;
+                        };
+                        if have.insert(key.to_owned())
+                            && let Some(tree) = sent.trees.get(key)
+                        {
+                            trees.insert(key.to_owned(), tree.clone());
+                        }
+                    }
+                }
+                json!({"entities": entities, "models": trees})
+                    .to_string()
+                    .into_bytes()
+            };
+            let Some(host) = self.lan.as_mut() else {
+                // In-frame: the window's own player.
+                if self.serving.is_none() && self.remote.is_none() {
+                    let at = self
+                        .player
+                        .as_ref()
+                        .map_or([0.0; 3], |p| [p.position.x, p.position.y, p.position.z]);
+                    let entities = near(self.dim.id(), at);
+                    let data = payload(sent, u32::MAX, entities);
+                    self.remote_java_entities(&data);
+                }
+                return;
+            };
+            // Connections gone: what they had goes with them (a new one starts empty).
+            let conns: HashSet<u32> = host.hub.guests.iter().map(|g| g.conn).collect();
+            sent.to.retain(|c, _| conns.contains(c) || *c == u32::MAX);
+            sent.showing.retain(|c| conns.contains(c));
+            for g in &host.hub.guests {
+                let entities = near(&g.dimension, g.position);
+                if entities.is_empty() && !sent.showing.contains(&g.conn) {
+                    continue;
+                }
+                if entities.is_empty() {
+                    sent.showing.remove(&g.conn);
+                } else {
+                    sent.showing.insert(g.conn);
+                }
+                let data = payload(sent, g.conn, entities);
+                host.hub.send_to(
+                    g.conn,
+                    &C::CustomPayload(horizon_protocol::packets::configuration::CustomPayload {
+                        channel: crate::game::java_entities::CHANNEL.into(),
+                        data,
+                    }),
+                );
+            }
         }
 
         /// Sends what the Java mods asked since the last call: system messages to a player or
@@ -1259,7 +1416,13 @@ mod run {
             let Some(java) = java_commands() else {
                 return false;
             };
-            if !java.names.contains(name) {
+            // /summon of a mod's entity type: the mods' server makes it (vanilla's command).
+            let summon = name == "summon"
+                && line
+                    .split_whitespace()
+                    .nth(1)
+                    .is_some_and(|kind| java_entity_types().contains(kind));
+            if !java.names.contains(name) && !summon {
                 return false;
             }
             #[cfg(feature = "java-mods")]
@@ -1605,6 +1768,88 @@ mod run {
                 if let Err(e) = clicked {
                     log::warn!("Java mods: a click in a mod's menu failed: {e}");
                 }
+                self.apply_java_actions(Some(host));
+                true
+            }
+            #[cfg(not(feature = "java-mods"))]
+            {
+                let _ = (host, conn, p);
+                false
+            }
+        }
+
+        /// A connection's player hit a Java mod's entity (`Attack` with one of the bridge's
+        /// ids): the mods' server runs `Player.attack`. False for Horizon's entities.
+        pub(in crate::game) fn java_entity_attack(
+            &mut self,
+            host: &mut LanHost,
+            conn: u32,
+            id: i32,
+        ) -> bool {
+            #[cfg(feature = "java-mods")]
+            {
+                if id < crate::game::java_entities::FIRST_ID || !java_mods_on() {
+                    return false;
+                }
+                let Some(g) = host.hub.guest(conn) else {
+                    return false;
+                };
+                if g.spectator() {
+                    return true;
+                }
+                let uuid = uuid_string(g.uuid);
+                match self.with_java_world(|| horizon_jvm::events::attack_entity(&uuid, id)) {
+                    Ok(hit) => {
+                        self.apply_java_actions(Some(host));
+                        hit
+                    }
+                    Err(e) => {
+                        log::warn!("Java mods: an attack failed: {e}");
+                        true
+                    }
+                }
+            }
+            #[cfg(not(feature = "java-mods"))]
+            {
+                let _ = (host, conn, id);
+                false
+            }
+        }
+
+        /// A connection's player used a Java mod's entity (`Interact`): the mods' server runs
+        /// `Player.interactOn`. False for Horizon's entities.
+        pub(in crate::game) fn java_entity_interact(
+            &mut self,
+            host: &mut LanHost,
+            conn: u32,
+            p: &play::Interact,
+        ) -> bool {
+            #[cfg(feature = "java-mods")]
+            {
+                if p.id < crate::game::java_entities::FIRST_ID || !java_mods_on() {
+                    return false;
+                }
+                let Some(g) = host.hub.guest(conn) else {
+                    return false;
+                };
+                if g.spectator() {
+                    return true;
+                }
+                let uuid = uuid_string(g.uuid);
+                let selected = g.selected as i32;
+                let used = self.with_java_world(|| {
+                    horizon_jvm::events::interact_entity(
+                        &uuid,
+                        p.id,
+                        p.hand == 1,
+                        p.location,
+                        selected,
+                    )
+                });
+                if let Err(e) = &used {
+                    log::warn!("Java mods: using an entity failed: {e}");
+                }
+                // The player's game swung its arm already.
                 self.apply_java_actions(Some(host));
                 true
             }

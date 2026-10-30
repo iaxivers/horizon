@@ -393,12 +393,14 @@ impl HudAtlas {
         for folder in folders {
             walk(&textures.join(folder), &mut files);
         }
-        // Mods' GUI textures (Java mods' screens draw them), under `<namespace>:gui/...`.
+        // Mods' GUI textures (Java mods' screens draw them), under `<namespace>:gui/...`, and
+        // their entity textures (Java mods' entities: game/java_entities.rs), `<namespace>:entity/...`.
         let assets = root.join("assets");
         if full && folders.contains(&"gui") {
             for entry in fs::read_dir(&assets).into_iter().flatten().flatten() {
                 if entry.file_name() != "minecraft" {
                     walk(&entry.path().join("textures/gui"), &mut files);
+                    walk(&entry.path().join("textures/entity"), &mut files);
                 }
             }
         }

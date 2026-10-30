@@ -218,6 +218,14 @@ public final class HorizonServer {
             Natives.log("Horizon's server mirror has no tick rate: " + e);
         }
         emptyCollections(server, server.getClass());
+        // Its debug subscribers (entities ask whether anyone watches their debug data): none.
+        try {
+            java.lang.reflect.Field debug = MinecraftServer.class.getDeclaredField("debugSubscribers");
+            debug.setAccessible(true);
+            debug.set(server, new net.minecraft.util.debug.ServerDebugSubscribers(server));
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            Natives.log("Horizon's server mirror has no debug subscribers: " + e);
+        }
         // The registries and resources HorizonData loaded: vanilla's data pack and the mods'.
         HorizonData.Loaded data = HorizonData.loaded;
         if (data != null) {
@@ -299,6 +307,26 @@ public final class HorizonServer {
             sl.horizon$setCustomSpawners(new ArrayList<>());
             sl.horizon$setBlockTicks(new HorizonTicks<>());
             sl.horizon$setFluidTicks(new HorizonTicks<>());
+            // A chunk source holding no chunks (ServerChunkCacheMixin): what entities send their
+            // trackers goes nowhere, their paths read the level.
+            var chunks = allocate(net.minecraft.server.level.ServerChunkCache.class);
+            try {
+                java.lang.reflect.Field owner = net.minecraft.server.level.ServerChunkCache.class.getDeclaredField("level");
+                owner.setAccessible(true);
+                owner.set(chunks, level);
+            } catch (ReflectiveOperationException e) {
+                Natives.log("Java mods: a level's chunk source has no level: " + e);
+            }
+            sl.horizon$setChunkSource(chunks);
+            // Its waypoint manager (living entities leave it when removed; Horizon has the
+            // locator bar's waypoints).
+            try {
+                java.lang.reflect.Field waypoints = ServerLevel.class.getDeclaredField("waypointManager");
+                waypoints.setAccessible(true);
+                waypoints.set(level, new net.minecraft.server.waypoints.ServerWaypointManager());
+            } catch (ReflectiveOperationException e) {
+                Natives.log("Java mods: a level has no waypoint manager: " + e);
+            }
             access.horizon$setSoundSeedGenerator(net.minecraft.util.RandomSource.create());
             access.horizon$setBlockEntityTickers(new ArrayList<>());
             access.horizon$setPendingBlockEntityTickers(new ArrayList<>());
@@ -310,19 +338,6 @@ public final class HorizonServer {
             // (Fabric's Transfer API's lookup caches): empty ones of their own.
             emptyCollections(level, ServerLevel.class);
             ((ServerLevelAccess) level).horizon$setPlayers(players);
-            // Its chunk source, as bare as the level (ServerChunkCacheMixin answers for it):
-            // mods sync their block entities through it (getChunkSource().blockChanged).
-            try {
-                net.minecraft.server.level.ServerChunkCache chunks = allocate(net.minecraft.server.level.ServerChunkCache.class);
-                java.lang.reflect.Field owner = net.minecraft.server.level.ServerChunkCache.class.getDeclaredField("level");
-                owner.setAccessible(true);
-                owner.set(chunks, level);
-                java.lang.reflect.Field source = ServerLevel.class.getDeclaredField("chunkSource");
-                source.setAccessible(true);
-                source.set(level, chunks);
-            } catch (ReflectiveOperationException e) {
-                Natives.log("Java mods: a level's chunk source could not be set: " + e);
-            }
             HorizonData.Loaded data = HorizonData.loaded;
             if (data != null) {
                 net.minecraft.core.RegistryAccess.Frozen registries = data.registries().compositeAccess();
@@ -341,6 +356,22 @@ public final class HorizonServer {
                 var stem = registries.lookupOrThrow(Registries.LEVEL_STEM)
                         .get(ResourceKey.create(Registries.LEVEL_STEM, k.identifier()));
                 stem.ifPresent(s -> access.horizon$setDimensionType(s.value().type()));
+                // Its environment attributes (what mobs read of the sky and the moon:
+                // EnvironmentAttributeSystem.addDefaultLayers): the dimension's own values. The
+                // mirror has no world clocks for the time-based layers, nor biomes for theirs.
+                stem.ifPresent(s -> {
+                    try {
+                        var builder = net.minecraft.world.attribute.EnvironmentAttributeSystem.builder();
+                        java.lang.reflect.Method layer = net.minecraft.world.attribute.EnvironmentAttributeSystem.class
+                                .getDeclaredMethod("addDimensionLayer", builder.getClass(),
+                                        net.minecraft.world.level.dimension.DimensionType.class);
+                        layer.setAccessible(true);
+                        layer.invoke(null, builder, s.value().type().value());
+                        level.setEnvironmentAttributes(builder.build());
+                    } catch (ReflectiveOperationException | RuntimeException e) {
+                        Natives.log("Java mods: a level has no environment attributes: " + e);
+                    }
+                });
             }
             return level;
         });
@@ -687,6 +718,7 @@ public final class HorizonServer {
         if (world != null && !world.isEmpty()) worldDir = java.nio.file.Paths.get(world).toAbsolutePath();
         HorizonBlockEntities.world(worldDir);
         HorizonSavedData.world(server, worldDir);
+        HorizonEntities.world(worldDir);
         // The server's tick count follows Horizon's (mods time their tasks with it).
         ((MinecraftServerAccess) server).horizon$setTickCount((int) tick);
         if (!started) {
@@ -853,6 +885,8 @@ public final class HorizonServer {
         }
         HorizonBlockEntities.tick();
         HorizonSavedData.tick();
+        // Mods' entities, as ServerLevel.tick's entity loop runs them.
+        HorizonEntities.tick();
         // ServerPlayer.tick and doTick: a menu no longer valid closes, and the open menu sends
         // its changes (a mod's menu keeps its block working while it is watched, and syncs its
         // own data there: Tom's Storage's terminal its item list).
@@ -1347,8 +1381,12 @@ public final class HorizonServer {
         return true;
     }
 
-    /** A mod spawned an entity in a mirrored level: items become Horizon's; the rest, not yet. */
+    /**
+     * A mod spawned an entity in a mirrored level: items become Horizon's, mods' own entities
+     * live in the level (HorizonEntities); vanilla's others, not yet.
+     */
     public static boolean addEntity(Level level, net.minecraft.world.entity.Entity entity) {
+        if (HorizonEntities.modded(entity.getType())) return HorizonEntities.add((ServerLevel) level, entity);
         if (entity instanceof net.minecraft.world.entity.item.ItemEntity item && !item.getItem().isEmpty()) {
             var motion = item.getDeltaMovement();
             Natives.dropItem(dimensionOf(level), item.getX(), item.getY(), item.getZ(),
@@ -1421,13 +1459,17 @@ public final class HorizonServer {
 
     /**
      * ServerLevel.getEntities on a mirrored level (it has no entity manager): the level's
-     * mirrored players, so a mod's checks for what stands in a block's way see them.
+     * mirrored players and mods' entities, so a mod's checks for what stands in a block's way
+     * see them, and mods' mobs find their targets.
      */
     public static net.minecraft.world.level.entity.LevelEntityGetter<net.minecraft.world.entity.Entity> entities(ServerLevel level) {
         return new net.minecraft.world.level.entity.LevelEntityGetter<>() {
             private List<net.minecraft.world.entity.Entity> all() {
                 List<ServerPlayer> players = LEVEL_PLAYERS.get(level);
-                return players == null ? List.of() : new ArrayList<>(players);
+                List<net.minecraft.world.entity.Entity> all = new ArrayList<>();
+                if (players != null) all.addAll(players);
+                all.addAll(HorizonEntities.of(level));
+                return all;
             }
 
             @Override
@@ -1607,6 +1649,42 @@ public final class HorizonServer {
     /** After mods ran: each slot a mod changed (given, taken, counted down) goes to Horizon. */
     /** Each player's food as Horizon last gave it, to send back what mods change. */
     private static final Map<UUID, float[]> FOOD_SEEN = new ConcurrentHashMap<>();
+
+    // ---- Mods' entities (HorizonEntities) ------------------------------------------------
+
+    /** Every mod entity type's id (Horizon's /summon hands these to the mods' server). */
+    public static String[] entityTypes() {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        return HorizonEntities.types();
+    }
+
+    /**
+     * The mods' entities of every level, with their looks when the headless client draws them
+     * (HorizonEntityRender's snapshot), as JSON.
+     */
+    public static String entities() {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        if (server == null) return "{}";
+        if (client) return HorizonEntityRender.snapshot();
+        return "{}";
+    }
+
+    /** A player hit a mod's entity: true when it was one (HorizonEntities.attack). */
+    public static boolean attackEntity(String uuid, int id) {
+        boolean hit = HorizonEntities.attack(uuid, id);
+        syncInventories();
+        return hit;
+    }
+
+    /** A player used a mod's entity (HorizonEntities.interact): 0 nothing, 1 taken, 2 swing. */
+    public static int interactEntity(String uuid, int id, int hand, double x, double y, double z, int selected) {
+        return HorizonEntities.interact(uuid, id, hand, x, y, z, selected);
+    }
+
+    /** What a call into the mods leaves for Horizon: slots, menus, messages (syncInventories). */
+    static void afterCall() {
+        syncInventories();
+    }
 
     private static void syncInventories() {
         HorizonBlockEntities.flushVanilla();

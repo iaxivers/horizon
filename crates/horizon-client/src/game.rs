@@ -78,6 +78,7 @@ mod integrated;
 mod item_draw;
 mod item_particles;
 #[cfg(feature = "java-mods")]
+mod java_entities;
 mod java_mods;
 mod java_screen;
 mod jukebox;
@@ -1786,6 +1787,8 @@ struct Game<'a> {
     recipe_ui: recipe_book::RecipeUi,
     /// The open window's Java mod screen, as its last frame drew it (game/java_screen.rs).
     java_screen: Option<java_screen::JavaScreen>,
+    /// Java mods' entities the server last sent (game/java_entities.rs).
+    java_entities: java_entities::JavaEntities,
     /// The horse inventory (game/mount_menu.rs).
     mount_menu: mount_menu::MountMenu,
     /// The player's fishing hook.
@@ -8106,6 +8109,7 @@ impl Game<'_> {
         self.ominous_item_spawner_geometry(camera, alpha, &mut out);
         // Mobs and their projectiles (a span each).
         self.mob_geometry(camera, alpha, &mut out);
+        self.java_entity_geometry(camera, alpha, &mut out);
         // In first person only a shader pack's shadow pass draws the player.
         self.mark_player(out.len(), self.camera_type.first_person());
         self.player_model_geometry(camera, self.clock.camera_fraction(), &mut out);
@@ -14132,6 +14136,7 @@ impl<'a> Game<'a> {
             spill: Default::default(),
             recipe_ui: Default::default(),
             java_screen: None,
+            java_entities: Default::default(),
             mount_menu: Default::default(),
             hook: None,
             remote_hooks: Vec::new(),

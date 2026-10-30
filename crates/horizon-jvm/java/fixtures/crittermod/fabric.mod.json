@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "horizon_critters",
+  "version": "1.0.0",
+  "name": "Horizon Critters",
+  "description": "A small mob of its own (goals, a model with walking legs, a spawn egg): a check of the Java mod bridge's entities.",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["dev.horizonlab.crittermod.CritterMod"],
+    "client": ["dev.horizonlab.crittermod.CritterClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.20",
+    "minecraft": "26.3",
+    "fabric-api": "*"
+  }
+}
