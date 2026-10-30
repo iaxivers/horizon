@@ -21,6 +21,65 @@ pub trait Blocks {
     fn block_entity(&self, _dimension: &str, _x: i32, _y: i32, _z: i32) -> Option<String> {
         None
     }
+    /// The blocks of chunk `cx cz` from `min_y` up `height` blocks, at once: `out[i]` (`i` =
+    /// `((y - min_y) * 16 + z) * 16 + x`) is an index into the returned palette of states
+    /// (`minecraft:oak_log[axis=y]`). None where the chunk isn't loaded.
+    fn column(
+        &self,
+        _dimension: &str,
+        _cx: i32,
+        _cz: i32,
+        _min_y: i32,
+        _out: &mut [i32],
+    ) -> Option<Vec<String>> {
+        None
+    }
+    /// The biomes of chunk `cx cz` as [`Blocks::column`] gives its blocks, one a quart (4x4x4
+    /// blocks; `i` = `((qy - min_y / 4) * 4 + qz) * 4 + qx`), with a palette of biome ids.
+    fn column_biomes(
+        &self,
+        _dimension: &str,
+        _cx: i32,
+        _cz: i32,
+        _min_y: i32,
+        _out: &mut [i32],
+    ) -> Option<Vec<String>> {
+        None
+    }
+}
+
+/// Counts the views lent ([`with_blocks`]): what Java read of one may not hold in the next.
+static EPOCH: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// The number of the view lent last (Java's chunk copies are good for one view only).
+pub(crate) fn epoch() -> i64 {
+    EPOCH.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// [`Blocks::column`] of this thread's view; None outside one.
+pub(crate) fn column(
+    dimension: &str,
+    cx: i32,
+    cz: i32,
+    min_y: i32,
+    out: &mut [i32],
+) -> Option<Vec<String>> {
+    // SAFETY: a view in VIEW is alive (with_blocks).
+    VIEW.get()
+        .and_then(|view| unsafe { (*view).column(dimension, cx, cz, min_y, out) })
+}
+
+/// [`Blocks::column_biomes`] of this thread's view; None outside one.
+pub(crate) fn column_biomes(
+    dimension: &str,
+    cx: i32,
+    cz: i32,
+    min_y: i32,
+    out: &mut [i32],
+) -> Option<Vec<String>> {
+    // SAFETY: a view in VIEW is alive (with_blocks).
+    VIEW.get()
+        .and_then(|view| unsafe { (*view).column_biomes(dimension, cx, cz, min_y, out) })
 }
 
 type View = *const (dyn Blocks + 'static);
@@ -42,6 +101,7 @@ pub fn with_blocks<R>(blocks: &dyn Blocks, f: impl FnOnce() -> R) -> R {
     // SAFETY: the pointer only lives in VIEW until `_reset` drops, before `blocks` can.
     let view: View = unsafe { std::mem::transmute(view) };
     let _reset = Reset(VIEW.replace(Some(view)));
+    EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     f()
 }
 

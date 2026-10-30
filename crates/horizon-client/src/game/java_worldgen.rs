@@ -24,7 +24,7 @@ pub(super) struct JavaTerrain {
     /// The world's folder (where the mods' saved data is, which their worldgen set-up reads).
     world: std::path::PathBuf,
     /// Whether the mods generate this dimension, asked once (the first chunk waits for Java).
-    modded: OnceLock<bool>,
+    modded: Arc<OnceLock<bool>>,
     registry: &'static BlockRegistry,
     biomes: Arc<Biomes>,
 }
@@ -69,7 +69,7 @@ impl JavaTerrain {
             seed,
             structures,
             world: world.to_path_buf(),
-            modded: OnceLock::new(),
+            modded: Arc::new(OnceLock::new()),
             registry,
             biomes,
         })
@@ -90,7 +90,15 @@ impl JavaTerrain {
                 self.structures,
                 &self.world,
             ) {
-                Ok(modded) => modded,
+                Ok(true) => {
+                    // /locate biome and maps of places not generated yet ask the mods too.
+                    self.inner.set_biome_oracle(Arc::new(JavaBiomes {
+                        dimension: self.dimension.clone(),
+                        biomes: self.biomes.clone(),
+                    }));
+                    true
+                }
+                Ok(false) => false,
                 Err(e) => {
                     log::warn!("Java mods' worldgen: {}: {e}", self.dimension);
                     false
@@ -126,9 +134,17 @@ impl ChunkGenerator for JavaTerrain {
         self.inner.worker()
     }
 
-    /// Far terrain is Horizon's: the mods change biomes and features, rarely the land's shape.
+    /// Far terrain is Horizon's (the mods change biomes and features, rarely the land's
+    /// shape), with the mods' biomes once they generate the dimension.
     fn lod_sampler(self: Arc<Self>) -> Box<dyn LodSampler> {
-        self.inner.clone().lod_sampler()
+        Box::new(JavaLod {
+            inner: self.inner.clone().lod_sampler(),
+            modded: self.modded.clone(),
+            oracle: JavaBiomes {
+                dimension: self.dimension.clone(),
+                biomes: self.biomes.clone(),
+            },
+        })
     }
 
     fn lod_surface(
@@ -241,5 +257,175 @@ impl ChunkGenerator for JavaTerrain {
                 Chunk::empty(x, z)
             }
         }
+    }
+}
+
+/// A dimension's biomes as the mods' biome source gives them (`HorizonWorldgen.biomes`).
+struct JavaBiomes {
+    dimension: Arc<str>,
+    biomes: Arc<Biomes>,
+}
+
+impl JavaBiomes {
+    /// Horizon's biome table ids of the mods' biomes at block positions (None: not theirs).
+    fn ids(&self, blocks: &[[i32; 3]]) -> Option<Vec<u16>> {
+        let quarts: Vec<[i32; 3]> = blocks.iter().map(|b| b.map(|v| v >> 2)).collect();
+        let names = horizon_jvm::events::worldgen_biomes(&self.dimension, &quarts).ok()??;
+        Some(
+            names
+                .iter()
+                .map(|n| n.as_deref().map_or(0, |n| self.biomes.id(n)))
+                .collect(),
+        )
+    }
+}
+
+impl horizon_client::vanillagen::BiomeOracle for JavaBiomes {
+    fn noise_biomes(&self, quarts: &[[i32; 3]]) -> Option<Vec<Option<String>>> {
+        horizon_jvm::events::worldgen_biomes(&self.dimension, quarts)
+            .ok()
+            .flatten()
+    }
+
+    fn find_closest_biome(
+        &self,
+        search: &horizon_world::worldgen::generator::BiomeSearch<'_>,
+    ) -> Option<Option<(String, [i32; 3])>> {
+        let possible = horizon_jvm::events::worldgen_possible_biomes(&self.dimension)
+            .ok()
+            .flatten()?;
+        let names: Vec<String> = possible
+            .into_iter()
+            .filter(|n| (search.allowed)(n))
+            .collect();
+        if names.is_empty() {
+            return Some(None);
+        }
+        horizon_jvm::events::worldgen_find_biome(
+            &self.dimension,
+            &names,
+            search.origin,
+            search.radius,
+            search.horizontal,
+            search.vertical,
+        )
+        .ok()
+        .flatten()
+    }
+}
+
+/// Far terrain of a dimension the mods may generate: Horizon's columns, with each column's
+/// biome (its colours) the mods' at its surface once they generate it.
+struct JavaLod {
+    inner: Box<dyn LodSampler>,
+    modded: Arc<OnceLock<bool>>,
+    oracle: JavaBiomes,
+}
+
+impl JavaLod {
+    fn modded(&self) -> bool {
+        self.modded.get() == Some(&true)
+    }
+
+    /// Sets each column's biome to the mods' at `(x, surface, z)`.
+    fn remap(&self, columns: &mut [&mut horizon_client::lod::Column], at: &[(i32, i32)]) {
+        let blocks: Vec<[i32; 3]> = columns
+            .iter()
+            .zip(at)
+            .map(|(c, &(x, z))| [x, c.surface.map_or(64, |s| s.height - 1), z])
+            .collect();
+        let Some(ids) = self.oracle.ids(&blocks) else {
+            return;
+        };
+        for (column, id) in columns.iter_mut().zip(ids) {
+            if let Some(surface) = column.surface.as_mut() {
+                surface.biome = id;
+            }
+            for span in &mut column.spans {
+                span.biome = id;
+            }
+        }
+    }
+
+    fn remap_one(
+        &self,
+        mut column: horizon_client::lod::Column,
+        x: i32,
+        z: i32,
+    ) -> horizon_client::lod::Column {
+        if self.modded() {
+            self.remap(&mut [&mut column], &[(x, z)]);
+        }
+        column
+    }
+}
+
+impl LodSampler for JavaLod {
+    fn fork(&self) -> Option<Box<dyn LodSampler>> {
+        Some(Box::new(JavaLod {
+            inner: self.inner.fork()?,
+            modded: self.modded.clone(),
+            oracle: JavaBiomes {
+                dimension: self.oracle.dimension.clone(),
+                biomes: self.oracle.biomes.clone(),
+            },
+        }))
+    }
+
+    fn request_detail(&mut self, chunks: &[(i32, i32)], center: [i32; 2]) {
+        self.inner.request_detail(chunks, center);
+    }
+
+    fn drain_details(&mut self) -> Vec<horizon_client::streaming::LodDetail> {
+        let mut details = self.inner.drain_details();
+        if self.modded() {
+            for ((cx, cz), columns) in &mut details {
+                let mut owned = (**columns).clone();
+                let at: Vec<(i32, i32)> = (0..256)
+                    .map(|i| (*cx * 16 + (i & 15), *cz * 16 + (i >> 4)))
+                    .collect();
+                let mut refs: Vec<&mut horizon_client::lod::Column> = owned.iter_mut().collect();
+                self.remap(&mut refs, &at);
+                *columns = Arc::new(owned);
+            }
+        }
+        details
+    }
+
+    fn sample(&mut self, x: i32, z: i32) -> Option<horizon_client::lod::Surface> {
+        self.column(x, z).surface
+    }
+
+    fn column(&mut self, x: i32, z: i32) -> horizon_client::lod::Column {
+        let column = self.inner.column(x, z);
+        self.remap_one(column, x, z)
+    }
+
+    fn reduced_column(&mut self, x: i32, z: i32, width: i32) -> horizon_client::lod::Column {
+        let column = self.inner.reduced_column(x, z, width);
+        self.remap_one(column, x + width / 2, z + width / 2)
+    }
+
+    fn grid(
+        &mut self,
+        x: i32,
+        z: i32,
+        stride: i32,
+        side: usize,
+    ) -> Vec<horizon_client::lod::Column> {
+        let mut columns = self.inner.grid(x, z, stride, side);
+        if self.modded() {
+            let at: Vec<(i32, i32)> = (0..columns.len())
+                .map(|i| {
+                    (
+                        x + (i % side) as i32 * stride + stride / 2,
+                        z + (i / side) as i32 * stride + stride / 2,
+                    )
+                })
+                .collect();
+            let mut refs: Vec<&mut horizon_client::lod::Column> = columns.iter_mut().collect();
+            self.remap(&mut refs, &at);
+        }
+        columns
     }
 }

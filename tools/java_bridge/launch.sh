@@ -16,6 +16,7 @@ S=$(mktemp -d /tmp/hz-bridge.XXXX)
 mkdir -p "$S/mods-java" "$S/home" "$S/lh" "$S/data" "$S/conf"
 cp "$MODS"/*.jar "$S/mods-java/"
 [ -n "$OPTS" ] && cp "$OPTS" "$S/options.txt"
+[ -n "$GRAPHICS" ] && cp "$GRAPHICS" "$S/horizon-graphics.txt"
 echo "$S" > /tmp/hz-bridge-scratch
 # A display for the offscreen renderer when there is none.
 if [ -z "$DISPLAY" ]; then

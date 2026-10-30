@@ -58,12 +58,13 @@ public abstract class ServerChunkCacheMixin {
         if (HorizonServer.isMirror(this)) cir.setReturnValue(horizon$level().hasChunk(x, z));
     }
 
-    /** The mirror holds no chunk objects: none is loaded, to a mod that would read one. */
+    /** A copy of Horizon's chunk, for the call (HorizonChunks); null where none is loaded. */
     @Inject(method = "getChunk(IILnet/minecraft/world/level/chunk/status/ChunkStatus;Z)Lnet/minecraft/world/level/chunk/ChunkAccess;",
             at = @At("HEAD"), cancellable = true)
     private void horizon$chunk(int x, int z, net.minecraft.world.level.chunk.status.ChunkStatus status, boolean load,
                                CallbackInfoReturnable<net.minecraft.world.level.chunk.ChunkAccess> cir) {
-        if (HorizonServer.isMirror(this)) cir.setReturnValue(null);
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(dev.horizonlab.platform.HorizonChunks.chunk(
+                (net.minecraft.server.level.ServerLevel) horizon$level(), x, z));
     }
 
     /** Horizon ticks what it has (ServerChunkCache.isPositionTicking: entities' own checks). */
@@ -75,7 +76,8 @@ public abstract class ServerChunkCacheMixin {
 
     @Inject(method = "getChunkNow", at = @At("HEAD"), cancellable = true)
     private void horizon$chunkNow(int x, int z, CallbackInfoReturnable<net.minecraft.world.level.chunk.LevelChunk> cir) {
-        if (HorizonServer.isMirror(this)) cir.setReturnValue(null);
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(dev.horizonlab.platform.HorizonChunks.chunk(
+                (net.minecraft.server.level.ServerLevel) horizon$level(), x, z));
     }
 
     @Inject(method = "getLoadedChunksCount", at = @At("HEAD"), cancellable = true)

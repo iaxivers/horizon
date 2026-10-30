@@ -101,6 +101,16 @@ pub(super) fn java_creative(out: &Path) {
     let cache = std::env::current_dir()
         .unwrap_or_default()
         .join(".horizon-cache/java-content");
+    // The mods' block tints, for the mesher (BOP's flowering leaves take the foliage colour).
+    if let Some(tints) = horizon_jvm::content::tints(&cache) {
+        match std::fs::read_to_string(&tints)
+            .map_err(|e| e.to_string())
+            .and_then(|t| horizon_client::mesher::set_mod_tints(&t).map_err(|e| e.to_string()))
+        {
+            Ok(n) => log::info!("Java mods: tints of {n} block(s)"),
+            Err(e) => log::warn!("Java mods: their block tints were not read: {e}"),
+        }
+    }
     let Some(exported) = horizon_jvm::content::creative(&cache) else {
         return;
     };

@@ -271,6 +271,54 @@ public final class HorizonWorldgen {
         if (live != null && live.token() == token) d.live.remove(key, live);
     }
 
+    // ---- Biomes where nothing is generated yet ------------------------------------------
+
+    /**
+     * The mods' biomes at quart positions (x y z triples) of a dimension they generate:
+     * BiomeSource.getNoiseBiome, for Horizon's far terrain and maps. Null if they don't.
+     */
+    public static String[] biomes(String dimension, int[] quarts) {
+        Thread.currentThread().setContextClassLoader(HorizonWorldgen.class.getClassLoader());
+        Dimension d = DIMENSIONS.get(dimension);
+        if (d == null) return null;
+        var resolver = d.level.uncachedBiomeResolver();
+        String[] out = new String[quarts.length / 3];
+        for (int i = 0; i < out.length; i++) {
+            Holder<Biome> biome = resolver.getNoiseBiome(quarts[3 * i], quarts[3 * i + 1], quarts[3 * i + 2]);
+            out[i] = biome.unwrapKey().map(k -> k.identifier().toString()).orElse(null);
+        }
+        return out;
+    }
+
+    /** The biomes a dimension the mods generate can have (BiomeSource.possibleBiomes); null if they don't. */
+    public static String[] possibleBiomes(String dimension) {
+        Dimension d = DIMENSIONS.get(dimension);
+        if (d == null) return null;
+        return d.generator.getBiomeSource().possibleBiomes().stream()
+                .flatMap(h -> h.unwrapKey().stream()).map(k -> k.identifier().toString()).sorted()
+                .toArray(String[]::new);
+    }
+
+    /**
+     * /locate biome in a dimension the mods generate: BiomeSource.findClosestBiome3d with
+     * the mods' source, for any of {@code names}. {name, x, y, z} or an empty array (none);
+     * null if the mods don't generate it.
+     */
+    public static String[] findBiome(String dimension, String[] names, int x, int y, int z, int radius,
+                                     int horizontal, int vertical) {
+        Thread.currentThread().setContextClassLoader(HorizonWorldgen.class.getClassLoader());
+        Dimension d = DIMENSIONS.get(dimension);
+        if (d == null) return null;
+        Set<String> wanted = Set.of(names);
+        var found = d.generator.getBiomeSource().findClosestBiome3d(new BlockPos(x, y, z), radius, horizontal, vertical,
+                h -> h.unwrapKey().map(k -> wanted.contains(k.identifier().toString())).orElse(false),
+                d.level.getChunkSource().randomState(), d.level);
+        if (found == null) return new String[0];
+        BlockPos at = found.getFirst();
+        String name = found.getSecond().unwrapKey().map(k -> k.identifier().toString()).orElse("");
+        return new String[] {name, Integer.toString(at.getX()), Integer.toString(at.getY()), Integer.toString(at.getZ())};
+    }
+
     // ---- Steps ------------------------------------------------------------------------------
 
     private static ProtoChunk fresh(Dimension d, int x, int z) {

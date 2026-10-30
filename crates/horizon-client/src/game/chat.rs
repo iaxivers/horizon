@@ -353,6 +353,16 @@ impl Game<'_> {
         reg.enchantments = list("data/minecraft/enchantment");
         reg.structures = list("data/minecraft/worldgen/structure");
         reg.biomes = list("data/minecraft/worldgen/biome");
+        // Mods' biomes (Java mods' worldgen), as Horizon's biome table has them.
+        reg.biomes.extend(
+            self.res
+                .biomes()
+                .list
+                .iter()
+                .filter(|b| !b.name.starts_with("minecraft:"))
+                .map(|b| b.name.clone()),
+        );
+        reg.biomes.sort();
         reg.clocks = list("data/minecraft/world_clock");
         reg.dimensions = vec![
             "minecraft:overworld".into(),
@@ -406,6 +416,15 @@ impl Game<'_> {
             }
         }
         let reg = &mut self.ui.registries;
+        // The export is vanilla's: mods' biomes join its biome ids (Java mods' worldgen).
+        if let Some(biomes) = reg.by_registry.get_mut("minecraft:worldgen/biome") {
+            for name in &reg.biomes {
+                if !biomes.ids.contains(name) {
+                    biomes.ids.push(name.clone());
+                }
+            }
+            biomes.ids.sort();
+        }
         reg.timelines = self.ui.timelines.keys().cloned().collect();
         reg.time_markers = self
             .ui

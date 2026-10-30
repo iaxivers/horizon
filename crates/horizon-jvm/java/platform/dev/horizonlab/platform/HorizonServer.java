@@ -366,6 +366,14 @@ public final class HorizonServer {
                 net.minecraft.core.RegistryAccess.Frozen registries = data.registries().compositeAccess();
                 access.horizon$setRegistryAccess(registries);
                 access.horizon$setDamageSources(new net.minecraft.world.damagesource.DamageSources(registries));
+                // Its chunks' paletted containers (HorizonChunks' copies, HorizonWorldgen's protos).
+                try {
+                    java.lang.reflect.Field containers = Level.class.getDeclaredField("palettedContainerFactory");
+                    containers.setAccessible(true);
+                    containers.set(level, net.minecraft.world.level.chunk.PalettedContainerFactory.create(registries));
+                } catch (ReflectiveOperationException e) {
+                    Natives.log("Java mods: a level has no paletted containers: " + e);
+                }
                 access.horizon$setLevelData(data.worldData());
                 // ServerLevel's own copy (its name, its spawn, what mods read of the world).
                 try {
@@ -491,6 +499,19 @@ public final class HorizonServer {
 
     public static byte[] worldgenFinish(String dimension, int x, int z, long token) {
         return HorizonWorldgen.finish(dimension, x, z, token);
+    }
+
+    public static String[] worldgenBiomes(String dimension, int[] quarts) {
+        return HorizonWorldgen.biomes(dimension, quarts);
+    }
+
+    public static String[] worldgenPossibleBiomes(String dimension) {
+        return HorizonWorldgen.possibleBiomes(dimension);
+    }
+
+    public static String[] worldgenFindBiome(String dimension, String[] names, int x, int y, int z, int radius,
+                                             int horizontal, int vertical) {
+        return HorizonWorldgen.findBiome(dimension, names, x, y, z, radius, horizontal, vertical);
     }
 
     public static void worldgenForget(String dimension, int x, int z, long token) {
@@ -1502,9 +1523,18 @@ public final class HorizonServer {
             WRITTEN.computeIfAbsent((ServerLevel) level, l -> new java.util.HashMap<>()).put(pos.asLong(), state);
             WRITTEN_AT.put(pos.asLong(), currentTick);
         }
+        HorizonChunks.set((ServerLevel) level, pos, state);
         Natives.setBlock(dimensionOf(level), pos.getX(), pos.getY(), pos.getZ(),
                 net.minecraft.commands.arguments.blocks.BlockStateParser.serialize(state));
         return true;
+    }
+
+    /** The blocks this call set on a mirrored level, Horizon not having made them yet (a copy). */
+    static Map<Long, BlockState> written(Level level) {
+        synchronized (WRITTEN) {
+            Map<Long, BlockState> written = WRITTEN.get(level);
+            return written == null ? null : new java.util.HashMap<>(written);
+        }
     }
 
     /**

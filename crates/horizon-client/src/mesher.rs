@@ -270,6 +270,39 @@ enum Tint {
     Redstone(u8),
     Stem(u8),
 }
+/// Mods' blocks' tint sources by block id (their BlockColors registrations, as the Java mod
+/// bridge exports them): what `MeshTables` takes for blocks vanilla's table doesn't name.
+static MOD_TINTS: std::sync::RwLock<Option<std::collections::HashMap<String, Vec<Tint>>>> =
+    std::sync::RwLock::new(None);
+
+/// Sets the mods' tint sources: `{"mod:block": ["foliage", "none", "#rrggbb", ...]}`, one a
+/// tint index (`grass`, `foliage`, `dry_foliage`, `water`, `none` or a constant colour).
+pub fn set_mod_tints(json: &str) -> crate::Result<usize> {
+    let map: std::collections::HashMap<String, Vec<String>> = serde_json::from_str(json)?;
+    let tints: std::collections::HashMap<String, Vec<Tint>> = map
+        .into_iter()
+        .map(|(block, layers)| {
+            let layers = layers
+                .iter()
+                .map(|l| match l.as_str() {
+                    "grass" => Tint::Grass,
+                    "foliage" => Tint::Foliage,
+                    "dry_foliage" => Tint::DryFoliage,
+                    "water" => Tint::Water,
+                    c => c
+                        .strip_prefix('#')
+                        .and_then(|h| u32::from_str_radix(h, 16).ok())
+                        .map_or(Tint::None, Tint::Constant),
+                })
+                .collect();
+            (block, layers)
+        })
+        .collect();
+    let n = tints.len();
+    *MOD_TINTS.write().unwrap_or_else(|e| e.into_inner()) = Some(tints);
+    Ok(n)
+}
+
 /// Per-state data the mesher needs on every block, flattened for speed.
 #[derive(Clone, Copy)]
 struct Info {
@@ -360,6 +393,7 @@ impl MeshTables {
         };
         let mut covers = std::collections::HashMap::new();
         let mut info = Vec::with_capacity(facts.states.len());
+        let mod_tints = MOD_TINTS.read().unwrap_or_else(|e| e.into_inner());
         for (id, s) in facts.states.iter().enumerate() {
             let state = assets
                 .registry
@@ -396,7 +430,16 @@ impl MeshTables {
                 }
                 "melon_stem" | "pumpkin_stem" => ([Tint::Stem(prop("age")); 2], 1),
                 "lily_pad" => ([Tint::Constant(0x20_8030); 2], 1),
-                _ => ([Tint::None; 2], 0),
+                _ => mod_tints.as_ref().and_then(|m| m.get(&*s.name)).map_or(
+                    ([Tint::None; 2], 0),
+                    |layers| {
+                        let mut tints = [Tint::None; 2];
+                        for (t, l) in tints.iter_mut().zip(layers) {
+                            *t = *l;
+                        }
+                        (tints, layers.len().min(2) as u8)
+                    },
+                ),
             };
             // getShadeBrightness overrides; the default is 0.2 for full collision shapes.
             let overrides = [

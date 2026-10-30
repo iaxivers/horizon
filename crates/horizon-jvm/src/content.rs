@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 /// The version of what this module writes: bump it when the facts or the carry-over change.
-const FORMAT: u32 = 8;
+const FORMAT: u32 = 9;
 
 /// The stamp of a set of jars: their names, sizes and modification times, and [`FORMAT`].
 pub fn stamp(jars: &[PathBuf]) -> String {
@@ -57,6 +57,14 @@ fn carried(work: &Path) -> Vec<PathBuf> {
 
 /// The creative inventory the mods' content build exports, in the cache.
 pub const CREATIVE: &str = "creative-inventory.json";
+/// The mods' block tints exported with the cached content (`events::export_tints`).
+pub const TINTS: &str = "block-tints.json";
+
+/// The block tints exported with the cached content, if any.
+pub fn tints(cache: &Path) -> Option<PathBuf> {
+    let path = cache.join(TINTS);
+    path.is_file().then_some(path)
+}
 
 /// The creative inventory exported with the cached content: the game's resources take it in
 /// place of the prepared one (horizon-prepare's, vanilla's tabs only).
@@ -111,6 +119,11 @@ pub fn build(
     match crate::events::export_creative(&cache.join(CREATIVE)) {
         Ok(()) => log("Java mods' content: creative tabs exported".into()),
         Err(e) => log(format!("Java mods' content: no creative tabs: {e}")),
+    }
+    // The mods' block tints (the client's: none on a dedicated server, which draws nothing).
+    match crate::events::export_tints(&cache.join(TINTS)) {
+        Ok(()) => log("Java mods' content: block tints exported".into()),
+        Err(e) => log(format!("Java mods' content: no block tints: {e}")),
     }
     let _ = std::fs::remove_dir_all(&instance);
     std::fs::write(cache.join("stamp"), stamp(jars)).map_err(|e| format!("stamp: {e}"))?;

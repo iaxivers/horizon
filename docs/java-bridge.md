@@ -24,7 +24,7 @@ saying something works.
 | Mods' messages | `HorizonLoop.java`: server→client payloads queued and delivered after `syncMenus` (`flush`); client→server run at once. Mixins: `PlayNetworkingMixin` (server side), `ClientPlayNetworkingMixin` |
 | Mixins | `java/platform/horizon-platform.mixins.json` (`client` list: headless-client only) |
 | Mods' entities | `HorizonEntities.java` (live per level, ticked as `tickNonPassenger`, saved in `horizon-java/entities/`, attack/interact), `HorizonEntityRender.java` (the mod's renderer submits into a recording collector: part trees once, poses + matrix + texture per tick), `HorizonSpawner.java` (natural spawning, the levels' biomes), `HorizonPackets.java` (sounds and particles to Horizon's players), mixins `ServerChunkCacheMixin` (a chunk source holding nothing), `PathNavigationRegionMixin`, `BlockScanMixin`, `ItemModelResolverMixin` + `ItemStackRenderStateMixin` (held items), `EntitySelectorMixin`; Rust: `game/java_entities.rs` (draw, aim), `server_mods.rs` (`send_java_entities`, `java_entity_attack`/`interact`, `/summon`) |
-| Mods' worldgen | `HorizonWorldgen.java` (vanilla's chunk steps on the mirror's level, chunks back as vanilla saves them), mixin `WorldGenRegionMixin`; Rust: `game/java_worldgen.rs` (`JavaTerrain`, wraps `VanillaTerrain` in `world_loading::make_streaming`), mods' biomes in `biome.rs` (`mod_biomes`) and the biome registry (`lan/data.rs`) |
+| Mods' worldgen | `HorizonWorldgen.java` (also the biome queries: `biomes`, `findBiome`), `HorizonChunks.java` (chunk copies for code that reads chunks: saplings), `HorizonTints.java` (mods' block tints for the mesher) (vanilla's chunk steps on the mirror's level, chunks back as vanilla saves them), mixin `WorldGenRegionMixin`; Rust: `game/java_worldgen.rs` (`JavaTerrain`, wraps `VanillaTerrain` in `world_loading::make_streaming`), mods' biomes in `biome.rs` (`mod_biomes`) and the biome registry (`lan/data.rs`) |
 | Content conversion | `crates/horizon-port-pack` (`oracle.rs`, `carry.rs`), `HorizonContent.java` (facts, creative tabs), `crates/horizon-client/src/mod_content.rs` (content root) |
 | Game side (Rust) | `crates/horizon-client/src/game/java_mods.rs` (start, content, creative), `server_mods.rs` (actions from Java, menus, block entities, random ticks, `JAVA_STATES`, `JAVA_WINDOWS`), `java_screen.rs` (draws frames, sends input, key maps; `Screen::JavaMod` and `CLIENT_WINDOW` for client-only screens) |
 
@@ -186,6 +186,19 @@ saying something works.
 - An item an entity renderer holds goes through `ItemModelResolver.updateForLiving` into an
   `ItemStackRenderState`, then `state.submit(pose, …)` from its layer: keep the stack on the
   state, make `isEmpty` false, and record the pose at `submit`.
+- 26.3 scans blocks through chunks, not the level (`BlockScanUtils.sectionBasedScan`: a
+  sapling's "flowers nearby", a vine's spread): `level.getChunk` must give a chunk.
+  `HorizonChunks` copies Horizon's chunk (blocks and biomes in one native call each,
+  `Natives.chunkBlocks`/`chunkBiomes`) the first time a call asks, for that call only
+  (`Natives.viewEpoch`), follows the call's own writes, and sends writes made on it to the
+  level. Mirrored levels now all have `palettedContainerFactory`.
+- 26.3's block tints are `BlockColors` lists of `BlockTintSource`s; mods register them through
+  Fabric's `BlockColorRegistry` (held in `BlockColorRegistryImpl.map` until `BlockColors`
+  exists). `HorizonTints` classifies each by calling `colorInWorld` in a fake world whose biome
+  colours are markers; the mesher's `set_mod_tints` takes them (cache file `block-tints.json`,
+  content `FORMAT` 9).
+- The command parser's biome ids come from the vanilla export's `by_registry` first, not
+  `Registries.biomes`: mods' biomes are added to both (`chat.rs` `build_registries`).
 - Commands through `horizon-ctl command` run as the owner's console; server mods' commands
   (and `/summon` of a mod entity) now go to the mods first (`owner_console_command`).
 
@@ -236,6 +249,13 @@ generates through the mods' chunk steps; BOP biomes (orchard, lavender field...)
 trees, flowers and blocks, read back by Horizon with their biome ids (`horizon-ctl block`).
 `MODS=~/bop tools/java_bridge/launch.sh`, then `tools/java_bridge/biomes.py` lists the biomes
 around the player with a place of each (`horizon-ctl block X Y Z` gives one).
+Also tested: BOP saplings grow (bone meal: a jacaranda), BOP's tinted blocks
+(flowering oak leaves, clover, BOP grass) take their biome colours, `/locate biome
+biomesoplenty:redwood_forest` finds one (the mods' biome source), far terrain (LOD) has the
+mods' biome colours. The spawn search needs nothing: 26.3's spawn origin is the noise
+router's climate (TerraBlender doesn't change it), then the spiral reads generated chunks.
+`GRAPHICS=file` (a `horizon-graphics.txt`, e.g. `lodDistance:256`) for `launch.sh` turns far
+terrain on.
 
 Works (tested): content (blocks with their own states, items, food, crops, light), mod block
 logic and block entities, Fabric and vanilla menus in Horizon's window, mods' own screens with
@@ -267,13 +287,11 @@ the client's tick (`ClientTickEvents`, mods' `runTick`/`tick` injections; Xaero'
 not frozen yet!" is gone) work.
 
 Next (top failure of the pack, in order):
-1. Mods' worldgen gaps: mod saplings and bone meal fail (`randomTick`: "Should always be
-   able to create a chunk!": the mirror's chunk source gives no chunks to the feature);
-   far terrain (LOD), `/locate biome|structure` and the spawn search use vanilla's biomes;
-   a Java proto dropped unfinished isn't saved (a neighbour's tree cut at the edge of where
-   the player went); block/fluid ticks and post-processing of generated chunks aren't
-   carried; the Nether and End through TerraBlender untested; "flowering" leaves of BOP
-   (an untinted overlay layer) draw grey patches (content conversion, not worldgen).
+1. Mods' worldgen gaps: far terrain's blocks and trees are still Horizon's (vanilla's surface
+   rules and features under the mods' biome colours); `/locate structure` is Horizon's; a
+   Java proto dropped unfinished isn't saved (a neighbour's tree cut at the edge of where the
+   player went); block/fluid ticks and post-processing of generated chunks aren't carried;
+   the Nether and End through TerraBlender untested.
 2. No client level: `Minecraft.level` is null. Chunk Loaders' screen opens (sneak-place or
    place, then use) but its grid reads the client's level for the loaders it shows
    (`ChunkLoadingCapability.get(ClientUtils.getWorld())`); mods' key handlers that check the
