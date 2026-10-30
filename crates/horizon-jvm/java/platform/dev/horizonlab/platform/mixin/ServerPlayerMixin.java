@@ -38,7 +38,7 @@ public abstract class ServerPlayerMixin {
     private void horizon$tell(Component message, CallbackInfo ci) {
         ServerPlayer self = (ServerPlayer) (Object) this;
         if (HorizonServer.isMirror(self)) {
-            Natives.tell(self.getStringUUID(), message == null ? "" : message.getString());
+            Natives.tell(self.getStringUUID(), HorizonServer.chatJson(message));
             ci.cancel();
         }
     }

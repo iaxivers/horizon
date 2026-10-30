@@ -209,6 +209,19 @@ mod run {
     static PENDING_TELEPORTS: std::sync::Mutex<Vec<horizon_jvm::events::Action>> =
         std::sync::Mutex::new(Vec::new());
 
+    /// A Java mod's chat line (`Action::Tell`, `Broadcast`): a JSON component, resolved with
+    /// the game's language (mods' lang files are in the content root) and sent on as it is to
+    /// players of the server; anything else (an older Java side) as literal text.
+    #[cfg(feature = "java-mods")]
+    fn java_chat(text: &str) -> Text {
+        match serde_json::from_str::<Value>(text) {
+            Ok(v) if v.is_object() || v.is_array() || v.is_string() => {
+                horizon_client::packs::component(&v).with_component(v)
+            }
+            _ => Text::literal(text),
+        }
+    }
+
     /// Whether Java mods run here: the bridge started Fabric with its platform mod.
     fn java_mods_on() -> bool {
         #[cfg(feature = "java-mods")]
@@ -824,7 +837,7 @@ mod run {
                 );
                 match action {
                     horizon_jvm::events::Action::Tell { uuid, text } => {
-                        self.tell_server_player(host.as_deref_mut(), &uuid, Text::literal(text));
+                        self.tell_server_player(host.as_deref_mut(), &uuid, java_chat(&text));
                     }
                     teleport @ horizon_jvm::events::Action::Teleport { .. } => {
                         if host.is_some() {
@@ -1042,6 +1055,8 @@ mod run {
                         }
                     }
                     horizon_jvm::events::Action::Broadcast { text } => {
+                        let line = java_chat(&text);
+                        let text = line.resolved().plain();
                         if self.options.dedicated.is_some() {
                             super::super::dedicated::log("INFO", &text);
                         } else {
@@ -1051,7 +1066,7 @@ mod run {
                             self.tell_server_player(
                                 host.as_deref_mut(),
                                 &p.id,
-                                Text::literal(text.clone()),
+                                line.clone(),
                             );
                         }
                     }

@@ -1,6 +1,7 @@
 package dev.horizonlab.platform;
 
 import dev.horizonlab.bridge.Natives;
+import java.util.Map;
 import java.util.Set;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.networking.v1.PacketSender;
@@ -40,6 +41,26 @@ public final class HorizonLoop {
     /** The channels the mods' client code receives on: what a server may send a player. */
     public static Set<Identifier> clientChannels() {
         return ClientNetworkingImpl.PLAY.getChannels();
+    }
+
+    /**
+     * Receivers a mod registered for one player (ServerPlayNetworking.registerReceiver with a
+     * listener, often in ServerPlayConnectionEvents.INIT). Fabric keeps them in the listener's
+     * network addon, made by its constructor: the mirror's listener has none, so they live here.
+     */
+    private static final Map<java.util.UUID, Map<Identifier, ServerPlayNetworking.PlayPayloadHandler<?>>> PLAYER_RECEIVERS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** ServerPlayNetworking.registerReceiver(listener, ...) for a mirrored player. */
+    public static boolean registerReceiver(ServerPlayer player, Identifier id, ServerPlayNetworking.PlayPayloadHandler<?> handler) {
+        return PLAYER_RECEIVERS.computeIfAbsent(player.getUUID(), u -> new java.util.concurrent.ConcurrentHashMap<>())
+                .putIfAbsent(id, handler) == null;
+    }
+
+    /** ServerPlayNetworking.unregisterReceiver(listener, id) for a mirrored player. */
+    public static ServerPlayNetworking.PlayPayloadHandler<?> unregisterReceiver(ServerPlayer player, Identifier id) {
+        var own = PLAYER_RECEIVERS.get(player.getUUID());
+        return own == null ? null : own.remove(id);
     }
 
     /** The channels the mods' server code receives on: what a client may send. */
@@ -84,7 +105,9 @@ public final class HorizonLoop {
             Natives.log("Java mods: " + payload.type().id() + " was sent with no player's client running; dropped");
             return;
         }
-        var handler = (ServerPlayNetworking.PlayPayloadHandler) ServerNetworkingImpl.PLAY.getHandler(payload.type().id());
+        var own = PLAYER_RECEIVERS.getOrDefault(player.getUUID(), Map.of()).get(payload.type().id());
+        ServerPlayNetworking.PlayPayloadHandler handler = own != null ? own
+                : (ServerPlayNetworking.PlayPayloadHandler) ServerNetworkingImpl.PLAY.getHandler(payload.type().id());
         if (handler == null) return;
         try {
             handler.receive(payload, serverContext(player));

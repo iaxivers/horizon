@@ -82,6 +82,14 @@ public final class FabricBoot {
                 while (root.getCause() != null && root.getCause() != root) root = root.getCause();
                 Natives.log("Some mods' client code failed (their screens may be missing): " + e.getMessage()
                         + ", caused by " + root);
+                StackTraceElement[] frames = root.getStackTrace();
+                for (int f = 0; f < Math.min(frames.length, 12); f++) Natives.log("    at " + frames[f]);
+                // Each other entrypoint that failed (Fabric adds them as suppressed).
+                for (Throwable other : e.getSuppressed()) {
+                    Throwable cause = other;
+                    while (cause.getCause() != null && cause.getCause() != cause) cause = cause.getCause();
+                    Natives.log("  and: " + other.getMessage() + ", caused by " + cause);
+                }
             }
             try {
                 Class.forName("dev.horizonlab.platform.HorizonClient", true, gameLoader).getMethod("finish").invoke(null);

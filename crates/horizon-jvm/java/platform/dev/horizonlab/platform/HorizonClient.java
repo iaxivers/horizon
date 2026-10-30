@@ -23,6 +23,17 @@ public final class HorizonClient {
         minecraft = mc;
         File dir = new File(gameDir);
         set(Minecraft.class, mc, "gameDirectory", dir);
+        // What Minecraft's constructor sets before Fabric's client entrypoints run, which
+        // mods' client initializers read. Its task queue (Minecraft.execute: a mod's client
+        // receiver, or initializer, hands work to the client's thread), which the server
+        // thread runs: tasks().
+        set(net.minecraft.util.thread.BlockableEventLoop.class, mc, "pendingRunnables",
+                new java.util.concurrent.ConcurrentLinkedQueue<Runnable>());
+        // The signed-in user (JEI keys its config folders by the profile id): an offline one,
+        // as the window's player is to the mirror.
+        String name = "Player";
+        set(Minecraft.class, mc, "user", new net.minecraft.client.User(name,
+                net.minecraft.core.UUIDUtil.createOfflinePlayerUUID(name), "", java.util.Optional.empty(), java.util.Optional.empty()));
         HorizonServer.client = true;
     }
 
@@ -50,10 +61,6 @@ public final class HorizonClient {
         set(Minecraft.class, mc, "gui", gui);
         // Screens click through the game mode (handleContainerInput): GameModeClientMixin.
         set(Minecraft.class, mc, "gameMode", Natives.allocate(net.minecraft.client.multiplayer.MultiPlayerGameMode.class));
-        // Its task queue (Minecraft.execute: a mod's client receiver hands its work to the
-        // client's thread), which the server thread runs: tasks().
-        set(net.minecraft.util.thread.BlockableEventLoop.class, mc, "pendingRunnables",
-                new java.util.concurrent.ConcurrentLinkedQueue<Runnable>());
         // Text boxes' typing area, for a window it has none of (TextInputManagerMixin).
         set(Minecraft.class, mc, "textInputManager", Natives.allocate(com.mojang.blaze3d.platform.TextInputManager.class));
         // Buttons click with a sound: a manager without an engine (SoundManagerMixin).

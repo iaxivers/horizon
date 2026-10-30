@@ -24,7 +24,7 @@ public abstract class PlayerListMixin {
     @Inject(method = "broadcastSystemMessage(Lnet/minecraft/network/chat/Component;Z)V", at = @At("HEAD"), cancellable = true)
     private void horizon$broadcast(Component message, boolean overlay, CallbackInfo ci) {
         if (HorizonServer.isMirror((PlayerList) (Object) this)) {
-            Natives.broadcast(message == null ? "" : message.getString());
+            Natives.broadcast(dev.horizonlab.platform.HorizonServer.chatJson(message));
             ci.cancel();
         }
     }
@@ -32,7 +32,7 @@ public abstract class PlayerListMixin {
     @Inject(method = "broadcastSystemMessage(Lnet/minecraft/network/chat/Component;Ljava/util/function/Function;Z)V", at = @At("HEAD"), cancellable = true)
     private void horizon$broadcast(Component message, Function<ServerPlayer, Component> perPlayer, boolean overlay, CallbackInfo ci) {
         if (HorizonServer.isMirror((PlayerList) (Object) this)) {
-            Natives.broadcast(message == null ? "" : message.getString());
+            Natives.broadcast(dev.horizonlab.platform.HorizonServer.chatJson(message));
             ci.cancel();
         }
     }

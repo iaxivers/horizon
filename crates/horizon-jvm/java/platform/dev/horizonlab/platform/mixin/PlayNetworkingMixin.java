@@ -85,4 +85,22 @@ public abstract class PlayNetworkingMixin {
     private static void horizon$reconfigure(ServerPlayer player, CallbackInfo ci) {
         if (HorizonServer.isMirror(player)) ci.cancel();
     }
+
+    /** A receiver for one player (Fabric keeps it in the listener's addon, which a mirror lacks). */
+    @Inject(method = "registerReceiver(Lnet/minecraft/server/network/ServerGamePacketListenerImpl;Lnet/minecraft/network/protocol/common/custom/CustomPacketPayload$Type;Lnet/fabricmc/fabric/api/networking/v1/ServerPlayNetworking$PlayPayloadHandler;)Z",
+            at = @At("HEAD"), cancellable = true)
+    private static void horizon$register(ServerGamePacketListenerImpl handler, CustomPacketPayload.Type<?> type,
+                                         ServerPlayNetworking.PlayPayloadHandler<?> receiver, CallbackInfoReturnable<Boolean> cir) {
+        if (HorizonServer.isMirror(handler)) {
+            // With no Fabric client (a dedicated server's players), nothing would ever arrive.
+            cir.setReturnValue(!HorizonServer.loop() || HorizonLoop.registerReceiver(handler.player, type.id(), receiver));
+        }
+    }
+
+    @Inject(method = "unregisterReceiver(Lnet/minecraft/server/network/ServerGamePacketListenerImpl;Lnet/minecraft/resources/Identifier;)Lnet/fabricmc/fabric/api/networking/v1/ServerPlayNetworking$PlayPayloadHandler;",
+            at = @At("HEAD"), cancellable = true)
+    private static void horizon$unregister(ServerGamePacketListenerImpl handler, Identifier id,
+                                           CallbackInfoReturnable<ServerPlayNetworking.PlayPayloadHandler<?>> cir) {
+        if (HorizonServer.isMirror(handler)) cir.setReturnValue(HorizonServer.loop() ? HorizonLoop.unregisterReceiver(handler.player, id) : null);
+    }
 }

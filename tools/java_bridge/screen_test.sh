@@ -34,6 +34,17 @@ case "$SCENE" in
     'q "setblock $((X+2)) $Y $Z toms_storage:inventory_connector"' \
     'q "setblock $((X+2)) $((Y+1)) $Z toms_storage:storage_terminal[facing=west,pos=down]"' \
     '$C look-at-block $((X+2)) $((Y+1)) $Z >/dev/null' '$C mouse right click >/dev/null' 'sleep 3' ;;
+  # A pack (docs/java-bridge.md, "A 20-40 mod pack"): a row of blocks from its content mods,
+  # looked at from three blocks away; then a waystone used (its screen).
+  pack) "$R/tools/java_bridge/around.sh" \
+    'q "setblock $((X+3)) $Y $((Z-2)) biomesoplenty:redwood_log"' \
+    'q "setblock $((X+3)) $Y $((Z-1)) biomesoplenty:jacaranda_leaves"' \
+    'q "setblock $((X+3)) $Y $Z waystones:sandstone_waystone"' \
+    'q "setblock $((X+3)) $Y $((Z+1)) farmersdelight:stove"' \
+    'q "setblock $((X+3)) $Y $((Z+2)) toms_storage:inventory_connector"' \
+    'q "setblock $((X+3)) $((Y+1)) $((Z-2)) biomesoplenty:blue_hydrangea"' \
+    'q "setblock $((X+3)) $((Y+1)) $((Z+2)) farmersdelight:cooking_pot"' \
+    '$C look-at-block $((X+3)) $Y $Z >/dev/null' 'sleep 2' ;;
   none) ;;
 esac
 n=0; for step in "$@"; do eval "$step"; sleep 1; n=$((n+1)); $C screenshot "$S/s$n.png" >/dev/null; cp "$S/s$n.png" "$OUT/$SCENE-$n.png"; done

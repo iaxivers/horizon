@@ -11,4 +11,8 @@ public interface ServerCommonListenerAccess {
     @Mutable
     @Accessor("server")
     void horizon$setServer(MinecraftServer server);
+
+    @Mutable
+    @Accessor("connection")
+    void horizon$setConnection(net.minecraft.network.Connection connection);
 }

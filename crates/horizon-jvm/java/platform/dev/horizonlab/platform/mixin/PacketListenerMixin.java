@@ -38,7 +38,7 @@ public abstract class PacketListenerMixin {
         ci.cancel();
         if (packet instanceof ClientboundSystemChatPacket chat && self instanceof ServerGamePacketListenerImpl game
                 && game.player != null && !chat.overlay()) {
-            Natives.tell(game.player.getStringUUID(), chat.content().getString());
+            Natives.tell(game.player.getStringUUID(), HorizonServer.chatJson(chat.content()));
             return;
         }
         if (packet instanceof ClientboundOpenScreenPacket open && self instanceof ServerGamePacketListenerImpl game

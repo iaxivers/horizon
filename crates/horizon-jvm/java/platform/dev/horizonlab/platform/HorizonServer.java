@@ -277,6 +277,19 @@ public final class HorizonServer {
             // (Fabric's Transfer API's lookup caches): empty ones of their own.
             emptyCollections(level, ServerLevel.class);
             ((ServerLevelAccess) level).horizon$setPlayers(players);
+            // Its chunk source, as bare as the level (ServerChunkCacheMixin answers for it):
+            // mods sync their block entities through it (getChunkSource().blockChanged).
+            try {
+                net.minecraft.server.level.ServerChunkCache chunks = allocate(net.minecraft.server.level.ServerChunkCache.class);
+                java.lang.reflect.Field owner = net.minecraft.server.level.ServerChunkCache.class.getDeclaredField("level");
+                owner.setAccessible(true);
+                owner.set(chunks, level);
+                java.lang.reflect.Field source = ServerLevel.class.getDeclaredField("chunkSource");
+                source.setAccessible(true);
+                source.set(level, chunks);
+            } catch (ReflectiveOperationException e) {
+                Natives.log("Java mods: a level's chunk source could not be set: " + e);
+            }
             HorizonData.Loaded data = HorizonData.loaded;
             if (data != null) {
                 net.minecraft.core.RegistryAccess.Frozen registries = data.registries().compositeAccess();
@@ -328,6 +341,9 @@ public final class HorizonServer {
             ServerGamePacketListenerImpl connection = allocate(ServerGamePacketListenerImpl.class);
             connection.player = player;
             ((ServerCommonListenerAccess) connection).horizon$setServer(server);
+            // Its network connection, which mods read of a player (Forge Config API Port's
+            // isMemoryConnection each tick): the mirror's (Horizon has the real one).
+            ((ServerCommonListenerAccess) connection).horizon$setConnection(mirrorConnection(player));
             player.connection = connection;
             KNOWN.put(uuid, player);
         }
@@ -450,6 +466,29 @@ public final class HorizonServer {
         return CONNECTIONS.computeIfAbsent(player.getUUID(), u -> allocate(net.minecraft.network.Connection.class));
     }
 
+    /**
+     * The players who would see a point of a mirrored level (Fabric's PlayerLookup.tracking):
+     * the level's players within the server's view distance of it, but {@code self} (a player
+     * doesn't track itself).
+     */
+    public static java.util.Collection<ServerPlayer> tracking(ServerLevel level, double x, double z, Object self) {
+        List<ServerPlayer> players = LEVEL_PLAYERS.get(level);
+        if (players == null || players.isEmpty()) return List.of();
+        int view = server.getPlayerList().getViewDistance();
+        double reach = (view > 0 ? view : 12) * 16.0 + 8;
+        List<ServerPlayer> seen = new ArrayList<>();
+        for (ServerPlayer player : new ArrayList<>(players)) {
+            if (player == self) continue;
+            if (Math.abs(player.getX() - x) <= reach && Math.abs(player.getZ() - z) <= reach) seen.add(player);
+        }
+        return seen;
+    }
+
+    /** ServerChunkCache.blockChanged on a mirrored level: its block entity is saved with the others. */
+    public static void blockChanged(Level level, net.minecraft.core.BlockPos pos) {
+        if (level != null) HorizonBlockEntities.changed(level, pos);
+    }
+
     /** The mirrored server's services (HorizonServices). */
     public static net.minecraft.server.Services services() {
         return HorizonServices.get();
@@ -471,6 +510,45 @@ public final class HorizonServer {
                     default: return null;
                 }
             });
+
+    /**
+     * Runs each listener of a Fabric event on its own (in the event's phase order), so a mod
+     * that throws does not stop the others. Vanilla's server would crash on that throw; the
+     * mirror goes on, and through the invoker one mod failing each tick (Carry On, Forge Config
+     * API Port in a 40-mod pack) silently cut off every listener registered after it. Only for
+     * events with no result: those with one keep their invoker (it combines the results).
+     */
+    @SuppressWarnings("unchecked")
+    static <T> void fireEach(String event, net.fabricmc.fabric.api.event.Event<T> source, java.util.function.Consumer<T> call) {
+        Object[] handlers = listeners(source);
+        if (handlers == null) {
+            fire(event, () -> call.accept(source.invoker()));
+            return;
+        }
+        for (Object handler : handlers) {
+            String name = handler.getClass().getName();
+            int lambda = name.indexOf("$$");
+            fire(event + " [" + (lambda > 0 ? name.substring(0, lambda) : name) + "]", () -> call.accept((T) handler));
+        }
+    }
+
+    private static java.lang.reflect.Field HANDLERS;
+
+    /** An array-backed Fabric event's listeners, or null if it is some other kind. */
+    private static Object[] listeners(net.fabricmc.fabric.api.event.Event<?> source) {
+        try {
+            if (HANDLERS == null) {
+                Class<?> backed = Class.forName("net.fabricmc.fabric.impl.base.event.ArrayBackedEvent", false, source.getClass().getClassLoader());
+                java.lang.reflect.Field field = backed.getDeclaredField("handlers");
+                field.setAccessible(true);
+                HANDLERS = field;
+            }
+            if (!HANDLERS.getDeclaringClass().isInstance(source)) return null;
+            return (Object[]) HANDLERS.get(source);
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return null;
+        }
+    }
 
     /** Runs a mod event, logging (not throwing) what a mod throws, ten times per event at most. */
     private static void fire(String event, Runnable run) {
@@ -525,11 +603,12 @@ public final class HorizonServer {
         MinecraftServer server = HorizonServer.server;
         if (world != null && !world.isEmpty()) worldDir = java.nio.file.Paths.get(world).toAbsolutePath();
         HorizonBlockEntities.world(worldDir);
+        HorizonSavedData.world(server, worldDir);
         // The server's tick count follows Horizon's (mods time their tasks with it).
         ((MinecraftServerAccess) server).horizon$setTickCount((int) tick);
         if (!started) {
             started = true;
-            fire("ServerLifecycleEvents.SERVER_STARTING", () -> ServerLifecycleEvents.SERVER_STARTING.invoker().onServerStarting(server));
+            fireEach("ServerLifecycleEvents.SERVER_STARTING", ServerLifecycleEvents.SERVER_STARTING, l -> l.onServerStarting(server));
             // MinecraftServer.loadLevel (runServer's initServer): the levels exist at its end.
             hook(server, MinecraftServer.class, "loadLevel", "()V", "HEAD", NO_ARGUMENTS);
             for (String dimension : new String[] {"minecraft:overworld", "minecraft:the_nether", "minecraft:the_end"}) {
@@ -537,14 +616,14 @@ public final class HorizonServer {
             }
             hook(server, MinecraftServer.class, "loadLevel", "()V", "RETURN", NO_ARGUMENTS);
             hook(server, MinecraftServer.class, "loadLevel", "()V", "TAIL", NO_ARGUMENTS);
-            fire("ServerLifecycleEvents.SERVER_STARTED", () -> ServerLifecycleEvents.SERVER_STARTED.invoker().onServerStarted(server));
+            fireEach("ServerLifecycleEvents.SERVER_STARTED", ServerLifecycleEvents.SERVER_STARTED, l -> l.onServerStarted(server));
         }
         // MinecraftServer.tickServer's head (Fabric's START_SERVER_TICK is its own injection there).
         Object[] haveTime = {(java.util.function.BooleanSupplier) () -> true};
         hook(server, MinecraftServer.class, "tickServer", TICK_SERVER, "HEAD", haveTime);
-        fire("ServerTickEvents.START_SERVER_TICK", () -> ServerTickEvents.START_SERVER_TICK.invoker().onStartTick(server));
+        fireEach("ServerTickEvents.START_SERVER_TICK", ServerTickEvents.START_SERVER_TICK, l -> l.onStartTick(server));
         for (ServerLevel level : new ArrayList<>(LEVELS.values())) {
-            fire("ServerTickEvents.START_LEVEL_TICK", () -> ServerTickEvents.START_LEVEL_TICK.invoker().onStartTick(level));
+            fireEach("ServerTickEvents.START_LEVEL_TICK", ServerTickEvents.START_LEVEL_TICK, l -> l.onStartTick(level));
             hook(level, ServerLevel.class, "tick", TICK_SERVER, "HEAD", haveTime);
         }
 
@@ -617,9 +696,9 @@ public final class HorizonServer {
                     Object[] joining = {mirrorConnection(player), player,
                             net.minecraft.server.network.CommonListenerCookie.createInitial(player.getGameProfile(), false)};
                     hook(server.getPlayerList(), net.minecraft.server.players.PlayerList.class, "placeNewPlayer", PLACE_NEW_PLAYER, "HEAD", joining);
-                    fire("ServerPlayConnectionEvents.INIT", () -> ServerPlayConnectionEvents.INIT.invoker().onPlayInit(connection, server));
-                    fire("ServerEntityEvents.ENTITY_LOAD", () -> ServerEntityEvents.ENTITY_LOAD.invoker().onLoad(player, level));
-                    fire("ServerPlayConnectionEvents.JOIN", () -> ServerPlayConnectionEvents.JOIN.invoker().onPlayReady(connection, NO_PACKETS, server));
+                    fireEach("ServerPlayConnectionEvents.INIT", ServerPlayConnectionEvents.INIT, l -> l.onPlayInit(connection, server));
+                    fireEach("ServerEntityEvents.ENTITY_LOAD", ServerEntityEvents.ENTITY_LOAD, l -> l.onLoad(player, level));
+                    fireEach("ServerPlayConnectionEvents.JOIN", ServerPlayConnectionEvents.JOIN, l -> l.onPlayReady(connection, NO_PACKETS, server));
                     hook(server.getPlayerList(), net.minecraft.server.players.PlayerList.class, "placeNewPlayer", PLACE_NEW_PLAYER, "RETURN", joining);
                     hook(server.getPlayerList(), net.minecraft.server.players.PlayerList.class, "placeNewPlayer", PLACE_NEW_PLAYER, "TAIL", joining);
                 }
@@ -628,8 +707,8 @@ public final class HorizonServer {
                     ServerLevel level = (ServerLevel) player.level();
                     Object[] leaving = {player};
                     hook(server.getPlayerList(), net.minecraft.server.players.PlayerList.class, "remove", REMOVE, "HEAD", leaving);
-                    fire("ServerPlayConnectionEvents.DISCONNECT", () -> ServerPlayConnectionEvents.DISCONNECT.invoker().onPlayDisconnect(connection, server));
-                    fire("ServerEntityEvents.ENTITY_UNLOAD", () -> ServerEntityEvents.ENTITY_UNLOAD.invoker().onUnload(player, level));
+                    fireEach("ServerPlayConnectionEvents.DISCONNECT", ServerPlayConnectionEvents.DISCONNECT, l -> l.onPlayDisconnect(connection, server));
+                    fireEach("ServerEntityEvents.ENTITY_UNLOAD", ServerEntityEvents.ENTITY_UNLOAD, l -> l.onUnload(player, level));
                     hook(server.getPlayerList(), net.minecraft.server.players.PlayerList.class, "remove", REMOVE, "RETURN", leaving);
                     hook(server.getPlayerList(), net.minecraft.server.players.PlayerList.class, "remove", REMOVE, "TAIL", leaving);
                     PLAYERS.remove(player);
@@ -673,7 +752,7 @@ public final class HorizonServer {
         for (ServerLevel level : new ArrayList<>(LEVELS.values())) {
             hook(level, ServerLevel.class, "tick", TICK_SERVER, "RETURN", haveTime);
             hook(level, ServerLevel.class, "tick", TICK_SERVER, "TAIL", haveTime);
-            fire("ServerTickEvents.END_LEVEL_TICK", () -> ServerTickEvents.END_LEVEL_TICK.invoker().onEndTick(level));
+            fireEach("ServerTickEvents.END_LEVEL_TICK", ServerTickEvents.END_LEVEL_TICK, l -> l.onEndTick(level));
         }
         // Each player's tick (ServerPlayer.tick, Player.tick from doTick), as vanilla's
         // levels and connections run them within the server's tick.
@@ -690,6 +769,7 @@ public final class HorizonServer {
             if (level.getBlockTicks() instanceof HorizonTicks<?> ticks) ticks.run(level);
         }
         HorizonBlockEntities.tick();
+        HorizonSavedData.tick();
         // ServerPlayer.tick and doTick: a menu no longer valid closes, and the open menu sends
         // its changes (a mod's menu keeps its block working while it is watched, and syncs its
         // own data there: Tom's Storage's terminal its item list).
@@ -703,7 +783,7 @@ public final class HorizonServer {
         }
         // Mods' own screens: each changed frame to its player.
         if (client) HorizonClient.sendFrames();
-        fire("ServerTickEvents.END_SERVER_TICK", () -> ServerTickEvents.END_SERVER_TICK.invoker().onEndTick(server));
+        fireEach("ServerTickEvents.END_SERVER_TICK", ServerTickEvents.END_SERVER_TICK, l -> l.onEndTick(server));
         hook(server, MinecraftServer.class, "tickServer", TICK_SERVER, "RETURN", haveTime);
         hook(server, MinecraftServer.class, "tickServer", TICK_SERVER, "TAIL", haveTime);
         runTasks();
@@ -1073,7 +1153,7 @@ public final class HorizonServer {
             if (DEBUG_COMMANDS) debugCommand(data, player, line);
             data.reloadable().getCommands().performPrefixedCommand(player.createCommandSourceStack(), line);
         } catch (Throwable t) {
-            Natives.tell(uuid, "An error occurred while running /" + line + ": " + t);
+            Natives.tell(uuid, chatJson(net.minecraft.network.chat.Component.literal("An error occurred while running /" + line + ": " + t)));
             fire("command /" + line, () -> { throw new RuntimeException(t); });
         }
         syncInventories();
@@ -1111,6 +1191,17 @@ public final class HorizonServer {
     }
 
     /** A text component as JSON (ComponentSerialization.CODEC), or null for none. */
+    /**
+     * A chat line for Horizon (Natives.tell, broadcast): the component as JSON, which Horizon
+     * resolves with its own language, mods' lang files included (the server side's Language
+     * is vanilla's English only: a mod's translatable line came out as its key).
+     */
+    public static String chatJson(net.minecraft.network.chat.Component component) {
+        if (component == null) return "\"\"";
+        String json = json(component);
+        return json != null ? json : new com.google.gson.JsonPrimitive(component.getString()).toString();
+    }
+
     public static String json(net.minecraft.network.chat.Component component) {
         if (component == null) return null;
         try {

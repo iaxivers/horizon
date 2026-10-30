@@ -52,4 +52,10 @@ public abstract class ServerLevelMixin {
     private void horizon$entities(CallbackInfoReturnable<net.minecraft.world.level.entity.LevelEntityGetter<net.minecraft.world.entity.Entity>> cir) {
         if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.entities((ServerLevel) (Object) this));
     }
+
+    /** Its saved data (vanilla's is its chunk source's, which a mirror has none of). */
+    @Inject(method = "getDataStorage", at = @At("HEAD"), cancellable = true)
+    private void horizon$dataStorage(CallbackInfoReturnable<net.minecraft.world.level.storage.SavedDataStorage> cir) {
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(dev.horizonlab.platform.HorizonSavedData.level((ServerLevel) (Object) this));
+    }
 }
