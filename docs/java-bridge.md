@@ -89,6 +89,12 @@ cargo clippy --profile fast -p horizon-client --features java-mods --bins --lib 
 The Java sources compile in `horizon-jvm`'s build script: a Java error shows as a failed build
 script. Always look at the build's output: a failed build leaves the old binary running.
 
+**Java-only changes: don't rebuild the game.** The jars are baked into the binary, so a full
+build relinks the game (~4 min). `tools/java_bridge/java.sh` rebuilds only the jars (~6 s, ~1
+min the first time) into `.local/bridge/dev`; a game started with `HORIZON_JAVA_JARS` set to
+that folder runs them. `JAVA_ONLY=1 tools/java_bridge/screen_test.sh …` does both. Most bridge
+work is Java: iterate there, and batch Rust changes into as few full builds as you can.
+
 Headless, with screenshots (scratch folders only, see CLAUDE.md):
 
 ```sh

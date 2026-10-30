@@ -226,7 +226,19 @@ pub fn libjvm(home: &Path) -> Result<PathBuf, String> {
 }
 
 /// Writes an embedded jar to `work/name` when it differs.
+/// A folder of `horizon-bridge.jar` and `horizon-platform.jar` to run in place of the built-in
+/// ones (bridge development; see docs/java-bridge.md).
+pub const DEV_JARS: &str = "HORIZON_JAVA_JARS";
+
 fn write_jar(work: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    // Developing the bridge: jars rebuilt on their own (tools/java_bridge/java.sh) are used in
+    // place of the ones built into the game, so a Java change needs no game rebuild.
+    if let Some(dir) = std::env::var_os(DEV_JARS) {
+        let path = Path::new(&dir).join(name);
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
     std::fs::create_dir_all(work).map_err(|e| format!("{}: {e}", work.display()))?;
     let path = work.join(name);
     if std::fs::read(&path).ok().as_deref() != Some(bytes) {
