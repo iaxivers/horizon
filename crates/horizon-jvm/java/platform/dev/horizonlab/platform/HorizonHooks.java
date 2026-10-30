@@ -86,9 +86,144 @@ public final class HorizonHooks {
             }
         }
         Natives.log("Mixin census: " + injections + " event-like injections into " + HOOKS.size() + " vanilla methods");
+        scanClient();
+    }
+
+    // ---- The headless client's tick -------------------------------------------------------
+
+    /** One injection of a mod into the client's frame or tick (Minecraft.runTick, .tick). */
+    record ClientHook(String mod, String method, String mixin, String handler, boolean modifyArg) {}
+
+    /** The client classes and methods whose injections run each headless client tick. */
+    private static final String CLIENT_OWNER = "net/minecraft/client/Minecraft";
+    private static final java.util.Set<String> CLIENT_METHODS = java.util.Set.of("runTick", "tick");
+    private static final List<ClientHook> CLIENT_HOOKS = new ArrayList<>();
+    private static final Map<String, List<Method>> CLIENT_RESOLVED = new ConcurrentHashMap<>();
+
+    /**
+     * The mods' injections into Minecraft.runTick and Minecraft.tick, from their client Mixin
+     * configs too: every @Inject (at any point: an INVOKE inside a frame is once a frame) and
+     * every @ModifyArg there. The headless client runs no frame, so fireClient calls them.
+     */
+    private static void scanClient() {
+        for (ModContainer mod : FabricLoader.getInstance().getAllMods()) {
+            String id = mod.getMetadata().getId();
+            if (id.equals("horizon") || id.startsWith("fabric-") || id.equals("fabric-api")) continue;
+            for (String config : mixinConfigs(mod, true)) {
+                Optional<Path> path = mod.findPath(config);
+                if (path.isEmpty()) continue;
+                try {
+                    JsonObject json = JsonParser.parseString(Files.readString(path.get())).getAsJsonObject();
+                    String pkg = json.has("package") ? json.get("package").getAsString().replace('.', '/') : "";
+                    for (String key : new String[] {"mixins", "client"}) {
+                        if (!json.has(key) || !json.get(key).isJsonArray()) continue;
+                        for (JsonElement name : json.getAsJsonArray(key)) {
+                            String file = pkg + "/" + name.getAsString().replace('.', '/') + ".class";
+                            Optional<Path> bytes = mod.findPath(file);
+                            if (bytes.isPresent()) readClient(id, Files.readAllBytes(bytes.get()));
+                        }
+                    }
+                } catch (Throwable t) {
+                    Natives.log("Mixin census: " + id + "'s " + config + " (client): " + t);
+                }
+            }
+        }
+        if (!CLIENT_HOOKS.isEmpty()) {
+            Natives.log("Mixin census: " + CLIENT_HOOKS.size() + " injections into the client's tick, run each tick");
+        }
+    }
+
+    private static void readClient(String mod, byte[] bytes) {
+        ClassNode node = new ClassNode();
+        new ClassReader(bytes).accept(node, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+        boolean minecraft = false;
+        for (AnnotationNode a : annotations(node.invisibleAnnotations, node.visibleAnnotations)) {
+            if (!"Lorg/spongepowered/asm/mixin/Mixin;".equals(a.desc)) continue;
+            if (get(a, "value") instanceof List<?> list) {
+                for (Object t : list) minecraft |= CLIENT_OWNER.equals(((org.objectweb.asm.Type) t).getInternalName());
+            }
+            if (get(a, "targets") instanceof List<?> list) {
+                for (Object t : list) minecraft |= CLIENT_OWNER.equals(((String) t).replace('.', '/'));
+            }
+        }
+        if (!minecraft) return;
+        String mixin = node.name.replace('/', '.');
+        for (MethodNode m : node.methods) {
+            for (AnnotationNode a : annotations(m.invisibleAnnotations, m.visibleAnnotations)) {
+                boolean modifyArg = "Lorg/spongepowered/asm/mixin/injection/ModifyArg;".equals(a.desc);
+                if (!modifyArg && !"Lorg/spongepowered/asm/mixin/injection/Inject;".equals(a.desc)) continue;
+                if (!(get(a, "method") instanceof List<?> specs)) continue;
+                for (Object spec : specs) {
+                    String name = parseSpec((String) spec)[0];
+                    if (CLIENT_METHODS.contains(name)) CLIENT_HOOKS.add(new ClientHook(mod, name, mixin, m.name, modifyArg));
+                }
+            }
+        }
+    }
+
+    /**
+     * Runs the mods' injections into {@code minecraft}'s {@code method} (runTick or tick), as one
+     * frame or game tick would reach them. An @Inject gets the method's arguments (runTick's
+     * advanceGameTime: true) and a CallbackInfo; a @ModifyArg of a boolean gets true, its result
+     * unused. Handlers taking locals, or other arguments, are left out. Failures are logged a
+     * few times each (a handler failing once a tick fails every tick).
+     */
+    public static void fireClient(Object minecraft, String method) {
+        if (CLIENT_HOOKS.isEmpty()) return;
+        List<Method> handlers = CLIENT_RESOLVED.computeIfAbsent(method, k -> resolveClient(minecraft.getClass(), method));
+        for (Method handler : handlers) {
+            Class<?>[] params = handler.getParameterTypes();
+            Object[] call = new Object[params.length];
+            for (int i = 0; i < params.length; i++) {
+                if (params[i] == boolean.class) call[i] = true;
+                else if (CallbackInfo.class.isAssignableFrom(params[i])) call[i] = new CallbackInfo(method, true);
+            }
+            try {
+                handler.invoke(Modifier.isStatic(handler.getModifiers()) ? null : minecraft, call);
+            } catch (Throwable t) {
+                Throwable cause = t instanceof java.lang.reflect.InvocationTargetException ite && ite.getCause() != null ? ite.getCause() : t;
+                if (FAILURES.merge(handler.toString(), 1, Integer::sum) <= 3) {
+                    Natives.log("A mod failed in the client's " + method + " (" + handler.getName() + "): " + cause);
+                    StackTraceElement[] frames = cause.getStackTrace();
+                    for (int f = 0; f < Math.min(frames.length, 8); f++) Natives.log("    at " + frames[f]);
+                }
+            }
+        }
+    }
+
+    private static List<Method> resolveClient(Class<?> owner, String method) {
+        List<Method> found = new ArrayList<>();
+        for (Method m : owner.getDeclaredMethods()) {
+            MixinMerged merged = m.getAnnotation(MixinMerged.class);
+            if (merged == null) continue;
+            for (ClientHook h : CLIENT_HOOKS) {
+                if (!h.method().equals(method) || !merged.mixin().equals(h.mixin())) continue;
+                if (!m.getName().equals(h.handler()) && !m.getName().endsWith("$" + h.handler())) continue;
+                Class<?>[] params = m.getParameterTypes();
+                boolean fits = h.modifyArg()
+                        ? params.length == 1 && params[0] == boolean.class
+                        : method.equals("runTick")
+                                ? params.length == 2 && params[0] == boolean.class && CallbackInfo.class.isAssignableFrom(params[1])
+                                : params.length == 1 && CallbackInfo.class.isAssignableFrom(params[0]);
+                if (!fits) {
+                    Natives.log("Mixin census: " + h.mod() + "'s " + h.handler() + " in the client's " + method
+                            + " takes what Horizon can't give; not run");
+                    continue;
+                }
+                m.setAccessible(true);
+                found.add(m);
+            }
+        }
+        if (!found.isEmpty()) Natives.log("Horizon's client: " + found.size() + " mod injection(s) run each client " + method);
+        return found;
     }
 
     private static List<String> mixinConfigs(ModContainer mod) {
+        return mixinConfigs(mod, false);
+    }
+
+    /** A mod's Mixin configs; {@code client}: those for the client only too. */
+    private static List<String> mixinConfigs(ModContainer mod, boolean client) {
         List<String> out = new ArrayList<>();
         try {
             Optional<Path> meta = mod.findPath("fabric.mod.json");
@@ -100,7 +235,7 @@ public final class HorizonHooks {
                 else if (m.isJsonObject()) {
                     JsonObject o = m.getAsJsonObject();
                     String env = o.has("environment") ? o.get("environment").getAsString() : "*";
-                    if (!"client".equals(env) && o.has("config")) out.add(o.get("config").getAsString());
+                    if ((client || !"client".equals(env)) && o.has("config")) out.add(o.get("config").getAsString());
                 }
             }
         } catch (Throwable ignored) {

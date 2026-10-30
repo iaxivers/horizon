@@ -46,6 +46,13 @@ public final class Natives {
     /** A frame of a player's mod screen (HorizonGraphics' operations, JSON), for Horizon to draw. */
     public static native void screenFrame(String uuid, String frame);
 
+    /**
+     * A player's client-only screen (Gui.setScreen with no menu: a mod's settings, a guide
+     * book) opened, or closed: Horizon's window shows it, and its frames, with no window of a
+     * menu under it.
+     */
+    public static native void clientScreen(String uuid, boolean open);
+
     /** A mod changed a player's food (FoodData): its food level and saturation now. */
     public static native void setFood(String uuid, int food, float saturation);
 

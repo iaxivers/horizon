@@ -237,6 +237,68 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
         text(o, x, y, color, shadow);
     }
 
+    /**
+     * Widgets' text (a button's label, a list's lines: AbstractWidget's scrolling strings) goes
+     * through a text collector, which vanilla's adds to the render state directly: here each
+     * line is a text op, in the collector's pose, with its opacity. Long labels scroll as
+     * vanilla's do (defaultScrollingHelper), unclipped.
+     */
+    private final class Collector implements net.minecraft.client.gui.ActiveTextCollector {
+        private Parameters parameters = new Parameters(new Matrix3x2f(pose()));
+
+        @Override
+        public Parameters defaultParameters() {
+            return parameters;
+        }
+
+        @Override
+        public void defaultParameters(Parameters parameters) {
+            this.parameters = parameters;
+        }
+
+        @Override
+        public void accept(net.minecraft.client.gui.TextAlignment alignment, int x, int y, Parameters at,
+                           FormattedCharSequence text) {
+            Font font = HorizonClient.minecraft().font;
+            int left = alignment.calculateLeft(x, font, text);
+            pose().pushMatrix();
+            pose().set(at.pose());
+            try {
+                HorizonGraphics.this.text(font, text, left, y, net.minecraft.util.ARGB.white(at.opacity()), true);
+            } finally {
+                pose().popMatrix();
+            }
+        }
+
+        @Override
+        public void acceptScrolling(Component text, int centerX, int left, int right, int top, int bottom, Parameters at) {
+            Font font = HorizonClient.minecraft().font;
+            defaultScrollingHelper(text, centerX, left, right, top, bottom, font.width(text), font.lineHeight, at);
+        }
+    }
+
+    @Override
+    public net.minecraft.client.gui.ActiveTextCollector textRenderer() {
+        return new Collector();
+    }
+
+    @Override
+    public net.minecraft.client.gui.ActiveTextCollector textRenderer(HoveredTextEffects effects) {
+        return new Collector();
+    }
+
+    @Override
+    public net.minecraft.client.gui.ActiveTextCollector textRenderer(HoveredTextEffects effects,
+                                                                      java.util.function.Consumer<net.minecraft.network.chat.Style> hovered) {
+        return new Collector();
+    }
+
+    @Override
+    public net.minecraft.client.gui.ActiveTextCollector textRendererForWidget(net.minecraft.client.gui.components.AbstractWidget widget,
+                                                                               HoveredTextEffects effects) {
+        return new Collector();
+    }
+
     // ---- Items ----------------------------------------------------------------------------
 
     private void item(String kind, ItemStack stack, int x, int y) {

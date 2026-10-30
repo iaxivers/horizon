@@ -34,6 +34,8 @@
   },
   "client": [
     "HudMixin",
+    "GuiMixin",
+    "ScreenMixin",
     "GameModeClientMixin",
     "SoundManagerMixin",
     "SlotDisplayContextMixin",

@@ -1082,6 +1082,29 @@ mod run {
                             Self::send_java_screen_frame(host, conn, window, &frame);
                         }
                     }
+                    horizon_jvm::events::Action::ClientScreen { uuid, open } => {
+                        let Some(host) = host.as_deref_mut().or(self.lan.as_mut()) else {
+                            continue;
+                        };
+                        let Some(conn) = host
+                            .hub
+                            .guests
+                            .iter()
+                            .find(|g| uuid_string(g.uuid) == uuid)
+                            .map(|g| g.conn)
+                        else {
+                            continue;
+                        };
+                        let mut windows = JAVA_WINDOWS.lock().unwrap_or_else(|e| e.into_inner());
+                        let client = (conn, super::super::java_screen::CLIENT_WINDOW);
+                        if open {
+                            // Its frames and input go by the client-only screen's window.
+                            windows.insert(uuid, client);
+                        } else if windows.get(&uuid) == Some(&client) {
+                            windows.remove(&uuid);
+                            Self::send_java_screen_close(host, conn);
+                        }
+                    }
                     horizon_jvm::events::Action::Food {
                         uuid,
                         food,
@@ -1123,7 +1146,9 @@ mod run {
                         };
                         let mut windows = JAVA_WINDOWS.lock().unwrap_or_else(|e| e.into_inner());
                         let Some(items) = items else {
-                            if let Some((c, w)) = windows.remove(&uuid) {
+                            if let Some((c, w)) = windows.remove(&uuid)
+                                && w != super::super::java_screen::CLIENT_WINDOW
+                            {
                                 host.hub.close_window(c, w);
                             }
                             continue;
@@ -1145,6 +1170,10 @@ mod run {
                         let Some(&(c, w)) = windows.get(&uuid) else {
                             continue;
                         };
+                        // A client-only screen over the menu: no window to fill.
+                        if w == super::super::java_screen::CLIENT_WINDOW {
+                            continue;
+                        }
                         let item = |s: &Option<String>| {
                             let snbt = s.as_deref()?;
                             match horizon_world::nbt::parse_snbt(snbt) {

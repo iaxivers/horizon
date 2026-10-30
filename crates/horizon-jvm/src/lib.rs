@@ -414,6 +414,11 @@ fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
                 fn_ptr: native_screen_frame as *mut c_void,
             },
             NativeMethod {
+                name: "clientScreen".into(),
+                sig: "(Ljava/lang/String;Z)V".into(),
+                fn_ptr: native_client_screen as *mut c_void,
+            },
+            NativeMethod {
                 name: "blockEntity".into(),
                 sig: "(Ljava/lang/String;III)Ljava/lang/String;".into(),
                 fn_ptr: native_block_entity as *mut c_void,
@@ -731,6 +736,24 @@ extern "system" fn native_screen_frame(
         events::push(events::Action::ScreenFrame {
             uuid: uuid.into(),
             frame: frame.into(),
+        });
+    }));
+}
+
+/// `Natives.clientScreen(String uuid, boolean open)`.
+extern "system" fn native_client_screen(
+    mut env: JNIEnv,
+    _class: JClass,
+    uuid: JString,
+    open: jni::sys::jboolean,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Ok(uuid) = env.get_string(&uuid) else {
+            return;
+        };
+        events::push(events::Action::ClientScreen {
+            uuid: uuid.into(),
+            open: open != 0,
         });
     }));
 }

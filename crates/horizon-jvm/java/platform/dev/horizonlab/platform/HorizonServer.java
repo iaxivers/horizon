@@ -649,7 +649,7 @@ public final class HorizonServer {
     private static java.lang.reflect.Field HANDLERS;
 
     /** An array-backed Fabric event's listeners, or null if it is some other kind. */
-    private static Object[] listeners(net.fabricmc.fabric.api.event.Event<?> source) {
+    static Object[] listeners(net.fabricmc.fabric.api.event.Event<?> source) {
         try {
             if (HANDLERS == null) {
                 Class<?> backed = Class.forName("net.fabricmc.fabric.impl.base.event.ArrayBackedEvent", false, source.getClass().getClassLoader());
@@ -721,6 +721,8 @@ public final class HorizonServer {
         HorizonEntities.world(worldDir);
         // The server's tick count follows Horizon's (mods time their tasks with it).
         ((MinecraftServerAccess) server).horizon$setTickCount((int) tick);
+        // The headless client's tick (its frame, then its game tick), before the server's.
+        if (client) HorizonClient.clientTick();
         if (!started) {
             started = true;
             fireEach("ServerLifecycleEvents.SERVER_STARTING", ServerLifecycleEvents.SERVER_STARTING, l -> l.onServerStarting(server));
@@ -1140,6 +1142,12 @@ public final class HorizonServer {
      */
     static volatile boolean client;
 
+    /**
+     * The thread running the client half of a player's action now (HorizonClient.useItem), for
+     * which mirrored levels answer isClientSide() true (LevelMixin); null otherwise.
+     */
+    public static volatile Thread clientHalf;
+
     /** Whether the mods' messages loop between their two sides here (HorizonLoop). */
     public static boolean loop() {
         return client;
@@ -1453,8 +1461,22 @@ public final class HorizonServer {
         fire("ServerPlayerGameMode.useItem", () -> result[0] =
                 player.gameMode.useItem(player, level, player.getItemInHand(interaction), interaction));
         syncInventories();
+        // The client half (MultiPlayerGameMode.useItem): a mod's item opens its screen there
+        // (Nature's Compass, guide books). It runs after the server's, so what the server sent
+        // the client for it (delivered at syncInventories) is in.
+        if (client && result[0] != null && modItem(player.getItemInHand(interaction))) {
+            var clientResult = HorizonClient.useItem(player, interaction);
+            syncInventories();
+            if (!result[0].consumesAction() && clientResult != null && clientResult.consumesAction()) result[0] = clientResult;
+        }
         if (!result[0].consumesAction() && !(result[0] instanceof net.minecraft.world.InteractionResult.Fail)) return 0;
         return result[0] instanceof net.minecraft.world.InteractionResult.Success success && success.shouldSwing() ? 2 : 1;
+    }
+
+    /** Whether a stack is a mod's item (vanilla's are Horizon's, both halves). */
+    private static boolean modItem(net.minecraft.world.item.ItemStack stack) {
+        if (stack.isEmpty()) return false;
+        return !"minecraft".equals(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem()).getNamespace());
     }
 
     /**

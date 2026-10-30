@@ -892,6 +892,7 @@ impl Game<'_> {
             Screen::CommandBlock => "command-block",
             Screen::Win => "win",
             Screen::Mod => "mod",
+            Screen::JavaMod => "java-screen",
         }
     }
 

@@ -17,6 +17,10 @@ use winit::keyboard::KeyCode;
 pub(super) const CHANNEL: &str = "horizon:java_screen";
 /// Input, client to server: `{"window": id, "kind": ..., ...}` (HorizonClient.input's).
 pub(super) const INPUT: &str = "horizon:java_screen_input";
+/// The window of a client-only screen (a mod's `Gui.setScreen` with no menu: its settings, a
+/// guide book): no menu's window is open under it. Its frames say this window, and
+/// `{"window": -1, "close": true}` closes it.
+pub(super) const CLIENT_WINDOW: i32 = -1;
 
 /// The mod screen a window shows, as its last frame drew it.
 #[derive(Default)]
@@ -76,6 +80,20 @@ impl Game<'_> {
             return;
         };
         let window = frame.get("window").and_then(Value::as_i64).unwrap_or(-1) as i32;
+        if frame.get("close").and_then(Value::as_bool) == Some(true) {
+            // The mod closed its client-only screen (Gui.setScreen(null)).
+            if self
+                .java_screen
+                .as_ref()
+                .is_some_and(|s| s.window == window)
+            {
+                self.java_screen = None;
+            }
+            if self.screen == Screen::JavaMod {
+                self.leave_java_screen();
+            }
+            return;
+        }
         let ops = match frame.get("ops") {
             Some(Value::Array(ops)) => ops.clone(),
             _ => return,
@@ -97,12 +115,39 @@ impl Game<'_> {
                 })
             }
         }
+        // A client-only screen is a screen of its own, over the world (or what was open).
+        if window == CLIENT_WINDOW && self.screen != Screen::JavaMod {
+            self.screen = Screen::JavaMod;
+            self.capture(false);
+        }
+    }
+
+    /// Back to the world from a client-only screen.
+    fn leave_java_screen(&mut self) {
+        self.screen = Screen::Playing;
+        if self.player.is_some() || self.remote.is_some() {
+            self.capture(true);
+        }
+    }
+
+    /// The window left a client-only screen on its own (Escape with no screen to take it): the
+    /// mod hears it closed.
+    pub(super) fn close_java_screen(&mut self) {
+        if let Some(screen) = self.java_screen.take()
+            && screen.window == CLIENT_WINDOW
+        {
+            self.send_java_screen_input(CLIENT_WINDOW, json!({"kind": "close"}));
+        }
+        self.leave_java_screen();
     }
 
     /// The open window's mod screen, when it has one: the window the server opened is still
     /// the one open, and the inventory screen shows it.
     pub(super) fn java_screen_window(&self) -> Option<i32> {
         let screen = self.java_screen.as_ref()?;
+        if self.screen == Screen::JavaMod {
+            return (screen.window == CLIENT_WINDOW).then_some(CLIENT_WINDOW);
+        }
         let open = self.remote.as_ref()?.menu.as_ref()?.0;
         (self.screen == Screen::Inventory && open == screen.window).then_some(screen.window)
     }
@@ -179,23 +224,56 @@ impl Game<'_> {
                     } else {
                         sprite_key(o.get("sprite").and_then(Value::as_str).unwrap_or_default())
                     };
-                    let Some(mut r) = atlas.sprites.get(&key).copied() else {
+                    let Some(sprite) = atlas.sprites.get(&key).copied() else {
                         continue;
                     };
-                    let (u, v) = (r.u1 - r.u0, r.v1 - r.v0);
+                    let (u, v) = (sprite.u1 - sprite.u0, sprite.v1 - sprite.v0);
                     let (u0, u1) = (int(o, "u0"), o.get("u1").map_or(1.0, |_| int(o, "u1")));
                     let (v0, v1) = (int(o, "v0"), o.get("v1").map_or(1.0, |_| int(o, "v1")));
-                    let base = (r.u0, r.v0);
-                    r.u0 = base.0 + u0 * u;
-                    r.u1 = base.0 + u1 * u;
-                    r.v0 = base.1 + v0 * v;
-                    r.v1 = base.1 + v1 * v;
                     let color = o
                         .get("color")
                         .and_then(Value::as_i64)
                         .map_or(u32::MAX, argb);
                     let (x, y, w, h) = rect();
-                    batch.rect_uv(x, y, w, h, r, color);
+                    // UVs past the texture repeat it (a menu background's 32x32 tile across
+                    // the screen): one quad per repeat, as the atlas can't wrap.
+                    let (du, dv) = (u1 - u0, v1 - v0);
+                    let wraps = du.abs() > 1.0 || dv.abs() > 1.0 || u0 < 0.0 || v0 < 0.0;
+                    if !wraps {
+                        let mut r = sprite;
+                        r.u0 = sprite.u0 + u0 * u;
+                        r.u1 = sprite.u0 + u1 * u;
+                        r.v0 = sprite.v0 + v0 * v;
+                        r.v1 = sprite.v0 + v1 * v;
+                        batch.rect_uv(x, y, w, h, r, color);
+                    } else if du > 0.0 && dv > 0.0 {
+                        // Texture units per pixel, and each tile's piece of [u0, u1].
+                        let (sx, sy) = (w / du, h / dv);
+                        let mut tu = u0;
+                        while tu < u1 - 1e-4 {
+                            let next_u = (tu.floor() + 1.0).min(u1);
+                            let mut tv = v0;
+                            while tv < v1 - 1e-4 {
+                                let next_v = (tv.floor() + 1.0).min(v1);
+                                let (fu, fv) = (tu - tu.floor(), tv - tv.floor());
+                                let mut r = sprite;
+                                r.u0 = sprite.u0 + fu * u;
+                                r.u1 = sprite.u0 + (fu + next_u - tu) * u;
+                                r.v0 = sprite.v0 + fv * v;
+                                r.v1 = sprite.v0 + (fv + next_v - tv) * v;
+                                batch.rect_uv(
+                                    x + (tu - u0) * sx,
+                                    y + (tv - v0) * sy,
+                                    (next_u - tu) * sx,
+                                    (next_v - tv) * sy,
+                                    r,
+                                    color,
+                                );
+                                tv = next_v;
+                            }
+                            tu = next_u;
+                        }
+                    }
                 }
                 "text" => {
                     let (x, y) = (int(o, "x") + dx, int(o, "y") + dy);
@@ -309,6 +387,11 @@ impl Game<'_> {
         let Some(screen) = &self.java_screen else {
             return false;
         };
+        // A client-only screen takes every key, Escape too: the screen closes itself (to its
+        // parent, for a settings page), as vanilla's Screen.keyPressed does.
+        if self.screen == Screen::JavaMod {
+            return screen.window == CLIENT_WINDOW;
+        }
         key != KeyCode::Escape
             && (screen.typing || self.settings.keys.translate(key) != Some(Ok(KeyCode::KeyE)))
             && !self.recipe_search_focused()
@@ -341,6 +424,19 @@ impl Game<'_> {
     }
 
     // ---- The server -----------------------------------------------------------------------
+
+    /// A player's client-only screen closed, from Java: their game leaves it.
+    #[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+    pub(super) fn send_java_screen_close(host: &mut LanHost, conn: u32) {
+        let data = format!("{{\"window\":{CLIENT_WINDOW},\"close\":true}}").into_bytes();
+        host.hub.send_to(
+            conn,
+            &C::CustomPayload(CustomPayload {
+                channel: CHANNEL.into(),
+                data,
+            }),
+        );
+    }
 
     /// A frame of a player's mod screen, from Java: to their game, for their window.
     #[cfg_attr(not(feature = "java-mods"), allow(dead_code))]

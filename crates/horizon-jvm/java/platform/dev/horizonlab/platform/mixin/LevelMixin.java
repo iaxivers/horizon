@@ -97,6 +97,16 @@ public abstract class LevelMixin {
         if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.setBlock((Level) (Object) this, pos, state));
     }
 
+    /**
+     * The client half of a player's action (HorizonClient.useItem: the item's use as the
+     * player's client runs it) sees a client level: the headless client's players stand in the
+     * mirror's server levels, and mods open their screens under isClientSide().
+     */
+    @Inject(method = "isClientSide", at = @At("HEAD"), cancellable = true)
+    private void horizon$clientSide(CallbackInfoReturnable<Boolean> cir) {
+        if (HorizonServer.clientHalf == Thread.currentThread()) cir.setReturnValue(true);
+    }
+
     /** Entities collide with Horizon's blocks: the level is its own chunk for collisions. */
     @Inject(method = "getChunkForCollisions", at = @At("HEAD"), cancellable = true)
     private void horizon$collisions(int x, int z, CallbackInfoReturnable<net.minecraft.world.level.BlockGetter> cir) {

@@ -19,18 +19,18 @@ saying something works.
 | Server mirror | `java/platform/.../HorizonServer.java`: set-up (`setUp`, `level`), the tick (`tick`: players, events, hooks, menus, block entities, frames), menus shown in Horizon's window (`syncMenus`, `SHOWN`), payloads (`payload`), `syncInventories` (end of every call) |
 | Mod block entities | `HorizonBlockEntities.java`: `LIVE` (mods' own, ticked, saved in `horizon-java/block_entities/`), `COPIES` (Horizon's vanilla ones as lasting copies, refreshed each tick, written back on change), Fabric load/unload events |
 | Ticks, light, data, hooks | `HorizonTicks.java`, `HorizonLight.java`, `HorizonData.java` (data packs, recipes), `HorizonHooks.java` (mods' injections fired by name) |
-| Headless client | `HorizonClient.java`: an allocated `Minecraft` (options, font, gui, sound/text-input managers, game mode), a `LocalPlayer` per player, screens (`openScreen`, client menus, `frame`, `input`, `tickScreen`), `as(player, …)` swaps `minecraft.player` and `gui.screen` |
+| Headless client | `HorizonClient.java`: an allocated `Minecraft` (options, font, gui, window, language with mods' translations, sound/text-input managers, game mode), a `LocalPlayer` per player, screens (`openScreen`, client menus, `frame`, `input`, `tickScreen`), client-only screens (`setScreen` via `GuiMixin`, `CLIENT_ONLY`), the client half of item use (`useItem`), the client's tick (`clientTick`), `/modconfig`, `as(player, …)` swaps `minecraft.player` and `gui.screen` |
 | Screen drawing | `HorizonGraphics.java` records `GuiGraphicsExtractor` calls as JSON ops (blit, sprite, fill, gradient, text, item, decorations, tooltips, pose, `typing`) |
 | Mods' messages | `HorizonLoop.java`: server→client payloads queued and delivered after `syncMenus` (`flush`); client→server run at once. Mixins: `PlayNetworkingMixin` (server side), `ClientPlayNetworkingMixin` |
 | Mixins | `java/platform/horizon-platform.mixins.json` (`client` list: headless-client only) |
 | Mods' entities | `HorizonEntities.java` (live per level, ticked as `tickNonPassenger`, saved in `horizon-java/entities/`, attack/interact), `HorizonEntityRender.java` (the mod's renderer submits into a recording collector: part trees once, poses + matrix + texture per tick), mixins `ServerChunkCacheMixin` (a chunk source holding nothing), `PathNavigationRegionMixin`, `ItemModelResolverMixin`; Rust: `game/java_entities.rs` (draw, aim), `server_mods.rs` (`send_java_entities`, `java_entity_attack`/`interact`, `/summon`) |
 | Content conversion | `crates/horizon-port-pack` (`oracle.rs`, `carry.rs`), `HorizonContent.java` (facts, creative tabs), `crates/horizon-client/src/mod_content.rs` (content root) |
-| Game side (Rust) | `crates/horizon-client/src/game/java_mods.rs` (start, content, creative), `server_mods.rs` (actions from Java, menus, block entities, random ticks, `JAVA_STATES`), `java_screen.rs` (draws frames, sends input, key maps) |
+| Game side (Rust) | `crates/horizon-client/src/game/java_mods.rs` (start, content, creative), `server_mods.rs` (actions from Java, menus, block entities, random ticks, `JAVA_STATES`, `JAVA_WINDOWS`), `java_screen.rs` (draws frames, sends input, key maps; `Screen::JavaMod` and `CLIENT_WINDOW` for client-only screens) |
 
 ## How a tick flows
 
 1. Horizon's server tick → `server_mods.rs` → `events::game_time`, `events::server_tick` →
-   `HorizonServer.tick`: players mirrored, Fabric events fired, mods' hooks, levels' ticks,
+   `HorizonServer.tick`: the headless client's tick first (`HorizonClient.clientTick`), players mirrored, Fabric events fired, mods' hooks, levels' ticks,
    block entities (`HorizonBlockEntities.tick`), open menus (`stillValid`, `broadcastChanges`),
    screens (`HorizonClient.sendFrames`: tasks, screen ticks, frames), `syncInventories`
    (Horizon's block entities written back, menus shown, mods' messages delivered).
@@ -44,6 +44,28 @@ saying something works.
    trees it lacks. The client keeps two ticks and lerps positions, matrices and poses.
    Attack/Interact packets with ids from `0x7fff0000` go to Java (`Player.attack`,
    `Player.interactOn`).
+
+## Client-only screens and the client's tick
+
+- `Gui.setScreen` (26.3's `Minecraft.setScreen`) is cancelled in the headless client
+  (`GuiMixin`): `HorizonClient.setScreen` makes it the screen of the player whose client runs
+  now (`minecraft.player` inside `as()`), calls `added` and `init`, and sends
+  `Natives.clientScreen(uuid, true)`. Rust puts `(conn, CLIENT_WINDOW = -1)` in `JAVA_WINDOWS`,
+  so frames and input go as a menu screen's; the client opens `Screen::JavaMod` (blurred
+  world, the frame drawn, every key to the screen, Escape too). `setScreen(null)` →
+  `clientScreen(false)` → `{"window":-1,"close":true}` → back to playing. `setScreen(null)`
+  over a menu's screen closes the menu (`closeContainer`).
+- The client half of `Item.use`: after `HorizonServer.useItem`'s server half (and its
+  `syncInventories`, which delivers what the server sent the client), a mod item's
+  `UseItemCallback` listeners and `ItemStack.use` run on the player's `LocalPlayer` with
+  `HorizonServer.clientHalf` set, for which `LevelMixin` answers `isClientSide()` true.
+- `/modconfig <mod>` opens a mod's settings screen from its Mod Menu entrypoint
+  (`ConfigScreenFactory.create(null)`): needs Mod Menu in the mods folder.
+- `HorizonClient.clientTick` (each server tick, before it, so the first precedes
+  SERVER_STARTING): client tasks, the mods' injections into `Minecraft.runTick` and
+  `Minecraft.tick` (`HorizonHooks.fireClient`: `@Inject` at any point, `@ModifyArg` of a
+  boolean, from client mixin configs too), then `ClientTickEvents` START and END. The client
+  has no level and no player of its own (like a client at its title screen).
 
 ## 26.3 facts that cost time
 
@@ -88,6 +110,20 @@ saying something works.
   and `ModelFeatureRenderer` calls `model.setupAnim(state)` only then. A `Proxy` collector
   runs the defaults with `InvocationHandler.invokeDefault`.
 - The texture of a `RenderType`: `state` (RenderSetup) → `textures` → `Sampler0` → `location()`.
+- Widgets' text (buttons, lists) goes through `GuiGraphicsExtractor.textRenderer*()`, an
+  `ActiveTextCollector` that adds to the render state directly, not through `text()`:
+  `HorizonGraphics` returns its own collector. Before that, vanilla buttons had no labels.
+- A screen with `minecraft.level == null` draws the title screen's panorama and opaque menu
+  background: `ScreenMixin` skips the panorama and uses the in-world background. That
+  background is a 32x32 tile blitted with UVs past 1: `java_screen.rs` tiles such blits.
+- Vanilla's server Language has only vanilla's English: `HorizonClient.language` injects a
+  `ClientLanguage` with every mod's `assets/*/lang/` (English, then the options' language).
+- Screens ask `minecraft.getWindow()` (gui scale, scaled size): an allocated `Window` with
+  the GUI size at scale 3, updated on the screen's `size` input.
+- Xaero's lib finishes loading (`tryLoadLaterClient`, its registries frozen) in a
+  `@ModifyArg` on `Minecraft.runTick`'s `renderFrame` call; without a client frame before
+  SERVER_STARTING it failed with "Registry is not frozen yet!".
+- `horizon-ctl key <name>` needs an action: `key escape tap`.
 - Commands through `horizon-ctl command` run as the owner's console; server mods' commands
   (and `/summon` of a mod entity) now go to the mods first (`owner_console_command`).
 
@@ -150,17 +186,21 @@ Carry On, Nature's Compass, Xaero's Minimap, Balm, Architectury, Cloth, YACL, Ko
 server-side item use (`events::use_item`), saved data, translated mod chat, and the pot and
 terminal screens still work. `SCENE=pack` in `screen_test.sh` places a row of its blocks.
 
+Client-only screens (tested headless: Nature's Compass's biome list opened by right-clicking
+in the air, its clicks and Escape; Xaero's Minimap and Mod Menu settings by `/modconfig`) and
+the client's tick (`ClientTickEvents`, mods' `runTick`/`tick` injections; Xaero's "Registry is
+not frozen yet!" is gone) work.
+
 Next (top failure of the pack, in order):
-1. Client-only screens and the client half of `Item.use`: Nature's Compass opens its screen in
-   `use` when `level.isClientSide()`; the headless client never runs client-side item use, its
-   players sit in server levels, nothing catches `Minecraft.setScreen`, and Horizon's window
-   shows a mod screen only over a container menu. Needs: a client level (or a client-side
-   flag) for the headless player, `setScreen` captured into `SCREENS`, and a menu-less screen
-   mode in `java_screen.rs`. Same gap for config screens and guide books.
-2. The headless client never ticks: no `ClientTickEvents`, no `Minecraft.runTick` (Xaero's
-   lib finishes loading there: "Registry is not frozen yet!" at SERVER_STARTING).
-3. Mod worldgen: TerraBlender/BOP biomes don't generate (Horizon's generator is vanilla's).
-4. Mod chunk loaders: chunk tickets from Java are dropped.
+1. Nature's Compass's search starts (the item says searching) but never samples: its
+   `WorldWorkerManager` runs in `tickServer`'s hooks, the biome sampling against the mirror
+   doesn't progress yet (look at the worker's `doWork` on a mirrored level).
+2. Mod worldgen: TerraBlender/BOP biomes don't generate (Horizon's generator is vanilla's).
+3. Mod chunk loaders: chunk tickets from Java are dropped.
+4. Mods' key bindings: Horizon's keys don't reach the headless client's `KeyMapping`s (Xaero's
+   settings key, a guide book's key), and the client tick runs with no player, so mods that
+   act on keys in `END_CLIENT_TICK` do nothing. No list of Java mods' settings in Horizon's own
+   menus yet (`/modconfig` is the way in).
 Then: mod screens for LAN/remote players (frames go to the window's own player only), NeoForge
 later.
 

@@ -65,7 +65,130 @@ public final class HorizonClient {
         set(Minecraft.class, mc, "textInputManager", Natives.allocate(com.mojang.blaze3d.platform.TextInputManager.class));
         // Buttons click with a sound: a manager without an engine (SoundManagerMixin).
         set(Minecraft.class, mc, "soundManager", Natives.allocate(net.minecraft.client.sounds.SoundManager.class));
+        // A window of Horizon's GUI size (mods' screens lay out by getWindow()'s scaled size and
+        // scale: Xaero's settings), with no SDL window under it.
+        set(Minecraft.class, mc, "window", Natives.allocate(com.mojang.blaze3d.platform.Window.class));
+        windowSize();
+        registerCommands();
+        language(mc.options.languageCode);
         Natives.log("Horizon's headless client is up");
+    }
+
+    /**
+     * The client's language (LanguageManager's ClientLanguage, from the resource manager the
+     * headless client lacks): vanilla's English, then every mod's {@code assets/<ns>/lang/}
+     * English and the chosen language over it. Screens' text, which their code resolves here
+     * (a mod's "string.naturescompass.selectBiome"), and the server's getString() read it.
+     */
+    private static void language(String code) {
+        java.util.Map<String, String> storage = new java.util.HashMap<>();
+        java.util.List<String> codes = code == null || code.equals("en_us") ? java.util.List.of("en_us") : java.util.List.of("en_us", code);
+        for (String lang : codes) {
+            try (var in = Minecraft.class.getClassLoader().getResourceAsStream("assets/minecraft/lang/" + lang + ".json")) {
+                if (in != null) net.minecraft.locale.Language.loadFromJson(in, storage::put);
+            } catch (Exception e) {
+                Natives.log("Horizon's client: vanilla's " + lang + " could not be read: " + e);
+            }
+            for (var mod : net.fabricmc.loader.api.FabricLoader.getInstance().getAllMods()) {
+                for (java.nio.file.Path root : mod.getRootPaths()) {
+                    java.nio.file.Path assets = root.resolve("assets");
+                    if (!java.nio.file.Files.isDirectory(assets)) continue;
+                    try (var namespaces = java.nio.file.Files.list(assets)) {
+                        for (java.nio.file.Path ns : (Iterable<java.nio.file.Path>) namespaces::iterator) {
+                            java.nio.file.Path file = ns.resolve("lang/" + lang + ".json");
+                            if (!java.nio.file.Files.isRegularFile(file)) continue;
+                            try (var in = java.nio.file.Files.newInputStream(file)) {
+                                net.minecraft.locale.Language.loadFromJson(in, storage::put);
+                            } catch (Exception e) {
+                                Natives.log("Horizon's client: " + mod.getMetadata().getId() + "'s " + file + " could not be read: " + e);
+                            }
+                        }
+                    } catch (java.io.IOException e) {
+                        // A mod whose assets can't be listed has no translations for us.
+                    }
+                }
+            }
+        }
+        try {
+            var make = net.minecraft.client.resources.language.ClientLanguage.class.getDeclaredConstructor(java.util.Map.class, boolean.class);
+            make.setAccessible(true);
+            net.minecraft.locale.Language.inject(make.newInstance(storage, false));
+        } catch (ReflectiveOperationException e) {
+            Natives.log("Horizon's client: no language with mods' translations: " + e);
+        }
+    }
+
+    // ---- Mods' settings screens ---------------------------------------------------------------
+
+    /**
+     * {@code /modconfig <mod>}: the mod's settings screen, as Mod Menu's list opens it (its
+     * "modmenu" entrypoint's ConfigScreenFactory, with no parent screen), for the player who
+     * runs it. Horizon's own menus have no list of Java mods yet; this is the way in.
+     */
+    private static void registerCommands() {
+        net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback.EVENT.register((dispatcher, context, environment) ->
+                dispatcher.register(net.minecraft.commands.Commands.literal("modconfig")
+                        .then(net.minecraft.commands.Commands.argument("mod", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                .suggests((c, b) -> net.minecraft.commands.SharedSuggestionProvider.suggest(configScreens().keySet(), b))
+                                .executes(c -> openConfig(c.getSource(),
+                                        com.mojang.brigadier.arguments.StringArgumentType.getString(c, "mod"))))));
+    }
+
+    /** The mods with a settings screen, by id: what makes it from a parent screen. */
+    static java.util.Map<String, java.util.function.UnaryOperator<net.minecraft.client.gui.screens.Screen>> configScreens() {
+        java.util.Map<String, java.util.function.UnaryOperator<net.minecraft.client.gui.screens.Screen>> out = new java.util.TreeMap<>();
+        java.lang.reflect.Method create;
+        try {
+            create = Class.forName("com.terraformersmc.modmenu.api.ConfigScreenFactory", true, HorizonClient.class.getClassLoader())
+                    .getMethod("create", net.minecraft.client.gui.screens.Screen.class);
+        } catch (ReflectiveOperationException | LinkageError e) {
+            return out; // No Mod Menu: its entrypoints can't load.
+        }
+        for (var container : net.fabricmc.loader.api.FabricLoader.getInstance().getEntrypointContainers("modmenu", Object.class)) {
+            String id = container.getProvider().getMetadata().getId();
+            try {
+                Object api = container.getEntrypoint();
+                Object factory = api.getClass().getMethod("getModConfigScreenFactory").invoke(api);
+                if (factory != null) out.put(id, parent -> make(create, factory, parent));
+                if (api.getClass().getMethod("getProvidedConfigScreenFactories").invoke(api) instanceof java.util.Map<?, ?> provided) {
+                    provided.forEach((mod, f) -> out.putIfAbsent(String.valueOf(mod), parent -> make(create, f, parent)));
+                }
+            } catch (Throwable t) {
+                Natives.log("Horizon's client: " + id + "'s settings screen can't be made: " + t);
+            }
+        }
+        return out;
+    }
+
+    private static net.minecraft.client.gui.screens.Screen make(java.lang.reflect.Method create, Object factory,
+                                                               net.minecraft.client.gui.screens.Screen parent) {
+        try {
+            return (net.minecraft.client.gui.screens.Screen) create.invoke(factory, parent);
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException(e.getCause() != null ? e.getCause() : e);
+        }
+    }
+
+    private static int openConfig(net.minecraft.commands.CommandSourceStack source, String mod) {
+        var player = source.getPlayer();
+        var factory = configScreens().get(mod);
+        if (player == null || factory == null) {
+            source.sendFailure(net.minecraft.network.chat.Component.literal(player == null
+                    ? "Only a player can open a mod's settings"
+                    : "No settings screen for " + mod + " (Mod Menu installed? " + String.join(", ", configScreens().keySet()) + ")"));
+            return 0;
+        }
+        try {
+            as(player, () -> setScreen(factory.apply(null)));
+        } catch (Throwable t) {
+            Throwable root = t;
+            while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+            Natives.log("Horizon's client: " + mod + "'s settings screen failed: " + root);
+            for (StackTraceElement frame : root.getStackTrace()) Natives.log("    at " + frame);
+            source.sendFailure(net.minecraft.network.chat.Component.literal(mod + "'s settings screen failed: " + root));
+            return 0;
+        }
+        return 1;
     }
 
     /** Whether this JVM's client is Horizon's headless one. */
@@ -192,6 +315,24 @@ public final class HorizonClient {
     /** The size Horizon's GUI has (scaled pixels), which screens lay out in. */
     static int width = 427, height = 240;
 
+    /** The headless window's size: Horizon's GUI size, at scale 3 (1280x720's). */
+    private static void windowSize() {
+        try {
+            var window = minecraft.getWindow();
+            if (window == null) return;
+            Class<?> owner = com.mojang.blaze3d.platform.Window.class;
+            int scale = 3;
+            for (String f : new String[] {"width", "framebufferWidth", "windowedWidth"}) set(owner, window, f, width * scale);
+            for (String f : new String[] {"height", "framebufferHeight", "windowedHeight"}) set(owner, window, f, height * scale);
+            set(owner, window, "guiScaledWidth", width);
+            set(owner, window, "guiScaledHeight", height);
+            set(owner, window, "guiScale", scale);
+            set(owner, window, "focused", true);
+        } catch (ReflectiveOperationException e) {
+            Natives.log("Horizon's client: the window's size could not be set: " + e);
+        }
+    }
+
     private static final java.util.Map<java.util.UUID, net.minecraft.client.gui.screens.Screen> SCREENS =
             new java.util.concurrent.ConcurrentHashMap<>();
     private static final java.util.Map<java.util.UUID, net.minecraft.client.player.LocalPlayer> PLAYERS =
@@ -215,6 +356,10 @@ public final class HorizonClient {
             set(net.minecraft.world.entity.Entity.class, local, "level", player.level());
             // Its synced data (health: isAlive, which a screen's tick asks): the server player's.
             set(net.minecraft.world.entity.Entity.class, local, "entityData", player.getEntityData());
+            // Its worn and off-hand items (getItemInHand(OFF_HAND), an item's client use): the
+            // server player's.
+            set(net.minecraft.world.entity.LivingEntity.class, local, "equipment",
+                    field(net.minecraft.world.entity.LivingEntity.class, player, "equipment"));
             PLAYERS.put(player.getUUID(), local);
         }
         SERVER_PLAYERS.put(local, player);
@@ -334,11 +479,144 @@ public final class HorizonClient {
     }
 
     public static void closeScreen(java.util.UUID player) {
+        CLIENT_ONLY.remove(player);
         CLIENT_MENUS.remove(player);
         SCREENS.remove(player);
         OWNERS.remove(player);
         SENT.remove(player);
         MOUSE.remove(player);
+    }
+
+    /** Players whose open screen is a client-only one (no menu under it: Gui.setScreen's). */
+    private static final java.util.Set<java.util.UUID> CLIENT_ONLY = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * Gui.setScreen in the headless client (GuiMixin): a mod's client code opens a screen of its
+     * own, with no menu (Nature's Compass's biome list, a config screen, a guide book), or
+     * closes it (null). It is the screen of the player whose client runs now (Minecraft.player:
+     * their item's use, a message to their client, their screen's input). Horizon's window shows
+     * it as a menu's (Natives.clientScreen, then frames).
+     */
+    public static void setScreen(net.minecraft.client.gui.screens.Screen screen) {
+        var player = serverPlayer(minecraft.player);
+        if (player == null) {
+            if (screen != null) {
+                Natives.log("Horizon's client: " + screen.getClass().getName()
+                        + " was opened with no player's client running; not shown");
+            }
+            return;
+        }
+        java.util.UUID id = player.getUUID();
+        var current = SCREENS.get(id);
+        if (screen == current) return;
+        boolean clientOnly = CLIENT_ONLY.contains(id);
+        if (current != null && !clientOnly && screen == null) {
+            // A menu's screen closing itself (a Done button): the menu closes, as
+            // LocalPlayer.closeContainer has the server do; the window follows.
+            player.closeContainer();
+            return;
+        }
+        try {
+            if (current != null && clientOnly) current.removed();
+            if (screen == null) {
+                closeScreen(id);
+                Natives.clientScreen(id.toString(), false);
+                return;
+            }
+            // Over a menu's screen (a button that opens a mod's settings), the menu stays open
+            // on the server, as vanilla's does until the client says otherwise.
+            CLIENT_MENUS.remove(id);
+            SCREENS.put(id, screen);
+            OWNERS.put(id, player);
+            CLIENT_ONLY.add(id);
+            SENT.remove(id);
+            // Vanilla's order: the GUI's screen is the new one, added, then laid out in the
+            // GUI's size. (as() puts the GUI's screen back when the caller's run ends.)
+            set(net.minecraft.client.gui.Gui.class, minecraft.gui, "screen", screen);
+            screen.added();
+            screen.init(width, height);
+            Natives.clientScreen(id.toString(), true);
+        } catch (Throwable t) {
+            Throwable root = t;
+            while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+            Natives.log("Horizon's client: " + (screen == null ? "a screen could not close" : screen.getClass().getName()
+                    + " could not open") + ": " + root);
+            for (StackTraceElement frame : root.getStackTrace()) Natives.log("    at " + frame);
+            if (screen != null && SCREENS.get(id) == screen) {
+                closeScreen(id);
+                Natives.clientScreen(id.toString(), false);
+            }
+        }
+    }
+
+    /** A client-only screen shut from outside it (the window closed it): no screen. */
+    private static void shut(java.util.UUID id, net.minecraft.server.level.ServerPlayer player) throws Throwable {
+        if (!CLIENT_ONLY.contains(id)) return;
+        as(player, () -> setScreen(null));
+    }
+
+    /**
+     * The client half of using an item on nothing (MultiPlayerGameMode.useItem, after the
+     * server's): Fabric's UseItemCallback, then the item's own use, on the player's client
+     * player, with mirrored levels answering isClientSide() true (LevelMixin). What it opens
+     * (Gui.setScreen) is the player's screen.
+     */
+    public static net.minecraft.world.InteractionResult useItem(net.minecraft.server.level.ServerPlayer player,
+                                                                net.minecraft.world.InteractionHand hand) {
+        if (minecraft == null || minecraft.font == null) return null;
+        net.minecraft.world.InteractionResult[] result = {net.minecraft.world.InteractionResult.PASS};
+        try {
+            as(player, () -> {
+                var local = minecraft.player;
+                var level = local.level();
+                HorizonServer.clientHalf = Thread.currentThread();
+                try {
+                    var event = net.fabricmc.fabric.api.event.player.UseItemCallback.EVENT;
+                    Object[] listeners = HorizonServer.listeners(event);
+                    for (Object listener : listeners != null ? listeners : new Object[] {event.invoker()}) {
+                        var r = ((net.fabricmc.fabric.api.event.player.UseItemCallback) listener).interact(local, level, hand);
+                        if (r != net.minecraft.world.InteractionResult.PASS) {
+                            result[0] = r;
+                            return;
+                        }
+                    }
+                    result[0] = local.getItemInHand(hand).use(level, local, hand);
+                } finally {
+                    HorizonServer.clientHalf = null;
+                }
+            });
+        } catch (Throwable t) {
+            Throwable root = t;
+            while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+            Natives.log("Horizon's client: the client side of using "
+                    + net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(player.getItemInHand(hand).getItem())
+                    + " failed: " + root);
+            for (StackTraceElement frame : root.getStackTrace()) Natives.log("    at " + frame);
+        }
+        return result[0];
+    }
+
+    // ---- The client's tick ------------------------------------------------------------------
+
+    /**
+     * One tick of the headless client, as Minecraft.runTick runs one per frame and
+     * Minecraft.tick one per game tick: Fabric's ClientTickEvents (START, END) and mods'
+     * injections into runTick and tick (HorizonHooks.fireClient: Xaero's lib finishes loading at
+     * runTick's renderFrame). The client has no level and no player of its own (Horizon's window
+     * plays), as a client at its title screen: mods' tick code checks for both. Before the
+     * server's tick, so the first comes before SERVER_STARTING, as a client's frames come before
+     * its integrated server starts.
+     */
+    public static void clientTick() {
+        if (minecraft == null || minecraft.font == null) return;
+        Thread.currentThread().setContextClassLoader(HorizonClient.class.getClassLoader());
+        tasks();
+        HorizonHooks.fireClient(minecraft, "runTick");
+        HorizonHooks.fireClient(minecraft, "tick");
+        HorizonServer.fireEach("ClientTickEvents.START_CLIENT_TICK",
+                net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.START_CLIENT_TICK, l -> l.onStartTick(minecraft));
+        HorizonServer.fireEach("ClientTickEvents.END_CLIENT_TICK",
+                net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK, l -> l.onEndTick(minecraft));
     }
 
     /** One frame of a player's mod screen, as Horizon draws it (HorizonGraphics' operations). */
@@ -395,6 +673,9 @@ public final class HorizonClient {
     }
 
     // ---- Frames to Horizon, input from it -------------------------------------------------------
+
+    /** HORIZON_JAVA_DEBUG=screens: each input to a mod's screen is logged. */
+    private static final boolean DEBUG_INPUT = String.valueOf(System.getenv("HORIZON_JAVA_DEBUG")).contains("screens");
 
     /** Each player's mouse over their screen, in GUI pixels. */
     private static final java.util.Map<java.util.UUID, double[]> MOUSE = new java.util.concurrent.ConcurrentHashMap<>();
@@ -480,6 +761,7 @@ public final class HorizonClient {
         if (screen == null || player == null) return;
         var in = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
         String kind = in.get("kind").getAsString();
+        if (DEBUG_INPUT) Natives.log("screen input " + json + " to " + screen.getClass().getName());
         double x = in.has("x") ? in.get("x").getAsDouble() : MOUSE.getOrDefault(id, new double[2])[0];
         double y = in.has("y") ? in.get("y").getAsDouble() : MOUSE.getOrDefault(id, new double[2])[1];
         int button = in.has("button") ? in.get("button").getAsInt() : 0;
@@ -493,6 +775,7 @@ public final class HorizonClient {
                     case "size" -> {
                         width = in.get("width").getAsInt();
                         height = in.get("height").getAsInt();
+                        windowSize();
                         screen.resize(width, height);
                     }
                     case "move" -> screen.mouseMoved(x, y);
@@ -501,8 +784,20 @@ public final class HorizonClient {
                     case "drag" -> screen.mouseDragged(event,
                             in.has("dx") ? in.get("dx").getAsDouble() : 0, in.has("dy") ? in.get("dy").getAsDouble() : 0);
                     case "scroll" -> screen.mouseScrolled(x, y, in.get("h").getAsDouble(), in.get("v").getAsDouble());
-                    case "key" -> screen.keyPressed(new net.minecraft.client.input.KeyEvent(
-                            in.get("key").getAsInt(), in.has("keycode") ? in.get("keycode").getAsInt() : in.get("key").getAsInt(), mods));
+                    case "key" -> {
+                        int key = in.get("key").getAsInt();
+                        screen.keyPressed(new net.minecraft.client.input.KeyEvent(
+                                key, in.has("keycode") ? in.get("keycode").getAsInt() : key, mods));
+                        // Escape (41) on a client-only screen: Screen.keyPressed closes it
+                        // (onClose: setScreen(null), or its parent); one that took the key and
+                        // stayed, though it closes on Escape, is closed, so the window never
+                        // keeps a screen it can't leave.
+                        if (key == 41 && CLIENT_ONLY.contains(id) && SCREENS.get(id) == screen && screen.shouldCloseOnEsc()) {
+                            setScreen(null);
+                        }
+                    }
+                    // The window left a client-only screen (it closed it itself).
+                    case "close" -> shut(id, player);
                     case "char" -> screen.charTyped(new net.minecraft.client.input.CharacterEvent(in.get("char").getAsInt()));
                     default -> {}
                 }

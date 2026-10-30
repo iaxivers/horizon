@@ -138,6 +138,10 @@ pub enum Action {
     /// A frame of the player's open mod screen, drawn by the mod's own client code in the
     /// headless client: its operations as JSON (`HorizonGraphics`), for the player's game to draw.
     ScreenFrame { uuid: String, frame: String },
+    /// A player's client-only screen (`Gui.setScreen` with no menu: a mod's settings, a guide
+    /// book, Nature's Compass's list) opened or closed: their game shows it with no menu's
+    /// window under it, its frames as a menu screen's.
+    ClientScreen { uuid: String, open: bool },
     /// A mod fed (or starved) a player: its `FoodData` now (a pie's slice).
     Food {
         uuid: String,
