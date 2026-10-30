@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "horizon_loader",
+  "version": "1.0.0",
+  "name": "Horizon Loader",
+  "description": "Chunk tickets as chunk loader mods take them (a ticket type of its own, ServerLevel.setChunkForced), by command: a check of the Java mod bridge's chunk loading.",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["dev.horizonlab.loadermod.LoaderMod"]
+  },
+  "depends": {
+    "fabricloader": ">=0.20",
+    "minecraft": "26.3",
+    "fabric-api": "*"
+  }
+}

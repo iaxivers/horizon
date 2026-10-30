@@ -92,6 +92,12 @@ public final class Natives {
     public static native void broadcast(String text);
 
     /**
+     * The chunks mods' tickets keep loaded and ticking in a dimension, as forced chunks
+     * (ticket level 31): "x,z;x,z;..." (empty: none). Sent when they change.
+     */
+    public static native void chunkTickets(String dimension, String chunks);
+
+    /**
      * An instance of {@code type} made without running a constructor (JNI AllocObject): the
      * game objects Horizon's state is mirrored into. Every field starts at its default.
      */

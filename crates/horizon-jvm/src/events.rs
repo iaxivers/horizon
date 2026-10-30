@@ -34,6 +34,8 @@ pub struct Player {
     pub saturation: f32,
     /// Vanilla's permission level, 0 (everyone) to 4 (owner): what the player's commands may do.
     pub permission: u8,
+    /// The sneak key is held (`Player.isShiftKeyDown`: a mod's sneak-click, a wrench's mode).
+    pub sneaking: bool,
     /// The inventory, when it changed since the last tick (None: as it was): the
     /// [`INVENTORY_SLOTS`] slots in vanilla's `Inventory` order (hotbar 0-8, the rest 9-35,
     /// feet, legs, chest, head 36-39, off hand 40), each an item stack as vanilla's
@@ -86,6 +88,12 @@ pub enum Action {
     /// `PlayerList.broadcastSystemMessage`: a line to every player, and the server log; a
     /// JSON component, as `Tell`'s.
     Broadcast { text: String },
+    /// Mods' chunk tickets (chunk loaders, `setChunkForced`) in a dimension: every chunk they
+    /// keep loaded and ticking, as forced chunks are. The whole set, sent when it changes.
+    ChunkTickets {
+        dimension: String,
+        chunks: Vec<(i32, i32)>,
+    },
     /// `ServerPlayer.teleport` and the connection's: the player is to be moved there.
     Teleport {
         uuid: String,
@@ -319,7 +327,12 @@ fn call_tick(
         .iter()
         .flat_map(|p| [p.food as f32, p.saturation])
         .collect();
-    let permissions: Vec<i32> = players.iter().map(|p| i32::from(p.permission)).collect();
+    // Per player: the permission level in the low 8 bits, bit 8 the sneak key
+    // (HorizonServer.tick's `permissions`).
+    let permissions: Vec<i32> = players
+        .iter()
+        .map(|p| i32::from(p.permission) | (i32::from(p.sneaking) << 8))
+        .collect();
     // INVENTORY_SLOTS per player; nulls for a player whose inventory didn't change.
     let mut inventories: Vec<Option<&str>> = Vec::with_capacity(players.len() * INVENTORY_SLOTS);
     for p in players {

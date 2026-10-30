@@ -187,6 +187,7 @@ fn fabric_api_and_a_mod_on_the_real_game() {
         food: 20,
         saturation: 5.0,
         permission: 0,
+        sneaking: false,
         inventory: None,
     };
     let uuid = steve.uuid.clone();

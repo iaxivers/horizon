@@ -475,6 +475,11 @@ fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
                 fn_ptr: native_broadcast as *mut c_void,
             },
             NativeMethod {
+                name: "chunkTickets".into(),
+                sig: "(Ljava/lang/String;Ljava/lang/String;)V".into(),
+                fn_ptr: native_chunk_tickets as *mut c_void,
+            },
+            NativeMethod {
                 name: "allocate".into(),
                 sig: "(Ljava/lang/Class;)Ljava/lang/Object;".into(),
                 fn_ptr: native_allocate as *mut c_void,
@@ -698,6 +703,36 @@ extern "system" fn native_tab_name(mut env: JNIEnv, _class: JClass, uuid: JStrin
         };
         events::push(events::Action::TabName { uuid, json });
     }));
+}
+
+/// `Natives.chunkTickets(String dimension, String chunks)`: "x,z;x,z;...".
+extern "system" fn native_chunk_tickets(
+    mut env: JNIEnv,
+    _class: JClass,
+    dimension: JString,
+    chunks: JString,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (Ok(dimension), Ok(chunks)) = (env.get_string(&dimension), env.get_string(&chunks))
+        else {
+            return;
+        };
+        let chunks = parse_chunks(&String::from(chunks));
+        events::push(events::Action::ChunkTickets {
+            dimension: String::from(dimension),
+            chunks,
+        });
+    }));
+}
+
+/// "x,z;x,z;..." as chunk positions (malformed entries skipped).
+fn parse_chunks(text: &str) -> Vec<(i32, i32)> {
+    text.split(';')
+        .filter_map(|pair| {
+            let (x, z) = pair.split_once(',')?;
+            Some((x.trim().parse().ok()?, z.trim().parse().ok()?))
+        })
+        .collect()
 }
 
 /// `Natives.openMenu(String uuid, String menu, String title)`: title may be null.

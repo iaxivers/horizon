@@ -3049,7 +3049,7 @@ impl Game<'_> {
             (!self.options.execution_role.is_client() || !players.is_empty()).then(|| {
                 horizon_client::ticket_levels::Sources {
                     players,
-                    forced: self.streaming.forced.iter().copied().collect(),
+                    forced: self.streaming.kept_chunks().collect(),
                     view_distance: self.settings.render_distance.clamp(2, 32),
                     simulation_distance: self.settings.simulation_distance.max(2),
                 }

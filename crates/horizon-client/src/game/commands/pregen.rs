@@ -255,7 +255,10 @@ impl Game<'_> {
         // only asked for by the tick's own `update_world`.
         let players = !paused && self.spawn_wait.is_empty();
         while self.pregen_runs_here()
-            || ((players || !self.streaming.forced.is_empty()) && self.streaming.busy())
+            || ((players
+                || !self.streaming.forced.is_empty()
+                || !self.streaming.ticketed().is_empty())
+                && self.streaming.busy())
         {
             let now = Instant::now();
             if now >= until {

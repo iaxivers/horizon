@@ -111,6 +111,14 @@ pub(super) struct Levels {
     parked: HashMap<Dim, Parked>,
 }
 
+impl Parked {
+    /// The chunks Java mods' chunk loaders keep in this level.
+    #[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+    pub(super) fn set_ticketed(&mut self, chunks: Vec<(i32, i32)>) {
+        self.streaming.set_ticketed(chunks);
+    }
+}
+
 impl Levels {
     /// The chunks of each level not in place (capability `world` lends
     /// them to server mods for a call).
@@ -148,6 +156,9 @@ impl Game<'_> {
         )?;
         let mut world = World::new(self.res.facts().air, self.level.seed);
         world.fast_lava = dim == Dim::Nether;
+        let mut streaming = streaming;
+        // What Java mods' chunk loaders asked of it before it opened.
+        streaming.set_ticketed(super::server_mods::java_tickets(dim.id()));
         Ok(Parked {
             world,
             streaming,
@@ -454,13 +465,15 @@ impl Game<'_> {
         let mut dims: Vec<Dim> = [Dim::Overworld, Dim::Nether, Dim::End]
             .into_iter()
             .filter(|d| {
+                // Forced chunks: `/forceload`'s, and those Java mods' chunk loaders keep
+                // (a level not opened yet opens for them).
                 let forced = if *d == self.dim {
-                    !self.streaming.forced.is_empty()
+                    !self.streaming.forced.is_empty() || !self.streaming.ticketed().is_empty()
                 } else {
-                    self.levels
-                        .parked
-                        .get(d)
-                        .is_some_and(|p| !p.streaming.forced.is_empty())
+                    self.levels.parked.get(d).map_or_else(
+                        || !super::server_mods::java_tickets(d.id()).is_empty(),
+                        |p| !p.streaming.forced.is_empty() || !p.streaming.ticketed().is_empty(),
+                    )
                 };
                 guests.iter().any(|g| g.dimension == d.id())
                     || forced

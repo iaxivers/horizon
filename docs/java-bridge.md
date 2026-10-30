@@ -103,6 +103,17 @@ saying something works.
   besides each level's.
 - Chat from Java goes to Horizon as JSON components (`chatJson`): `getString()` on the server
   side gives a mod's translation key (its Language is vanilla's English only).
+- Mods' constructor injections (`@Inject` at `<init>` TAIL/RETURN) don't run on mirror objects
+  (made without constructors): `HorizonHooks.constructed(object)` runs them, superclass first,
+  for mirrored levels once the world's saved data is there (Chunk Loaders' per-level loaders,
+  Fabric's attachments). Levels are first made by the content export, before any world.
+- `ServerLevelEvents.LOAD` fires for each mirrored level (vanilla: `createLevels`, before
+  `SERVER_STARTED`).
+- Saved tickets come back deactivated (`TicketStorage`'s codec): vanilla activates them as the
+  server prepares its levels; `HorizonTickets.storage` does on first use.
+- `Player.isShiftKeyDown` follows the player's sneak key (bit 8 of `tick`'s per-player
+  `permissions`): mods' sneak-clicks (Chunk Loaders' owner, wrenches).
+- `tools/java_bridge/java.sh` fails when javac does (it used to copy the last jars and go on).
 - `Connection.isMemoryConnection()` is true for mirrored players while the headless client runs
   (as singleplayer's): mods skip remote-only work (config sync expecting a configuration phase).
 - Entities need more of a level than blocks: `getChunkSource()` (broadcasts, path regions:
@@ -225,23 +236,47 @@ the client's tick (`ClientTickEvents`, mods' `runTick`/`tick` injections; Xaero'
 not frozen yet!" is gone) work.
 
 Next (top failure of the pack, in order):
-1. Nature's Compass's search starts (the item says searching) but never samples: its
-   `WorldWorkerManager` runs in `tickServer`'s hooks, the biome sampling against the mirror
-   doesn't progress yet (look at the worker's `doWork` on a mirrored level).
-2. Mod chunk loaders: chunk tickets from Java are dropped.
-3. Mods' key bindings: Horizon's keys don't reach the headless client's `KeyMapping`s (Xaero's
-   settings key, a guide book's key), and the client tick runs with no player, so mods that
-   act on keys in `END_CLIENT_TICK` do nothing. No list of Java mods' settings in Horizon's own
-   menus yet (`/modconfig` is the way in).
-4. Mods' worldgen gaps: mod saplings and bone meal fail (`randomTick`: "Should always be
+1. Mods' worldgen gaps: mod saplings and bone meal fail (`randomTick`: "Should always be
    able to create a chunk!": the mirror's chunk source gives no chunks to the feature);
    far terrain (LOD), `/locate biome|structure` and the spawn search use vanilla's biomes;
    a Java proto dropped unfinished isn't saved (a neighbour's tree cut at the edge of where
    the player went); block/fluid ticks and post-processing of generated chunks aren't
    carried; the Nether and End through TerraBlender untested; "flowering" leaves of BOP
    (an untinted overlay layer) draw grey patches (content conversion, not worldgen).
-Then: mod screens for LAN/remote players (frames go to the window's own player only), NeoForge
-later.
+2. Mods' key bindings with a client level: the client tick runs as each player but with no
+   `Minecraft.level` (mods that check it, Xaero's keys, still do nothing). No list of Java
+   mods' settings in Horizon's own menus yet (`/modconfig` is the way in).
+Then: NeoForge later.
+
+Nature's Compass searches (tested: right-click, pick a biome, Search; it samples and finds,
+and Horizon's world has that biome there). The headless client's `LocalPlayer` has the server
+player's position, block and chunk position, box and rotation each time it is used; an
+unchanged inventory slot keeps its `ItemStack` (mods write to the stack they were used with).
+
+Mods' key bindings (tested with the `keysmod` fixture: `tools/java_bridge/fixture_mod.sh
+keysmod <jar>`, G says so in chat): the server tells each player's game once which keys mods'
+`KeyMapping`s are set to (`horizon:java_keys`, 26.3 scancodes); the game sends those while
+playing with no screen open, and their releases (`bind` on the screen input channel;
+`horizon-ctl key` too). Each player's keys are kept (down, clicks not consumed), and the client
+tick runs as each player (`Minecraft.player`, their screen) with their keys on the mods'
+mappings. With no player, it runs once as before. Gap: a key rebound in Java's
+`options.txt` after a player joined isn't sent again.
+
+Mod chunk loaders (tested with the `loadermod` fixture: `tools/java_bridge/fixture_mod.sh
+loadermod <jar>`, `/loader ticket|unticket <cx> <cz> <radius>`, `/loader force <cx> <cz>
+<bool>`): tickets and `setChunkForced` go to each mirrored level's own `TicketStorage`
+(`HorizonTickets`, saved in `horizon-java/data/<dimension>/`, back on reopening). Horizon keeps
+the chunks they reach loaded and ticking, as forced chunks (`Streaming::set_ticketed`, not
+`/forceload`'s list), a level with only those ticking too. The ticket's levels are vanilla's:
+a radius-3 ticket entity-ticks 3x3 chunks, a forced chunk only itself. Gaps: load-only
+tickets (no simulation) don't load; a ticket at level 33 loads nothing.
+
+Mod screens for players of a server: a dedicated server now runs Fabric with the headless client
+too (as a LAN host does), so its players' mod screens are drawn there and sent to their games
+(tested: Farmer's Delight's cooking pot, a dedicated server and a Horizon client).
+`HORIZON_JAVA_SIDE=server` keeps the old dedicated-server Fabric (no client code). A player's
+game draws the frames with its own textures: one without the mods' content shows missing
+sprites.
 
 Known gaps of mod entities: no natural spawning (NaturalSpawner doesn't run on the mirror),
 Horizon's selectors (`@e[type=mod:x]`, `/kill`) don't see them, nor do vanilla mobs (a mod's
