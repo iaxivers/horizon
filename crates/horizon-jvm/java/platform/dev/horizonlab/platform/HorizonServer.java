@@ -1697,7 +1697,12 @@ public final class HorizonServer {
         try {
             for (int slot = 0; slot < SLOTS; slot++) {
                 ItemStack stack = item(inventories[i * SLOTS + slot]);
-                inventory.setItem(slot, stack);
+                // An unchanged slot keeps its stack: mods hold on to the stack they were used
+                // with and write to it later (Nature's Compass's search: its samples, its
+                // state, what it found), as a vanilla server never swaps a stack it didn't change.
+                ItemStack held = inventory.getItem(slot);
+                if (ItemStack.matches(held, stack)) stack = held;
+                else inventory.setItem(slot, stack);
                 seen[slot] = stack.copy();
             }
         } finally {

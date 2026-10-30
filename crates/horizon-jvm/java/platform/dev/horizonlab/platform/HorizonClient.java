@@ -369,6 +369,20 @@ public final class HorizonClient {
                 && client.containerId == player.containerMenu.containerId ? client : player.containerMenu;
         // Its permissions (tooltips' operator warnings): the server player's.
         set(net.minecraft.client.player.LocalPlayer.class, local, "permissions", player.permissions());
+        // Where it is and looks (Nature's Compass sends blockPosition() with its search): the
+        // server player's, set as fields (setPosRaw reads the old position, which a player made
+        // without its constructor has none of).
+        Class<?> entity = net.minecraft.world.entity.Entity.class;
+        set(entity, local, "position", player.position());
+        set(entity, local, "blockPosition", player.blockPosition());
+        set(entity, local, "chunkPosition", player.chunkPosition());
+        set(entity, local, "bb", player.getBoundingBox());
+        set(entity, local, "yRot", player.getYRot());
+        set(entity, local, "xRot", player.getXRot());
+        local.yRotO = player.getYRot();
+        local.xRotO = player.getXRot();
+        local.yHeadRot = player.getYHeadRot();
+        local.yBodyRot = player.yBodyRot;
         return local;
     }
 
