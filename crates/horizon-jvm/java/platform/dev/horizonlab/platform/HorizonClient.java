@@ -3,6 +3,7 @@ package dev.horizonlab.platform;
 import dev.horizonlab.bridge.Natives;
 import java.io.File;
 import java.lang.reflect.Field;
+import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 
 /**
@@ -625,12 +626,120 @@ public final class HorizonClient {
         if (minecraft == null || minecraft.font == null) return;
         Thread.currentThread().setContextClassLoader(HorizonClient.class.getClassLoader());
         tasks();
+        // Each player's game is a client of its own: its tick runs as that player
+        // (Minecraft.player, the open screen), with its own keys (bindings). With no player, a
+        // client at its title screen.
+        var players = HorizonServer.players();
+        if (players.isEmpty()) {
+            tickOnce();
+            return;
+        }
+        for (var player : players) {
+            try {
+                as(player, () -> withKeys(player.getUUID(), HorizonClient::tickOnce));
+            } catch (Throwable t) {
+                Natives.log("Horizon's client: a tick as " + player.getScoreboardName() + " failed: " + t);
+            }
+        }
+    }
+
+    private static void tickOnce() {
         HorizonHooks.fireClient(minecraft, "runTick");
         HorizonHooks.fireClient(minecraft, "tick");
         HorizonServer.fireEach("ClientTickEvents.START_CLIENT_TICK",
                 net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.START_CLIENT_TICK, l -> l.onStartTick(minecraft));
         HorizonServer.fireEach("ClientTickEvents.END_CLIENT_TICK",
                 net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK, l -> l.onEndTick(minecraft));
+    }
+
+    // ---- Mods' key bindings ---------------------------------------------------------------------
+
+    /** Each player's keys: which of the mods' KeyMappings are down, and their clicks not yet consumed. */
+    private record Keys(java.util.Set<KeyMapping> down, java.util.Map<KeyMapping, Integer> clicks) {}
+
+    private static final java.util.Map<java.util.UUID, Keys> KEYS = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** The mods' own KeyMappings (Fabric's KeyMappingHelper registry), vanilla's left to Horizon. */
+    @SuppressWarnings("unchecked")
+    static java.util.List<KeyMapping> modKeys() {
+        try {
+            Class<?> registry = Class.forName("net.fabricmc.fabric.impl.client.keymapping.KeyMappingRegistryImpl");
+            Field list = registry.getDeclaredField("MODDED_KEY_BINDINGS");
+            list.setAccessible(true);
+            return new java.util.ArrayList<>((java.util.List<KeyMapping>) list.get(null));
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return java.util.List.of();
+        }
+    }
+
+    /** The keyboard keys (26.3 scancodes) the mods' KeyMappings are set to, as a JSON array. */
+    public static String boundKeys() {
+        Thread.currentThread().setContextClassLoader(HorizonClient.class.getClassLoader());
+        var out = new com.google.gson.JsonArray();
+        java.util.Set<Integer> seen = new java.util.TreeSet<>();
+        for (KeyMapping mapping : modKeys()) {
+            var key = key(mapping);
+            if (key != null && key.getType() == com.mojang.blaze3d.platform.InputConstants.Type.KEYBOARD
+                    && key.getValue() >= 0 && seen.add(key.getValue())) {
+                out.add(key.getValue());
+            }
+        }
+        return out.toString();
+    }
+
+    private static com.mojang.blaze3d.platform.InputConstants.Key key(KeyMapping mapping) {
+        try {
+            return (com.mojang.blaze3d.platform.InputConstants.Key) field(KeyMapping.class, mapping, "key");
+        } catch (ReflectiveOperationException e) {
+            return null;
+        }
+    }
+
+    /**
+     * A key of a player's game, pressed or released while playing (KeyboardHandler.keyPress:
+     * KeyMapping.set, and click on a press), kept for that player's client tick.
+     */
+    static void bind(java.util.UUID player, int scancode, boolean down) {
+        Keys keys = KEYS.computeIfAbsent(player, p -> new Keys(
+                java.util.concurrent.ConcurrentHashMap.newKeySet(), new java.util.concurrent.ConcurrentHashMap<>()));
+        var pressed = com.mojang.blaze3d.platform.InputConstants.Type.KEYBOARD.getOrCreate(scancode);
+        for (KeyMapping mapping : modKeys()) {
+            if (!pressed.equals(key(mapping))) continue;
+            if (down) {
+                keys.down().add(mapping);
+                keys.clicks().merge(mapping, 1, Integer::sum);
+            } else {
+                keys.down().remove(mapping);
+            }
+        }
+    }
+
+    /**
+     * Runs with the player's keys on the mods' KeyMappings (isDown, clicks; KeyMappings are the
+     * client's, one set for every player here), then keeps the clicks the mods didn't consume.
+     */
+    static void withKeys(java.util.UUID player, ThrowingRunnable run) throws Throwable {
+        Keys keys = KEYS.get(player);
+        var mappings = modKeys();
+        Field clickCount = KeyMapping.class.getDeclaredField("clickCount");
+        clickCount.setAccessible(true);
+        for (KeyMapping mapping : mappings) {
+            mapping.setDown(keys != null && keys.down().contains(mapping));
+            clickCount.setInt(mapping, keys == null ? 0 : keys.clicks().getOrDefault(mapping, 0));
+        }
+        try {
+            run.run();
+        } finally {
+            for (KeyMapping mapping : mappings) {
+                int left = clickCount.getInt(mapping);
+                if (keys != null) {
+                    if (left > 0) keys.clicks().put(mapping, left);
+                    else keys.clicks().remove(mapping);
+                }
+                mapping.setDown(false);
+                clickCount.setInt(mapping, 0);
+            }
+        }
     }
 
     /** One frame of a player's mod screen, as Horizon draws it (HorizonGraphics' operations). */
@@ -770,11 +879,15 @@ public final class HorizonClient {
     public static void input(String uuid, String json) {
         Thread.currentThread().setContextClassLoader(HorizonClient.class.getClassLoader());
         java.util.UUID id = java.util.UUID.fromString(uuid);
+        var in = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+        String kind = in.get("kind").getAsString();
+        if (kind.equals("bind")) {
+            bind(id, in.get("key").getAsInt(), in.get("down").getAsBoolean());
+            return;
+        }
         var screen = SCREENS.get(id);
         var player = OWNERS.get(id);
         if (screen == null || player == null) return;
-        var in = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
-        String kind = in.get("kind").getAsString();
         if (DEBUG_INPUT) Natives.log("screen input " + json + " to " + screen.getClass().getName());
         double x = in.has("x") ? in.get("x").getAsDouble() : MOUSE.getOrDefault(id, new double[2])[0];
         double y = in.has("y") ? in.get("y").getAsDouble() : MOUSE.getOrDefault(id, new double[2])[1];

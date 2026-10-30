@@ -344,9 +344,14 @@ impl Game<'_> {
                 let action = arg(2)?;
                 self.mod_key(physical, action != "up", action == "repeat");
                 self.native_key_event(physical, action != "up", action == "repeat");
+                // Java mods' key bindings, as the window's keys reach them.
+                if action != "repeat" {
+                    self.java_bind_key(physical, action != "up");
+                }
                 if action == "tap" {
                     self.mod_key(physical, false, false);
                     self.native_key_event(physical, false, false);
+                    self.java_bind_key(physical, false);
                 }
                 // Text screens consume raw presses; releases follow key binds.
                 let typing = matches!(self.screen, Screen::Chat | Screen::Options);

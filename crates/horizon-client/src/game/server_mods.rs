@@ -983,8 +983,53 @@ mod run {
 
         /// Sends what the Java mods asked since the last call: system messages to a player or
         /// everyone. `host` is the hub when it is out of `self.lan`.
+        /// Each player's game is told once which keys Java mods bind (game/java_screen.rs's
+        /// KEYS), so it sends them while playing.
+        #[cfg(feature = "java-mods")]
+        fn send_java_keys(host: &mut LanHost) {
+            static KEYS: std::sync::OnceLock<Vec<i32>> = std::sync::OnceLock::new();
+            static TOLD: std::sync::Mutex<Option<std::collections::HashSet<u32>>> =
+                std::sync::Mutex::new(None);
+            let mut told = TOLD.lock().unwrap_or_else(|e| e.into_inner());
+            let told = told.get_or_insert_with(Default::default);
+            let new: Vec<u32> = host
+                .hub
+                .guests
+                .iter()
+                .filter(|g| g.placed && !told.contains(&g.conn))
+                .map(|g| g.conn)
+                .collect();
+            if new.is_empty() {
+                return;
+            }
+            let keys = KEYS.get_or_init(|| {
+                horizon_jvm::events::bound_keys().unwrap_or_else(|e| {
+                    log::warn!("Java mods: their key bindings can't be read: {e}");
+                    Vec::new()
+                })
+            });
+            for conn in new {
+                told.insert(conn);
+                if keys.is_empty() {
+                    continue;
+                }
+                host.hub.send_to(
+                    conn,
+                    &C::CustomPayload(horizon_protocol::packets::configuration::CustomPayload {
+                        channel: super::super::java_screen::KEYS.into(),
+                        data: serde_json::to_vec(keys).unwrap_or_default(),
+                    }),
+                );
+            }
+        }
+
         #[cfg(feature = "java-mods")]
         fn apply_java_actions(&mut self, mut host: Option<&mut LanHost>) {
+            if let Some(h) = host.as_deref_mut() {
+                Self::send_java_keys(h);
+            } else if let Some(h) = self.lan.as_mut() {
+                Self::send_java_keys(h);
+            }
             let mut wrote = false;
             for action in horizon_jvm::events::take_actions() {
                 wrote |= matches!(
@@ -1903,7 +1948,19 @@ mod run {
                     return;
                 };
                 let window = input.get("window").and_then(Value::as_i64).unwrap_or(-1) as i32;
-                let Some(uuid) = java_window_of(host, conn, window) else {
+                // A key of a Java mod's key binding, pressed or released while playing: the
+                // connection's player's, whatever window is open.
+                let bind = input.get("kind").and_then(Value::as_str) == Some("bind");
+                let uuid = if bind {
+                    host.hub
+                        .guests
+                        .iter()
+                        .find(|g| g.conn == conn)
+                        .map(|g| uuid_string(g.uuid))
+                } else {
+                    java_window_of(host, conn, window)
+                };
+                let Some(uuid) = uuid else {
                     return;
                 };
                 let input = input.to_string();

@@ -479,6 +479,11 @@ public final class HorizonServer {
         return new ArrayList<>(LEVELS.values());
     }
 
+    /** The mirrored players Horizon lists now. */
+    public static List<ServerPlayer> players() {
+        return new ArrayList<>(PLAYERS);
+    }
+
     /** A mirrored player by id; null when Horizon doesn't list them. */
     public static ServerPlayer player(UUID uuid) {
         return BY_UUID.get(uuid);

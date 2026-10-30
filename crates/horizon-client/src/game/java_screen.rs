@@ -17,6 +17,18 @@ use winit::keyboard::KeyCode;
 pub(super) const CHANNEL: &str = "horizon:java_screen";
 /// Input, client to server: `{"window": id, "kind": ..., ...}` (HorizonClient.input's).
 pub(super) const INPUT: &str = "horizon:java_screen_input";
+/// Server to game: the keys Java mods' key bindings are set to (a JSON array of 26.3's
+/// scancodes), sent once as a player joins. The game then sends those keys while playing on
+/// [`INPUT`] (`{"kind": "bind", "key": scancode, "down": bool}`), as vanilla's keyboard handler
+/// clicks a `KeyMapping` with no screen open.
+pub(super) const KEYS: &str = "horizon:java_keys";
+
+/// The keys a server's Java mods bind, and which of them this game told it are down.
+#[derive(Default)]
+pub(super) struct JavaBinds {
+    keys: std::collections::HashSet<i32>,
+    down: std::collections::HashSet<i32>,
+}
 /// The window of a client-only screen (a mod's `Gui.setScreen` with no menu: its settings, a
 /// guide book): no menu's window is open under it. Its frames say this window, and
 /// `{"window": -1, "close": true}` closes it.
@@ -73,6 +85,41 @@ fn stack(o: &Value) -> Option<ItemStack> {
 
 impl Game<'_> {
     // ---- The player's game ----------------------------------------------------------------
+
+    /// The keys the server's Java mods bind ([`KEYS`]).
+    pub(super) fn remote_java_keys(&mut self, data: &[u8]) {
+        if let Ok(keys) = serde_json::from_slice::<Vec<i32>>(data) {
+            self.java_binds.keys = keys.into_iter().collect();
+        }
+    }
+
+    /// A key of the window, for Java mods' key bindings: pressed while playing (no screen), or
+    /// released after it was sent down (KeyboardHandler.keyPress: KeyMapping.set and click).
+    pub(super) fn java_bind_key(&mut self, key: KeyCode, pressed: bool) {
+        if self.java_binds.keys.is_empty() || self.remote.is_none() {
+            return;
+        }
+        let Some(code) = sdl_key(key) else {
+            return;
+        };
+        if !self.java_binds.keys.contains(&code) {
+            return;
+        }
+        let send = if pressed {
+            self.screen == Screen::Playing && self.java_binds.down.insert(code)
+        } else {
+            self.java_binds.down.remove(&code)
+        };
+        if send {
+            let data = json!({"kind": "bind", "key": code, "down": pressed})
+                .to_string()
+                .into_bytes();
+            self.send(S::CustomPayload(CustomPayload {
+                channel: INPUT.into(),
+                data,
+            }));
+        }
+    }
 
     /// A frame of the open window's mod screen ([`CHANNEL`]).
     pub(super) fn remote_java_screen(&mut self, data: &[u8]) {

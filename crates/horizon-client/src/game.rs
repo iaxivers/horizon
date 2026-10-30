@@ -1791,6 +1791,8 @@ struct Game<'a> {
     recipe_ui: recipe_book::RecipeUi,
     /// The open window's Java mod screen, as its last frame drew it (game/java_screen.rs).
     java_screen: Option<java_screen::JavaScreen>,
+    /// The keys the server's Java mods bind (game/java_screen.rs).
+    java_binds: java_screen::JavaBinds,
     /// Java mods' entities the server last sent (game/java_entities.rs).
     java_entities: java_entities::JavaEntities,
     /// The horse inventory (game/mount_menu.rs).
@@ -12815,6 +12817,9 @@ impl ApplicationHandler for Game<'_> {
             } else {
                 self.physical_keys.remove(&key);
             }
+            if !event.repeat {
+                self.java_bind_key(key, event.state == ElementState::Pressed);
+            }
         }
         if let WindowEvent::Focused(false) = &event {
             self.physical_keys.clear();
@@ -14151,6 +14156,7 @@ impl<'a> Game<'a> {
             spill: Default::default(),
             recipe_ui: Default::default(),
             java_screen: None,
+            java_binds: Default::default(),
             java_entities: Default::default(),
             mount_menu: Default::default(),
             hook: None,
