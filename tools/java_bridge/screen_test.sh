@@ -1,0 +1,42 @@
+#!/bin/bash
+# Rebuilds, starts the game with MODS, sets up a scene (SCENE: a name below), then runs each
+# argument as a step, a screenshot after each in OUT (default /tmp): <scene>-N.png. Prints the
+# log's failures. Steps see C (horizon-ctl). Click at GUI pixels: '$C click-at X Y'.
+#   MODS=~/fd SCENE=pot   tools/java_bridge/screen_test.sh '$C click-at 141 187'
+#   MODS=~/toms SCENE=terminal tools/java_bridge/screen_test.sh '$C click-at 149 45'
+R=$(cd "$(dirname "$0")/../.." && pwd)
+: "${SCENE:=pot}" "${OUT:=/tmp}"
+# Java 25 (26.3's classes are version 69): JAVA_HOME if it is one, else the first installed.
+if ! "${JAVA_HOME:-/nonexistent}/bin/java" -version 2>&1 | grep -q '"25'; then
+  JAVA_HOME=$(ls -d /usr/lib/jvm/*25* 2>/dev/null | head -1)
+fi
+[ -n "$JAVA_HOME" ] || { echo "no Java 25 in /usr/lib/jvm: set JAVA_HOME" >&2; exit 1; }
+export JAVA_HOME HORIZON_JAVA_HOME=$JAVA_HOME PATH=$JAVA_HOME/bin:$PATH
+old=$(cat /tmp/hz-bridge-scratch 2>/dev/null)
+[ -n "$old" ] && "$R/target/fast/horizon-ctl" --socket "$old/ctl.sock" quit >/dev/null 2>&1 && rm -rf "$old"
+cd "$R" && cargo build -q --profile fast -p horizon-client --features horizon-client/java-mods 2>&1 \
+  | grep -vE "Picked up JAVA_TOOL" | grep -E "^error|error:|\.java:[0-9]+" -A6 | head -30
+S=$("$R/tools/java_bridge/launch.sh") || exit 1
+C="$R/target/fast/horizon-ctl --socket $S/ctl.sock"
+case "$SCENE" in
+  # Farmer's Delight: a lit stove, a cooking pot on it, beef and carrots; the pot opened.
+  pot) "$R/tools/java_bridge/around.sh" \
+    'q "setblock $((X+2)) $Y $Z farmersdelight:stove[facing=west,lit=true]"' \
+    'q "setblock $((X+2)) $((Y+1)) $Z farmersdelight:cooking_pot[facing=west,support=tray]"' \
+    'q "give @s minecraft:beef 3"' 'q "give @s minecraft:carrot 2"' \
+    '$C look-at-block $((X+2)) $((Y+1)) $Z >/dev/null' '$C mouse right click >/dev/null' 'sleep 3' ;;
+  # Tom's Storage: a chest (12 diamonds, 40 logs), a connector beside it, a terminal on the
+  # connector facing it (pos=down: it reads the block below); the terminal opened.
+  terminal) "$R/tools/java_bridge/around.sh" \
+    'q "setblock $((X+3)) $Y $Z minecraft:chest"' \
+    'q "item replace block $((X+3)) $Y $Z container.0 with minecraft:diamond 12"' \
+    'q "item replace block $((X+3)) $Y $Z container.1 with minecraft:oak_log 40"' \
+    'q "setblock $((X+2)) $Y $Z toms_storage:inventory_connector"' \
+    'q "setblock $((X+2)) $((Y+1)) $Z toms_storage:storage_terminal[facing=west,pos=down]"' \
+    '$C look-at-block $((X+2)) $((Y+1)) $Z >/dev/null' '$C mouse right click >/dev/null' 'sleep 3' ;;
+  none) ;;
+esac
+n=0; for step in "$@"; do eval "$step"; sleep 1; n=$((n+1)); $C screenshot "$S/s$n.png" >/dev/null; cp "$S/s$n.png" "$OUT/$SCENE-$n.png"; done
+$C screenshot "$S/s0.png" >/dev/null; cp "$S/s0.png" "$OUT/$SCENE-0.png"
+grep -E "failed|could not|    at " "$S/home/logs/latest.log" | grep -v "content:" | head -30 | cut -c1-260
+echo "screenshots: $OUT/$SCENE-*.png  log: $S/home/logs/latest.log"
