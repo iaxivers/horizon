@@ -24,6 +24,7 @@ saying something works.
 | Mods' messages | `HorizonLoop.java`: server→client payloads queued and delivered after `syncMenus` (`flush`); client→server run at once. Mixins: `PlayNetworkingMixin` (server side), `ClientPlayNetworkingMixin` |
 | Mixins | `java/platform/horizon-platform.mixins.json` (`client` list: headless-client only) |
 | Mods' entities | `HorizonEntities.java` (live per level, ticked as `tickNonPassenger`, saved in `horizon-java/entities/`, attack/interact), `HorizonEntityRender.java` (the mod's renderer submits into a recording collector: part trees once, poses + matrix + texture per tick), mixins `ServerChunkCacheMixin` (a chunk source holding nothing), `PathNavigationRegionMixin`, `ItemModelResolverMixin`; Rust: `game/java_entities.rs` (draw, aim), `server_mods.rs` (`send_java_entities`, `java_entity_attack`/`interact`, `/summon`) |
+| Mods' worldgen | `HorizonWorldgen.java` (vanilla's chunk steps on the mirror's level, chunks back as vanilla saves them), mixin `WorldGenRegionMixin`; Rust: `game/java_worldgen.rs` (`JavaTerrain`, wraps `VanillaTerrain` in `world_loading::make_streaming`), mods' biomes in `biome.rs` (`mod_biomes`) and the biome registry (`lan/data.rs`) |
 | Content conversion | `crates/horizon-port-pack` (`oracle.rs`, `carry.rs`), `HorizonContent.java` (facts, creative tabs), `crates/horizon-client/src/mod_content.rs` (content root) |
 | Game side (Rust) | `crates/horizon-client/src/game/java_mods.rs` (start, content, creative), `server_mods.rs` (actions from Java, menus, block entities, random ticks, `JAVA_STATES`), `java_screen.rs` (draws frames, sends input, key maps) |
 
@@ -44,6 +45,15 @@ saying something works.
    trees it lacks. The client keeps two ticks and lerps positions, matrices and poses.
    Attack/Interact packets with ids from `0x7fff0000` go to Java (`Player.attack`,
    `Player.interactOn`).
+
+5. Mods' worldgen: a dimension whose generation mods change (their biomes in its biome
+   source, their features in its biomes: `HorizonWorldgen.modded`) is generated on the Java
+   side. Horizon's streaming workers call `events::worldgen_proto` (STRUCTURE_STARTS ..
+   TERRAIN), `worldgen_decorate` (FEATURES, the 3x3 region held) and `worldgen_finish` (the
+   chunk as vanilla's save NBT, read by `save::decode`); vanilla's own `ChunkStep.apply` runs
+   each step over a `StaticCache2D` of `Held` holders (the step's neighbours: Horizon's live
+   protos, else a cache of lower-status chunks). Far terrain (LOD), `/locate` and the spawn
+   search stay on Horizon's `VanillaTerrain`. Other dimensions are Horizon's as before.
 
 ## 26.3 facts that cost time
 
@@ -88,6 +98,23 @@ saying something works.
   and `ModelFeatureRenderer` calls `model.setupAnim(state)` only then. A `Proxy` collector
   runs the defaults with `InvocationHandler.invokeDefault`.
 - The texture of a `RenderType`: `state` (RenderSetup) → `textures` → `Sampler0` → `location()`.
+- Worldgen mods set up in `MinecraftServer`'s constructor (TerraBlender's `MixinMinecraftServer`
+  puts its regions into the level stems' parameter lists and its surface rules into the noise
+  settings; Fabric's biome modifications): the mirror skips it, so `HorizonWorldgen.start`
+  fires the mods' `<init>` RETURN/TAIL injections (`HorizonHooks.fire`) after giving the
+  server `worldGenSettings`, `structureTemplateManager` and `fixerUpper`.
+- 26.3's generation pyramid: STRUCTURE_STARTS, STRUCTURE_REFERENCES, BIOMES, TERRAIN (noise,
+  surface and carvers in one step: `NoiseBasedChunkGenerator.buildTerrain`), FEATURES. Every
+  step but STRUCTURE_STARTS reads structure starts 8 chunks out; TERRAIN reads biomes 1 out.
+- `WorldGenRegion`'s constructor takes `StaticCache2D<GenerationChunkHolder>` and reads
+  `holder.getChunkIfPresentUnchecked(status)` (the private `futures` array): a subclass that
+  fills it with completed futures is all a step needs. `Blender.of` asks
+  `isOldChunkAround` of ChunkMap (none on the mirror: `WorldGenRegionMixin`).
+- `ServerLevel` needs `structureCheck`, `structureManager`, `uncachedBiomeResolver` and
+  `Level.palettedContainerFactory` for generation (constructor-set: `HorizonWorldgen.readyLevel`).
+- Horizon's biome table reads `data/*/worldgen/biome` of the content root (mods' after
+  vanilla's, so vanilla's keep their ids); the network biome registry lists them in that order.
+- `horizon-ctl block X Y Z` now says the biome there (`"biome"`): F3 has no biome line here.
 - Commands through `horizon-ctl command` run as the owner's console; server mods' commands
   (and `/summon` of a mod entity) now go to the mods first (`owner_console_command`).
 
@@ -133,6 +160,12 @@ Naturalist (mobs with ModelPart models, Fabric API only). The repo's own critter
 
 ## Status
 
+Mods' worldgen (tested with BOP + TerraBlender + GlitchCore, a new world): the overworld
+generates through the mods' chunk steps; BOP biomes (orchard, lavender field...) with their
+trees, flowers and blocks, read back by Horizon with their biome ids (`horizon-ctl block`).
+`MODS=~/bop tools/java_bridge/launch.sh`, then `tools/java_bridge/biomes.py` lists the biomes
+around the player with a place of each (`horizon-ctl block X Y Z` gives one).
+
 Works (tested): content (blocks with their own states, items, food, crops, light), mod block
 logic and block entities, Fabric and vanilla menus in Horizon's window, mods' own screens with
 clicks, keys, typing, scroll, tooltips, recipe book; creative tabs with Fabric pages; mod
@@ -159,8 +192,14 @@ Next (top failure of the pack, in order):
    mode in `java_screen.rs`. Same gap for config screens and guide books.
 2. The headless client never ticks: no `ClientTickEvents`, no `Minecraft.runTick` (Xaero's
    lib finishes loading there: "Registry is not frozen yet!" at SERVER_STARTING).
-3. Mod worldgen: TerraBlender/BOP biomes don't generate (Horizon's generator is vanilla's).
-4. Mod chunk loaders: chunk tickets from Java are dropped.
+3. Mod chunk loaders: chunk tickets from Java are dropped.
+4. Mods' worldgen gaps: mod saplings and bone meal fail (`randomTick`: "Should always be
+   able to create a chunk!": the mirror's chunk source gives no chunks to the feature);
+   far terrain (LOD), `/locate biome|structure` and the spawn search use vanilla's biomes;
+   a Java proto dropped unfinished isn't saved (a neighbour's tree cut at the edge of where
+   the player went); block/fluid ticks and post-processing of generated chunks aren't
+   carried; the Nether and End through TerraBlender untested; "flowering" leaves of BOP
+   (an untinted overlay layer) draw grey patches (content conversion, not worldgen).
 Then: mod screens for LAN/remote players (frames go to the window's own player only), NeoForge
 later.
 

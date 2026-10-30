@@ -391,6 +391,11 @@ public final class HorizonServer {
         return seed;
     }
 
+    /** Horizon's world seed before any tick (world generation asks first: HorizonWorldgen). */
+    public static void worldSeed(long seed) {
+        HorizonServer.seed = seed;
+    }
+
     /**
      * A mirrored level's chunk generator (ServerChunkCache.getGenerator): its level stem's,
      * from the data packs. Horizon generates the terrain; mods ask the generator about it
@@ -431,6 +436,27 @@ public final class HorizonServer {
         var random = randomState(level);
         return STRUCTURE_STATES.computeIfAbsent(level, l -> generator(l).createState(
                 HorizonData.loaded.registries().compositeAccess().lookupOrThrow(Registries.STRUCTURE_SET), random, seed));
+    }
+
+    // The mods' world generation (HorizonWorldgen), for horizon-jvm's events.rs.
+    public static boolean worldgenStart(String dimension, long seed, boolean structures) {
+        return HorizonWorldgen.start(dimension, seed, structures);
+    }
+
+    public static long worldgenProto(String dimension, int x, int z) {
+        return HorizonWorldgen.proto(dimension, x, z);
+    }
+
+    public static void worldgenDecorate(String dimension, int x, int z) {
+        HorizonWorldgen.decorate(dimension, x, z);
+    }
+
+    public static byte[] worldgenFinish(String dimension, int x, int z, long token) {
+        return HorizonWorldgen.finish(dimension, x, z, token);
+    }
+
+    public static void worldgenForget(String dimension, int x, int z, long token) {
+        HorizonWorldgen.forget(dimension, x, z, token);
     }
 
     /** The mirrored levels (one a dimension Horizon has). */

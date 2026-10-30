@@ -901,3 +901,113 @@ pub fn interact_entity(
         _ => UseResult::Pass,
     })
 }
+
+/// Whether the JVM and Fabric are up (the mods' entrypoints ran, their data loaded): calls
+/// into the platform mod made before then find no server class, for good.
+pub fn ready() -> bool {
+    crate::get().is_some_and(|b| b.fabric())
+}
+
+/// Readies the mods' world generation of `dimension` (`HorizonWorldgen.start`) for a world
+/// with this seed and structure setting: whether mods change that dimension's generation (a
+/// mod's biomes in its biome source, a mod's features in its biomes), so its chunks are
+/// generated on the Java side. Call once a dimension, after [`ready`].
+pub fn worldgen_start(dimension: &str, seed: i64, structures: bool) -> Result<bool, String> {
+    let modded = with_server(|env, class| {
+        let dimension = env.new_string(dimension)?;
+        env.call_static_method(
+            class,
+            "worldgenStart",
+            "(Ljava/lang/String;JZ)Z",
+            &[
+                JValue::Object(&dimension),
+                JValue::Long(seed),
+                JValue::Bool(structures.into()),
+            ],
+        )?
+        .z()
+    })?;
+    Ok(modded.unwrap_or(false))
+}
+
+/// Brings chunk `x z` of `dimension` to vanilla's TERRAIN status on the Java side and holds
+/// it: a token for [`worldgen_finish`] and [`worldgen_forget`], None when it failed.
+pub fn worldgen_proto(dimension: &str, x: i32, z: i32) -> Result<Option<i64>, String> {
+    let token = with_server(|env, class| {
+        let dimension = env.new_string(dimension)?;
+        env.call_static_method(
+            class,
+            "worldgenProto",
+            "(Ljava/lang/String;II)J",
+            &[JValue::Object(&dimension), JValue::Int(x), JValue::Int(z)],
+        )?
+        .j()
+    })?;
+    Ok(token.filter(|&t| t != 0))
+}
+
+/// Runs FEATURES on held chunk `x z` (its eight neighbours held too: features write into them).
+pub fn worldgen_decorate(dimension: &str, x: i32, z: i32) -> Result<(), String> {
+    with_server(|env, class| {
+        let dimension = env.new_string(dimension)?;
+        env.call_static_method(
+            class,
+            "worldgenDecorate",
+            "(Ljava/lang/String;II)V",
+            &[JValue::Object(&dimension), JValue::Int(x), JValue::Int(z)],
+        )?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// Held chunk `x z` as vanilla saves a chunk (uncompressed NBT, a full chunk), let go.
+pub fn worldgen_finish(
+    dimension: &str,
+    x: i32,
+    z: i32,
+    token: i64,
+) -> Result<Option<Vec<u8>>, String> {
+    let bytes = with_server(|env, class| {
+        let dimension = env.new_string(dimension)?;
+        let array = env
+            .call_static_method(
+                class,
+                "worldgenFinish",
+                "(Ljava/lang/String;IIJ)[B",
+                &[
+                    JValue::Object(&dimension),
+                    JValue::Int(x),
+                    JValue::Int(z),
+                    JValue::Long(token),
+                ],
+            )?
+            .l()?;
+        if array.is_null() {
+            return Ok(None);
+        }
+        env.convert_byte_array(jni::objects::JByteArray::from(array))
+            .map(Some)
+    })?;
+    Ok(bytes.flatten())
+}
+
+/// Lets held chunk `x z` go unfinished.
+pub fn worldgen_forget(dimension: &str, x: i32, z: i32, token: i64) -> Result<(), String> {
+    with_server(|env, class| {
+        let dimension = env.new_string(dimension)?;
+        env.call_static_method(
+            class,
+            "worldgenForget",
+            "(Ljava/lang/String;IIJ)V",
+            &[
+                JValue::Object(&dimension),
+                JValue::Int(x),
+                JValue::Int(z),
+                JValue::Long(token),
+            ],
+        )?;
+        Ok(())
+    })?;
+    Ok(())
+}
