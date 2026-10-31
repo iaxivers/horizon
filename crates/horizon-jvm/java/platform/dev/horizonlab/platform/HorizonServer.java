@@ -36,6 +36,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.level.ServerPlayerGameMode;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.server.players.PlayerList;
 import net.minecraft.world.item.ItemStack;
@@ -937,7 +938,13 @@ public final class HorizonServer {
                 }
                 // The permission level (low 8 bits) and the sneak key (bit 8).
                 PERMISSIONS.put(uuid, permissions[i] & 0xff);
-                player.setShiftKeyDown(((permissions[i] >> 8) & 1) != 0);
+                boolean sneaking = ((permissions[i] >> 8) & 1) != 0;
+                player.setShiftKeyDown(sneaking);
+                // isCrouching is the pose (the mirror isn't ticked: updatePlayerPose doesn't
+                // run): Veinminer's "sneak to mine a vein" reads it.
+                var pose = player.getPose();
+                if (sneaking && pose == net.minecraft.world.entity.Pose.STANDING) player.setPose(net.minecraft.world.entity.Pose.CROUCHING);
+                else if (!sneaking && pose == net.minecraft.world.entity.Pose.CROUCHING) player.setPose(net.minecraft.world.entity.Pose.STANDING);
                 mirrorInventory(player, inventories, i);
                 now.put(uuid, player);
             } catch (Throwable t) {
@@ -1615,6 +1622,14 @@ public final class HorizonServer {
                     item.getItem().getCount());
             return true;
         }
+        // An experience orb (a routed break's ore, a mod's reward): Horizon's orb of that value
+        // (dropItem with the item "#experience_orb", the value as its count).
+        if (entity instanceof net.minecraft.world.entity.ExperienceOrb orb && orb.getValue() > 0) {
+            var motion = orb.getDeltaMovement();
+            Natives.dropItem(dimensionOf(level), orb.getX(), orb.getY(), orb.getZ(), motion.x, motion.y, motion.z,
+                    "#experience_orb", orb.getValue());
+            return true;
+        }
         dropped(entity);
         return false;
     }
@@ -1783,10 +1798,189 @@ public final class HorizonServer {
         for (int i = 0; i + 2 < positions.length; i += 3) {
             BlockPos pos = new BlockPos(positions[i], positions[i + 1], positions[i + 2]);
             BlockState state = level.getBlockState(pos);
-            if (!HorizonBlockEntities.modded(state) || !state.isRandomlyTicking()) continue;
+            if (!state.isRandomlyTicking()) continue;
+            if (!HorizonBlockEntities.modded(state) && !randomTickRouted(state.getBlock())) continue;
             fire("BlockState.randomTick", () -> state.randomTick(level, pos, level.getRandom()));
+            if (TICK_DEBUG) Natives.log("random tick " + pos + ": " + state + " -> " + level.getBlockState(pos));
         }
         syncInventories();
+    }
+
+    // ---- Pickups: items and experience orbs ---------------------------------------------
+
+    private static final String ITEM_ENTITY = "net/minecraft/world/entity/item/ItemEntity";
+    private static final String ORB = "net/minecraft/world/entity/ExperienceOrb";
+    private static Boolean pickupRouted, orbsRouted;
+
+    /**
+     * The actions besides breaking, using and random ticks that Horizon sends here because a
+     * mod patches them: "item_pickup" (ItemEntity.playerTouch, Player.take, Inventory.add as a
+     * pickup), "experience_orbs" (ExperienceOrb.playerTouch, its repair, the points given:
+     * Clumps).
+     */
+    public static String[] routedActions() {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        List<String> out = new ArrayList<>();
+        if (pickupRouted()) out.add("item_pickup");
+        if (orbsRouted()) out.add("experience_orbs");
+        if (!out.isEmpty()) {
+            Natives.log("Routed to the mods: " + out + " (item pickup: " + HorizonMixinTable.mods(ITEM_ENTITY, "playerTouch")
+                    + ", orbs: " + HorizonMixinTable.mods(ORB, "playerTouch") + ")");
+        }
+        return out.toArray(String[]::new);
+    }
+
+    private static boolean pickupRouted() {
+        if (pickupRouted == null) {
+            pickupRouted = HorizonMixinTable.patchedInside(net.minecraft.world.entity.item.ItemEntity.class,
+                    java.util.Set.of("playerTouch"), java.util.Set.of());
+        }
+        return pickupRouted;
+    }
+
+    private static boolean orbsRouted() {
+        if (orbsRouted == null) {
+            orbsRouted = HorizonMixinTable.patchedInside(net.minecraft.world.entity.ExperienceOrb.class,
+                    java.util.Set.of("playerTouch", "repairPlayerItems"), java.util.Set.of());
+        }
+        return orbsRouted;
+    }
+
+    private static java.lang.reflect.Field orbCount;
+
+    /** ExperienceOrb's private count (orbs merged into it): read, or set when {@code set} >= 0. */
+    private static int orbCount(net.minecraft.world.entity.ExperienceOrb orb, int set) {
+        try {
+            if (orbCount == null) {
+                orbCount = net.minecraft.world.entity.ExperienceOrb.class.getDeclaredField("count");
+                orbCount.setAccessible(true);
+            }
+            if (set >= 0) orbCount.setInt(orb, set);
+            return orbCount.getInt(orb);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * A player touches Horizon's experience orb (Horizon's own takeXpDelay is 0): vanilla's
+     * ExperienceOrb.playerTouch with the mods' patches (Clumps: all of it at once) on an orb
+     * made for the call, the player's experience as Horizon has it. {orbs left of its count,
+     * takeXpDelay, level, progress, total}; null when the mirror can't (Horizon does it).
+     */
+    public static double[] orbTouch(String uuid, String dimension, double x, double y, double z, int value, int count,
+                                    int xpLevel, float progress, int total) {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        ServerPlayer player = BY_UUID.get(UUID.fromString(uuid));
+        if (player == null) return null;
+        ServerLevel level = level(dimension);
+        double[][] out = {null};
+        fire("ExperienceOrb.playerTouch", () -> {
+            var orb = new net.minecraft.world.entity.ExperienceOrb(level, x, y, z, value);
+            orbCount(orb, Math.max(1, count));
+            player.experienceLevel = xpLevel;
+            player.experienceProgress = progress;
+            player.totalExperience = total;
+            player.takeXpDelay = 0;
+            orb.playerTouch(player);
+            int left = orb.isRemoved() ? 0 : orbCount(orb, -1);
+            out[0] = new double[] {left, player.takeXpDelay, player.experienceLevel, player.experienceProgress, player.totalExperience};
+        });
+        syncInventories();
+        return out[0];
+    }
+
+    /**
+     * A player touches Horizon's dropped item (no pickup delay, the player its target if it has
+     * one): vanilla's ItemEntity.playerTouch with the mods' patches on an item entity made for
+     * the call. How many of the stack are left (the rest went into the inventory, which comes
+     * back as slots); -1 when the mirror can't (Horizon does it).
+     */
+    public static int itemTouch(String uuid, String dimension, double x, double y, double z, String snbt) {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        ServerPlayer player = BY_UUID.get(UUID.fromString(uuid));
+        ItemStack stack = item(snbt);
+        if (player == null || stack.isEmpty()) return -1;
+        ServerLevel level = level(dimension);
+        int[] left = {-1};
+        fire("ItemEntity.playerTouch", () -> {
+            var entity = new net.minecraft.world.entity.item.ItemEntity(level, x, y, z, stack);
+            entity.setNoPickUpDelay();
+            entity.playerTouch(player);
+            left[0] = entity.isRemoved() ? 0 : entity.getItem().getCount();
+        });
+        syncInventories();
+        return left[0];
+    }
+
+    /** HORIZON_JAVA_DEBUG=ticks: each random tick the mods run is logged with what it made. */
+    private static final boolean TICK_DEBUG = String.valueOf(System.getenv("HORIZON_JAVA_DEBUG")).contains("ticks");
+    private static final Map<net.minecraft.world.level.block.Block, Boolean> TICK_ROUTED = new ConcurrentHashMap<>();
+
+    /** Whether a mod patches this vanilla block's random tick (its class's or a superclass's). */
+    static boolean randomTickRouted(net.minecraft.world.level.block.Block block) {
+        return TICK_ROUTED.computeIfAbsent(block, b ->
+                HorizonMixinTable.patchedInside(b.getClass(), HorizonMixinTable.RANDOM_TICK, java.util.Set.of())
+                        // A patch of every block's random tick (BlockStateBase.randomTick: Serene
+                        // Seasons' growth by season) is taken for the plants that grow (crops,
+                        // saplings, stems, cane...): the rest (grass, leaves, ice) stay Horizon's.
+                        || growing(b) && HorizonMixinTable.patchedInside(
+                                net.minecraft.world.level.block.state.BlockState.class, java.util.Set.of("randomTick"), java.util.Set.of()));
+    }
+
+    /**
+     * A plant that grows by random ticks (crop growth): crops, stems, saplings, cocoa, berry
+     * bushes, bamboo, cane, cactus, nether wart, chorus, kelp and the other growing plants.
+     * Not grass, nylium or moss (bone-mealable, but they spread rather than grow, and there
+     * are many of them).
+     */
+    static boolean growing(net.minecraft.world.level.block.Block b) {
+        return b instanceof net.minecraft.world.level.block.CropBlock
+                || b instanceof net.minecraft.world.level.block.StemBlock
+                || b instanceof net.minecraft.world.level.block.SaplingBlock
+                || b instanceof net.minecraft.world.level.block.CocoaBlock
+                || b instanceof net.minecraft.world.level.block.SweetBerryBushBlock
+                || b instanceof net.minecraft.world.level.block.BambooStalkBlock
+                || b instanceof net.minecraft.world.level.block.BambooSaplingBlock
+                || b instanceof net.minecraft.world.level.block.GrowingPlantHeadBlock
+                || b instanceof net.minecraft.world.level.block.PitcherCropBlock
+                || b instanceof net.minecraft.world.level.block.SugarCaneBlock
+                || b instanceof net.minecraft.world.level.block.CactusBlock
+                || b instanceof net.minecraft.world.level.block.NetherWartBlock
+                || b instanceof net.minecraft.world.level.block.ChorusFlowerBlock;
+    }
+
+    /**
+     * The vanilla blocks whose random ticks Horizon sends here instead of running them: a mod
+     * patches their randomTick or what it calls (Serene Seasons' crops). Vanilla's code, with
+     * the patches, runs them on Horizon's world.
+     */
+    public static String[] routedRandomTicks() {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        List<String> out = new ArrayList<>();
+        Map<String, java.util.Set<String>> byMods = new java.util.TreeMap<>();
+        for (var block : BuiltInRegistries.BLOCK) {
+            Identifier id = BuiltInRegistries.BLOCK.getKey(block);
+            if (!id.getNamespace().equals("minecraft") || !hasRandomTicks(block)) continue;
+            if (!randomTickRouted(block)) continue;
+            out.add(id.toString());
+            for (Class<?> c = block.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+                for (String m : HorizonMixinTable.RANDOM_TICK) {
+                    var mods = HorizonMixinTable.mods(c.getName().replace('.', '/'), m);
+                    if (!mods.isEmpty()) byMods.computeIfAbsent(c.getSimpleName() + "." + m, k -> new java.util.TreeSet<>()).addAll(mods);
+                }
+            }
+        }
+        var every = HorizonMixinTable.mods("net/minecraft/world/level/block/state/BlockBehaviour$BlockStateBase", "randomTick");
+        if (!every.isEmpty()) byMods.put("BlockStateBase.randomTick (growing plants)", every);
+        if (!out.isEmpty()) Natives.log("Random ticks of " + out.size() + " vanilla blocks go to the mods: " + byMods);
+        return out.toArray(String[]::new);
+    }
+
+    /** Whether any state of the block ticks randomly (a crop's last age doesn't). */
+    private static boolean hasRandomTicks(net.minecraft.world.level.block.Block block) {
+        for (BlockState s : block.getStateDefinition().getPossibleStates()) if (s.isRandomlyTicking()) return true;
+        return false;
     }
 
     private static final Map<Level, HorizonLight> LIGHT = new IdentityHashMap<>();
@@ -1814,6 +2008,136 @@ public final class HorizonServer {
             }
             return false;
         });
+    }
+
+    /** useItemOn's head is where Horizon stops vanilla's body (GameModeMixin): mods' injections there run. */
+    private static final java.util.Set<String> USE_FIRED =
+            java.util.Set.of("net/minecraft/server/level/ServerPlayerGameMode.useItemOn");
+    private static final Map<String, Boolean> USE_ROUTED = new ConcurrentHashMap<>();
+
+    /**
+     * Whether using {@code stack} on {@code state} is the mirror's: a mod patches what vanilla's
+     * use runs for them (ServerPlayerGameMode.useItemOn past its head, the block's useItemOn or
+     * useWithoutItem, the item's useOn or place, bone meal and the crop's growing).
+     */
+    public static boolean useRouted(BlockState state, ItemStack stack) {
+        String key = state.getBlock().getClass().getName() + "|" + stack.getItem().getClass().getName();
+        return USE_ROUTED.computeIfAbsent(key, k -> {
+            boolean routed = HorizonMixinTable.patchedInside(ServerPlayerGameMode.class, java.util.Set.of("useItemOn"), USE_FIRED)
+                    || HorizonMixinTable.patchedInside(state.getBlock().getClass(), HorizonMixinTable.USE_ON, java.util.Set.of())
+                    || !stack.isEmpty() && HorizonMixinTable.patchedInside(stack.getItem().getClass(), HorizonMixinTable.USE_ON, java.util.Set.of())
+                    || HorizonMixinTable.patchedInside(ItemStack.class, java.util.Set.of("useOn"), java.util.Set.of());
+            if (routed) Natives.log("Using " + BuiltInRegistries.ITEM.getKey(stack.getItem()) + " on "
+                    + BuiltInRegistries.BLOCK.getKey(state.getBlock()) + " goes to the mods (they patch its inside)");
+            return routed;
+        });
+    }
+
+    /**
+     * A player starts digging a block (ServerPlayerGameMode.handleBlockBreakAction's START):
+     * Fabric's AttackBlockCallback (Veinminer's mining speed for the vein, Carry On stopping a
+     * dig while carrying). True when a mod took it (not PASS): Horizon doesn't dig.
+     */
+    public static boolean attackBlock(String uuid, String dimension, int x, int y, int z, int face, int selected) {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        ServerPlayer player = BY_UUID.get(UUID.fromString(uuid));
+        if (player == null) return false;
+        ServerLevel level = level(dimension);
+        if (selected >= 0 && selected < 9) player.getInventory().setSelectedSlot(selected);
+        BlockPos pos = new BlockPos(x, y, z);
+        var direction = net.minecraft.core.Direction.from3DDataValue(face);
+        boolean[] taken = {false};
+        fireEach("AttackBlockCallback", net.fabricmc.fabric.api.event.player.AttackBlockCallback.EVENT, l -> {
+            if (taken[0]) return;
+            var result = l.interact(player, level, net.minecraft.world.InteractionHand.MAIN_HAND, pos, direction);
+            if (result != net.minecraft.world.InteractionResult.PASS) taken[0] = true;
+        });
+        syncInventories();
+        return taken[0];
+    }
+
+    private static final String DESTROY_BLOCK = "(Lnet/minecraft/core/BlockPos;)Z";
+    /** destroyBlock's injections Horizon fires around its own break (HEAD before, RETURN/TAIL after). */
+    private static final java.util.Set<String> BREAK_FIRED =
+            java.util.Set.of("net/minecraft/server/level/ServerPlayerGameMode.destroyBlock");
+    /** Per block class and held item class: whether a mod patches the inside of breaking it. */
+    private static final Map<String, Boolean> BREAK_ROUTED = new ConcurrentHashMap<>();
+
+    /**
+     * Whether breaking {@code state} with {@code tool} is the mirror's: a mod patches vanilla's
+     * ServerPlayerGameMode.destroyBlock other than at its head or end, or what it calls for
+     * this block or tool (Block.playerWillDestroy, playerDestroy, dropResources, getDrops,
+     * spawnAfterBreak; ItemStack/Item.mineBlock). Vanilla's code with those patches then breaks
+     * it on the mirror, which writes to Horizon's world and drops into it.
+     */
+    static boolean breakRouted(BlockState state, ItemStack tool) {
+        String key = state.getBlock().getClass().getName() + "|" + tool.getItem().getClass().getName();
+        return BREAK_ROUTED.computeIfAbsent(key, k -> {
+            boolean routed = HorizonMixinTable.patchedInside(ServerPlayerGameMode.class, java.util.Set.of("destroyBlock"), BREAK_FIRED)
+                    || HorizonMixinTable.patchedInside(state.getBlock().getClass(), HorizonMixinTable.BREAK, java.util.Set.of())
+                    || HorizonMixinTable.patchedInside(tool.getItem().getClass(), java.util.Set.of("mineBlock", "canDestroyBlock"), java.util.Set.of())
+                    || HorizonMixinTable.patchedInside(ItemStack.class, java.util.Set.of("mineBlock"), java.util.Set.of());
+            if (routed) Natives.log("Breaking " + BuiltInRegistries.BLOCK.getKey(state.getBlock()) + " goes to the mods (they patch the inside of breaking: "
+                    + HorizonMixinTable.mods("net/minecraft/server/level/ServerPlayerGameMode", "destroyBlock") + ")");
+            return routed;
+        });
+    }
+
+    /** Horizon's break of a block is the mirror's now (a routed break: breakBlock's 3). */
+    private static boolean routedBreak;
+
+    /**
+     * A player is about to break a block, called by Horizon before it does
+     * (ServerPlayerGameMode.destroyBlock). 0: a mod stopped it; 1: Horizon breaks it; 2: Horizon
+     * breaks it, then calls afterBreak (mods' injections at destroyBlock's end); 3: the mods'
+     * vanilla code broke it on the mirror (breakRouted), Horizon does nothing more.
+     */
+    public static int breakBlock(String uuid, String dimension, int x, int y, int z, String stateName, int selected) {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        ServerPlayer player = BY_UUID.get(UUID.fromString(uuid));
+        BlockState state = parseState(stateName);
+        if (player == null || state == null) return 1;
+        if (selected >= 0 && selected < 9) player.getInventory().setSelectedSlot(selected);
+        BlockPos pos = new BlockPos(x, y, z);
+        if (breakRouted(state, player.getMainHandItem())) {
+            // Vanilla's whole destroyBlock with the mods' patches: Fabric's BEFORE/AFTER (its own
+            // injections), the mods' (a vein miner breaking the vein through destroyBlock
+            // again), the block's removal, the tool's wear, the drops and experience.
+            boolean[] broke = {false};
+            routedBreak = true;
+            try {
+                fire("ServerPlayerGameMode.destroyBlock", () -> broke[0] = player.gameMode.destroyBlock(pos));
+            } finally {
+                routedBreak = false;
+            }
+            syncInventories();
+            return broke[0] ? 3 : 0;
+        }
+        // Horizon breaks it: the mods' injections at destroyBlock's head first (vanilla's
+        // order), then Fabric's BEFORE (its injection is inside, before playerWillDestroy).
+        HorizonHooks.Result head = hook(player.gameMode, ServerPlayerGameMode.class, "destroyBlock", DESTROY_BLOCK, "HEAD", new Object[] {pos});
+        if (head.cancelled()) {
+            syncInventories();
+            return Boolean.TRUE.equals(head.returnValue()) ? 3 : 0;
+        }
+        if (!beforeBreak(uuid, dimension, x, y, z, stateName)) return 0;
+        boolean after = HorizonMixinTable.hasEvent("net/minecraft/server/level/ServerPlayerGameMode", "destroyBlock", "RETURN")
+                || HorizonMixinTable.hasEvent("net/minecraft/server/level/ServerPlayerGameMode", "destroyBlock", "TAIL");
+        return after ? 2 : 1;
+    }
+
+    /** Horizon broke the block breakBlock said 2 for: the mods' injections at destroyBlock's end. */
+    public static void afterBreak(String uuid, String dimension, int x, int y, int z, String stateName) {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        ServerPlayer player = BY_UUID.get(UUID.fromString(uuid));
+        if (player == null) return;
+        Object[] args = {new BlockPos(x, y, z)};
+        for (String at : new String[] {"RETURN", "TAIL"}) {
+            if (HorizonHooks.hooked("net/minecraft/server/level/ServerPlayerGameMode", "destroyBlock")) {
+                HorizonHooks.fire(player.gameMode, ServerPlayerGameMode.class, "destroyBlock", DESTROY_BLOCK, at, args, true, true);
+            }
+        }
+        syncInventories();
     }
 
     /**

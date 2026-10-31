@@ -1055,6 +1055,18 @@ impl Game<'_> {
                         self.spawn_protection_message(host, conn, a.pos);
                         return;
                     }
+                    // Fabric's AttackBlockCallback (its injection into handleBlockBreakAction):
+                    // a Java mod that takes the attack stops the dig (the block is resent).
+                    let (pos, side) = (a.pos, i32::from(a.direction));
+                    if self
+                        .as_guest(host, conn, |g| g.java_attack_block(pos, side))
+                        .unwrap_or(false)
+                    {
+                        let state = self.world.block(pos[0], pos[1], pos[2]).0 as i32;
+                        host.hub
+                            .send_to(conn, &C::BlockUpdate(play::BlockUpdate { pos, state }));
+                        return;
+                    }
                     let face = direction(i32::from(a.direction));
                     let play = host.play.entry(conn).or_default();
                     play.digging = Some((a.pos, face));
@@ -3078,7 +3090,20 @@ impl Game<'_> {
         for i in near.into_iter().rev() {
             let (stack, item_id) = (self.dropped[i].stack.clone(), self.dropped[i].id);
             let before = stack.count;
-            let rest = self.as_guest(host, conn, |g| g.give(stack)).flatten();
+            // A Java mod patches item pickup: vanilla's ItemEntity.playerTouch with its
+            // patches takes what it takes (into the guest's slots).
+            let item = self.dropped[i].clone();
+            let java = self
+                .as_guest(host, conn, |g| g.java_item_touch(&item))
+                .flatten();
+            let rest = match java {
+                Some(0) => None,
+                Some(left) => Some(horizon_client::items::ItemStack {
+                    count: left.min(before),
+                    ..stack
+                }),
+                None => self.as_guest(host, conn, |g| g.give(stack)).flatten(),
+            };
             match rest {
                 None => {
                     let item = self.dropped.remove(i);
@@ -3145,12 +3170,40 @@ impl Game<'_> {
             .unwrap_or(0) as usize;
         // A merged orb gives its value once per count and goes at zero.
         let orb = self.orbs[touching[pick]].clone();
+        // A Java mod patches the orbs' pickup (Clumps: all of it at once, no delay): vanilla's
+        // playerTouch with its patches gives the experience and repairs.
+        if let Some((left, delay)) = self
+            .as_guest(host, conn, |game| game.java_orb_touch(&orb))
+            .flatten()
+        {
+            let play = host.play.entry(conn).or_default();
+            play.xp_delay = delay.max(0) as u32;
+            if left >= orb.count {
+                return;
+            }
+            if left == 0 {
+                self.orbs.remove(touching[pick]);
+            } else {
+                self.orbs[touching[pick]].count = left;
+            }
+            host.hub.take_item(orb.id as i32, id, 1, at);
+            let pitch =
+                (self.world.random.next_float() - self.world.random.next_float()) * 0.35 + 0.9;
+            let p = orb.position;
+            self.audio.play(
+                "minecraft:entity.experience_orb.pickup",
+                Some([p.x, p.y, p.z]),
+                0.1,
+                pitch,
+            );
+            return;
+        }
         if orb.count <= 1 {
             self.orbs.remove(touching[pick]);
         } else {
             self.orbs[touching[pick]].count -= 1;
         }
-        play.xp_delay = 2;
+        host.play.entry(conn).or_default().xp_delay = 2;
         host.hub.take_item(orb.id as i32, id, 1, at);
         // ClientPacketListener.handleTakeItemEntity's sound, at the orb.
         let pitch = (self.world.random.next_float() - self.world.random.next_float()) * 0.35 + 0.9;

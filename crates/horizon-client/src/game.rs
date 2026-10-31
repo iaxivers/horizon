@@ -4025,11 +4025,14 @@ impl Game<'_> {
         }
         // ServerPlayerGameMode.destroyBlock.
         let state = self.world.block(pos[0], pos[1], pos[2]);
-        // PlayerBlockBreakEvents.BEFORE (Fabric API's hook at its head): a Java mod may stop
-        // the break; the client puts the block back on the server's acknowledgement.
-        if !self.java_before_break(pos, state) {
-            return Ok(());
-        }
+        // Java mods: their injections at destroyBlock's head and Fabric's
+        // PlayerBlockBreakEvents.BEFORE may stop the break (the client puts the block back on
+        // the server's acknowledgement); a mod that patches the inside of breaking (a vein
+        // miner) has vanilla's whole break run on the Java side instead.
+        let after_java = match self.java_break(pos, state) {
+            server_mods::JavaBreak::Cancelled | server_mods::JavaBreak::Java => return Ok(()),
+            server_mods::JavaBreak::Horizon { after } => after,
+        };
         self.pad_rumble(horizon_client::gamepad::Rumble::BlockBroken);
         let broken = state;
         let facts = self.res.facts().get(state).clone();
@@ -4171,6 +4174,9 @@ impl Game<'_> {
         }
         self.pending.clear(pos);
         self.process_level_events()?;
+        if after_java && removed {
+            self.java_after_break(pos, broken);
+        }
         Ok(())
     }
     /// The hand whose use ended the click, if any.

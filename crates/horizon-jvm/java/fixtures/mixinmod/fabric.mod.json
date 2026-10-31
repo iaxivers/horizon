@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "horizon_mixins",
+  "version": "1.0.0",
+  "name": "Horizon Vanilla Mixins",
+  "description": "Mixins into the middle of vanilla's actions Horizon does in Rust: a check of the Java mod bridge's routing (breaking, random ticks, item pickup).",
+  "environment": "*",
+  "mixins": ["horizon_mixins.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.20",
+    "minecraft": "26.3",
+    "fabric-api": "*"
+  }
+}

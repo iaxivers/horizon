@@ -87,6 +87,8 @@ public final class HorizonHooks {
         }
         Natives.log("Mixin census: " + injections + " event-like injections into " + HOOKS.size() + " vanilla methods");
         scanClient();
+        // Every patch of every kind, and where Horizon runs what it patches.
+        HorizonMixinTable.scan();
     }
 
     // ---- The headless client's tick -------------------------------------------------------
@@ -402,7 +404,7 @@ public final class HorizonHooks {
     }
 
     /** "name", "name(desc)", "Lowner;name(desc)" or "owner.name" as {name, desc or null}. */
-    private static String[] parseSpec(String spec) {
+    static String[] parseSpec(String spec) {
         String s = spec;
         int paren = s.indexOf('(');
         String desc = paren >= 0 ? s.substring(paren) : null;

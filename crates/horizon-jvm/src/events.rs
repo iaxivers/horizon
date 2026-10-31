@@ -538,6 +538,125 @@ pub fn before_break(
     Ok(allowed.unwrap_or(true))
 }
 
+/// Player `uuid` starts digging `position` from `face` (vanilla's `Direction` id) holding
+/// hotbar slot `selected`: Fabric's `AttackBlockCallback`. True when a mod took it (the game
+/// doesn't dig). Run it inside [`crate::world::with_blocks`].
+pub fn attack_block(
+    uuid: &str,
+    dimension: &str,
+    position: [i32; 3],
+    face: i32,
+    selected: i32,
+) -> Result<bool, String> {
+    let [x, y, z] = position;
+    let taken = with_server(|env, class| {
+        let uuid = env.new_string(uuid)?;
+        let dimension = env.new_string(dimension)?;
+        env.call_static_method(
+            class,
+            "attackBlock",
+            "(Ljava/lang/String;Ljava/lang/String;IIIII)Z",
+            &[
+                JValue::Object(&uuid),
+                JValue::Object(&dimension),
+                JValue::Int(x),
+                JValue::Int(y),
+                JValue::Int(z),
+                JValue::Int(face),
+                JValue::Int(selected),
+            ],
+        )?
+        .z()
+    })?;
+    Ok(taken.unwrap_or(false))
+}
+
+/// What mods make of a player's break of a block ([`break_block`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BreakResult {
+    /// A mod stopped it (`PlayerBlockBreakEvents.BEFORE`, a cancelled `destroyBlock` head).
+    Cancelled,
+    /// The game breaks it; `after`: then call [`after_break`] (mods' injections at
+    /// `destroyBlock`'s end).
+    Horizon { after: bool },
+    /// The mods' vanilla code broke it on the Java side (a mod patches the inside of
+    /// breaking: a vein miner): the block's removal, drops and the tool's wear come back as
+    /// actions and slots; the game does nothing more.
+    Java,
+}
+
+/// Player `uuid` is about to break `state` at `position` of `dimension`, holding hotbar slot
+/// `selected`: the mods' injections at `ServerPlayerGameMode.destroyBlock`'s head and Fabric's
+/// `PlayerBlockBreakEvents.BEFORE`, or, when a mod patches the inside of breaking, vanilla's
+/// whole `destroyBlock` on the Java side. Run it inside [`crate::world::with_blocks`] so mods
+/// read the world as it is; what they change comes back as actions.
+pub fn break_block(
+    uuid: &str,
+    dimension: &str,
+    position: [i32; 3],
+    state: &str,
+    selected: i32,
+) -> Result<BreakResult, String> {
+    let [x, y, z] = position;
+    let result = with_server(|env, class| {
+        let uuid = env.new_string(uuid)?;
+        let dimension = env.new_string(dimension)?;
+        let state = env.new_string(state)?;
+        env.call_static_method(
+            class,
+            "breakBlock",
+            "(Ljava/lang/String;Ljava/lang/String;IIILjava/lang/String;I)I",
+            &[
+                JValue::Object(&uuid),
+                JValue::Object(&dimension),
+                JValue::Int(x),
+                JValue::Int(y),
+                JValue::Int(z),
+                JValue::Object(&state),
+                JValue::Int(selected),
+            ],
+        )?
+        .i()
+    })?;
+    Ok(match result {
+        Some(0) => BreakResult::Cancelled,
+        Some(2) => BreakResult::Horizon { after: true },
+        Some(3) => BreakResult::Java,
+        _ => BreakResult::Horizon { after: false },
+    })
+}
+
+/// The game broke the block [`break_block`] answered `Horizon { after: true }` for: the mods'
+/// injections at `destroyBlock`'s end.
+pub fn after_break(
+    uuid: &str,
+    dimension: &str,
+    position: [i32; 3],
+    state: &str,
+) -> Result<(), String> {
+    let [x, y, z] = position;
+    with_server(|env, class| {
+        let uuid = env.new_string(uuid)?;
+        let dimension = env.new_string(dimension)?;
+        let state = env.new_string(state)?;
+        env.call_static_method(
+            class,
+            "afterBreak",
+            "(Ljava/lang/String;Ljava/lang/String;IIILjava/lang/String;)V",
+            &[
+                JValue::Object(&uuid),
+                JValue::Object(&dimension),
+                JValue::Int(x),
+                JValue::Int(y),
+                JValue::Int(z),
+                JValue::Object(&state),
+            ],
+        )?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
 /// What mods made of a player's use of a block ([`use_block`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UseResult {
@@ -630,8 +749,136 @@ pub fn use_item(
     })
 }
 
-/// Random ticks that reached Java mods' blocks in `dimension` (`ServerLevel.tickChunk`'s):
-/// each still a mod's block that ticks randomly runs `BlockState.randomTick`.
+/// The vanilla blocks (`minecraft:wheat`, ...) whose random tick is the mods': a mod patches
+/// the block's `randomTick` or what it calls (`growCrops`, `getGrowthSpeed`, `advanceTree`)
+/// other than through Horizon's own hooks. The game sends their random ticks to
+/// [`random_ticks`] instead of running them.
+pub fn routed_random_ticks() -> Result<Vec<String>, String> {
+    let names = with_server(|env, class| {
+        let array = env
+            .call_static_method(class, "routedRandomTicks", "()[Ljava/lang/String;", &[])?
+            .l()?;
+        string_array(env, array)
+    })?;
+    Ok(names.unwrap_or_default())
+}
+
+/// The other actions the game sends to the mods because a mod patches them:
+/// `"item_pickup"` ([`item_touch`]) and `"experience_orbs"` ([`orb_touch`]).
+pub fn routed_actions() -> Result<Vec<String>, String> {
+    let names = with_server(|env, class| {
+        let array = env
+            .call_static_method(class, "routedActions", "()[Ljava/lang/String;", &[])?
+            .l()?;
+        string_array(env, array)
+    })?;
+    Ok(names.unwrap_or_default())
+}
+
+/// What vanilla's `ExperienceOrb.playerTouch` with the mods' patches made of a touch
+/// ([`orb_touch`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OrbTouch {
+    /// What is left of the orb's count (0: it is gone).
+    pub count: i32,
+    /// The player's `takeXpDelay` now.
+    pub delay: i32,
+    /// The player's experience now: level, progress in it, total points.
+    pub level: i32,
+    pub progress: f32,
+    pub total: i32,
+}
+
+/// Player `uuid` touches the game's experience orb of `value` (`count` merged into it) at
+/// `position`, their experience `level`/`progress`/`total`: vanilla's `playerTouch` with the
+/// mods' patches (Clumps). Mending's repairs come back as slots. None: the game does it.
+#[allow(clippy::too_many_arguments)]
+pub fn orb_touch(
+    uuid: &str,
+    dimension: &str,
+    position: [f64; 3],
+    value: i32,
+    count: i32,
+    level: i32,
+    progress: f32,
+    total: i32,
+) -> Result<Option<OrbTouch>, String> {
+    let out = with_server(|env, class| {
+        let uuid = env.new_string(uuid)?;
+        let dimension = env.new_string(dimension)?;
+        let array = env
+            .call_static_method(
+                class,
+                "orbTouch",
+                "(Ljava/lang/String;Ljava/lang/String;DDDIIIFI)[D",
+                &[
+                    JValue::Object(&uuid),
+                    JValue::Object(&dimension),
+                    JValue::Double(position[0]),
+                    JValue::Double(position[1]),
+                    JValue::Double(position[2]),
+                    JValue::Int(value),
+                    JValue::Int(count),
+                    JValue::Int(level),
+                    JValue::Float(progress),
+                    JValue::Int(total),
+                ],
+            )?
+            .l()?;
+        if array.is_null() {
+            return Ok(None);
+        }
+        let array = jni::objects::JDoubleArray::from(array);
+        let mut v = [0.0f64; 5];
+        if env.get_array_length(&array)? < 5 {
+            return Ok(None);
+        }
+        env.get_double_array_region(&array, 0, &mut v)?;
+        Ok(Some(OrbTouch {
+            count: v[0] as i32,
+            delay: v[1] as i32,
+            level: v[2] as i32,
+            progress: v[3] as f32,
+            total: v[4] as i32,
+        }))
+    })?;
+    Ok(out.flatten())
+}
+
+/// Player `uuid` touches the game's dropped item `stack` (SNBT, as [`Player::inventory`]'s)
+/// at `position`: vanilla's `ItemEntity.playerTouch` with the mods' patches. How many of the
+/// stack are left (what was taken comes back as slots); None: the game does it.
+pub fn item_touch(
+    uuid: &str,
+    dimension: &str,
+    position: [f64; 3],
+    stack: &str,
+) -> Result<Option<i32>, String> {
+    let left = with_server(|env, class| {
+        let uuid = env.new_string(uuid)?;
+        let dimension = env.new_string(dimension)?;
+        let stack = env.new_string(stack)?;
+        env.call_static_method(
+            class,
+            "itemTouch",
+            "(Ljava/lang/String;Ljava/lang/String;DDDLjava/lang/String;)I",
+            &[
+                JValue::Object(&uuid),
+                JValue::Object(&dimension),
+                JValue::Double(position[0]),
+                JValue::Double(position[1]),
+                JValue::Double(position[2]),
+                JValue::Object(&stack),
+            ],
+        )?
+        .i()
+    })?;
+    Ok(left.filter(|&l| l >= 0))
+}
+
+/// Random ticks that reached Java mods' blocks in `dimension` (`ServerLevel.tickChunk`'s), and
+/// vanilla blocks [`routed_random_ticks`] names: each still such a block that ticks randomly
+/// runs `BlockState.randomTick`.
 pub fn random_ticks(dimension: &str, positions: &[[i32; 3]]) -> Result<(), String> {
     let flat: Vec<i32> = positions.iter().flatten().copied().collect();
     with_server(|env, class| {

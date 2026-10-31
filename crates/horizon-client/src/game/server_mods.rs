@@ -20,6 +20,19 @@ pub(super) enum Who {
 }
 
 /// What players did during a tick, for the server mods at its end.
+/// What Java mods make of a player's break of a block (`Game::java_break`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+pub(super) enum JavaBreak {
+    /// A mod stopped it: the client puts the block back on the server's acknowledgement.
+    Cancelled,
+    /// The game breaks it; `after`: then `Game::java_after_break`.
+    Horizon { after: bool },
+    /// The mods' vanilla code broke it (a mod patches the inside of breaking: a vein miner):
+    /// its removal, drops and the tool's wear come as Java's actions; nothing more to do.
+    Java,
+}
+
 #[cfg_attr(not(feature = "mods"), allow(dead_code))]
 pub(super) enum ModEvent {
     Chat(Who, String),
@@ -50,6 +63,10 @@ static JAVA_RANDOM_TICKS: std::sync::Mutex<Vec<horizon_core::position::BlockPos>
 /// Which states are a Java mod's (not vanilla's), by state id: made with the first random tick.
 #[cfg(feature = "java-mods")]
 static JAVA_STATES: std::sync::OnceLock<Vec<bool>> = std::sync::OnceLock::new();
+/// Vanilla states whose random tick is the Java mods' (a mod patches the block's `randomTick`
+/// or what it calls: Serene Seasons' crops), by state id: made with JAVA_STATES.
+#[cfg(feature = "java-mods")]
+static JAVA_ROUTED_TICKS: std::sync::OnceLock<Vec<bool>> = std::sync::OnceLock::new();
 
 /// horizon-world's RANDOM_TICK_HOOK: a random tick of a Java mod's block is kept for the mods.
 /// The chunks Java mods' tickets keep in each dimension (`Action::ChunkTickets`), kept here
@@ -76,20 +93,55 @@ pub(super) fn java_tickets(dimension: &str) -> Vec<(i32, i32)> {
     }
 }
 
+/// The actions besides breaking, using and random ticks that Java mods patch
+/// (`events::routed_actions`: "item_pickup", "experience_orbs"), asked once Fabric runs.
+#[cfg(feature = "java-mods")]
+static JAVA_ROUTED: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// Whether Java mods patch `action` (an `events::routed_actions` name), so the game sends it to
+/// them.
+#[cfg(feature = "java-mods")]
+pub(super) fn java_routed(action: &str) -> bool {
+    if JAVA_ROUTED.get().is_none() {
+        if !horizon_jvm::events::ready() {
+            return false;
+        }
+        let routed = horizon_jvm::events::routed_actions().unwrap_or_else(|e| {
+            log::warn!("Java mods: routed actions: {e}");
+            Vec::new()
+        });
+        if !routed.is_empty() {
+            log::info!("Java mods: {} go to the mods", routed.join(", "));
+        }
+        let _ = JAVA_ROUTED.set(routed);
+    }
+    JAVA_ROUTED
+        .get()
+        .is_some_and(|r| r.iter().any(|a| a == action))
+}
+
+/// True when the tick is the mods' instead of Horizon's (a routed vanilla block's).
 #[cfg(feature = "java-mods")]
 pub(super) fn java_random_tick(
     pos: horizon_core::position::BlockPos,
     state: horizon_world::registry::BlockStateId,
-) {
+) -> bool {
     let Some(states) = JAVA_STATES.get() else {
-        return;
+        return false;
     };
-    if states.get(state.0 as usize).copied().unwrap_or(false) {
+    let routed = JAVA_ROUTED_TICKS
+        .get()
+        .and_then(|r| r.get(state.0 as usize).copied())
+        .unwrap_or(false);
+    if routed || states.get(state.0 as usize).copied().unwrap_or(false) {
         let mut ticks = JAVA_RANDOM_TICKS.lock().unwrap_or_else(|e| e.into_inner());
         if ticks.len() < 65_536 {
             ticks.push(pos);
+        } else {
+            return false;
         }
     }
+    routed
 }
 
 /// Blocks only Java mods know that a world's `set` placed or removed, for the mods (their block
@@ -147,8 +199,24 @@ impl Game<'_> {
         false
     }
     pub(super) fn apply_mod_block_writes(&mut self) {}
-    pub(super) fn java_before_break(&mut self, _pos: [i32; 3], _state: BlockStateId) -> bool {
-        true
+    pub(super) fn java_break(&mut self, _pos: [i32; 3], _state: BlockStateId) -> JavaBreak {
+        JavaBreak::Horizon { after: false }
+    }
+    pub(super) fn java_after_break(&mut self, _pos: [i32; 3], _state: BlockStateId) {}
+    pub(super) fn java_attack_block(&mut self, _pos: [i32; 3], _face: i32) -> bool {
+        false
+    }
+    pub(super) fn java_orb_touch(
+        &mut self,
+        _orb: &horizon_client::entities::ExperienceOrb,
+    ) -> Option<(u32, i32)> {
+        None
+    }
+    pub(super) fn java_item_touch(
+        &mut self,
+        _item: &horizon_client::entities::ItemEntity,
+    ) -> Option<u32> {
+        None
     }
     pub(super) fn note_java_death(&mut self) {}
     pub(super) fn note_java_death_cause(&mut self, _key: &str, _cause: Option<String>) {}
@@ -1941,6 +2009,10 @@ mod run {
                     return;
                 }
                 if super::JAVA_STATES.get().is_none() {
+                    // The mods' Mixins are read once Fabric runs (the routed ticks below).
+                    if !horizon_jvm::events::ready() {
+                        return;
+                    }
                     let registry = self.pack.assets.registry;
                     let states = (0..registry.len() as u32)
                         .map(|id| {
@@ -1949,6 +2021,31 @@ mod run {
                                 .is_some_and(|s| !s.name.starts_with("minecraft:"))
                         })
                         .collect();
+                    // Vanilla blocks whose random tick a mod patches: vanilla's code with
+                    // the patches runs them (HorizonServer.routedRandomTicks).
+                    let routed: std::collections::HashSet<String> =
+                        match horizon_jvm::events::routed_random_ticks() {
+                            Ok(names) => names.into_iter().collect(),
+                            Err(e) => {
+                                log::warn!("Java mods: routed random ticks: {e}");
+                                Default::default()
+                            }
+                        };
+                    if !routed.is_empty() {
+                        log::info!(
+                            "Java mods: random ticks of {} vanilla blocks go to the mods",
+                            routed.len()
+                        );
+                    }
+                    let routed = (0..registry.len() as u32)
+                        .map(|id| {
+                            registry.state(BlockStateId(id)).is_some_and(|s| {
+                                let block = s.name.split('[').next().unwrap_or(&s.name);
+                                routed.contains(block)
+                            })
+                        })
+                        .collect();
+                    let _ = super::JAVA_ROUTED_TICKS.set(routed);
                     let _ = super::JAVA_STATES.set(states);
                 }
                 // Java mods' blocks placed or removed: their block entities made or put away.
@@ -2176,18 +2273,87 @@ mod run {
             }
         }
 
-        /// `PlayerBlockBreakEvents.BEFORE` for the player acting now, who is about to break
-        /// `state` at `pos`: false when a Java mod cancels the break. What the mods change
-        /// (a tree feller's logs) is made with this tick's other actions.
-        pub(in crate::game) fn java_before_break(
+        /// The player acting now is about to break `state` at `pos`: the mods' injections at
+        /// `destroyBlock`'s head and Fabric's `PlayerBlockBreakEvents.BEFORE` (a mod may stop
+        /// it), or vanilla's whole break on the Java side when a mod patches its inside (a vein
+        /// miner). What the mods change (a tree feller's logs) is made with this tick's other
+        /// actions.
+        pub(in crate::game) fn java_break(
             &mut self,
             pos: [i32; 3],
             state: BlockStateId,
-        ) -> bool {
+        ) -> super::JavaBreak {
+            use super::JavaBreak;
             #[cfg(feature = "java-mods")]
             {
                 if !java_mods_on() || !self.hears_players() {
-                    return true;
+                    return JavaBreak::Horizon { after: false };
+                }
+                let uuid = self
+                    .lan_acting_uuid
+                    .map(uuid_string)
+                    .unwrap_or_else(|| self.player_uuid_string());
+                let state = state_string(self.pack.assets.registry, state);
+                let (dim, selected) = (self.dim.id(), self.selected as i32);
+                let result = self.with_java_world(|| {
+                    horizon_jvm::events::break_block(&uuid, dim, pos, &state, selected)
+                });
+                self.apply_java_actor_slots(&uuid);
+                match result {
+                    Ok(horizon_jvm::events::BreakResult::Cancelled) => JavaBreak::Cancelled,
+                    Ok(horizon_jvm::events::BreakResult::Horizon { after }) => {
+                        JavaBreak::Horizon { after }
+                    }
+                    Ok(horizon_jvm::events::BreakResult::Java) => JavaBreak::Java,
+                    Err(e) => {
+                        log::warn!("Java mods: a block break failed: {e}");
+                        JavaBreak::Horizon { after: false }
+                    }
+                }
+            }
+            #[cfg(not(feature = "java-mods"))]
+            {
+                let _ = (pos, state);
+                JavaBreak::Horizon { after: false }
+            }
+        }
+
+        /// The player acting now starts digging `pos` from `face` (vanilla's `Direction` id):
+        /// Fabric's `AttackBlockCallback`. True when a Java mod took it (no dig starts).
+        pub(in crate::game) fn java_attack_block(&mut self, pos: [i32; 3], face: i32) -> bool {
+            #[cfg(feature = "java-mods")]
+            {
+                if !java_mods_on() || !self.hears_players() {
+                    return false;
+                }
+                let uuid = self
+                    .lan_acting_uuid
+                    .map(uuid_string)
+                    .unwrap_or_else(|| self.player_uuid_string());
+                let (dim, selected) = (self.dim.id(), self.selected as i32);
+                let taken = self.with_java_world(|| {
+                    horizon_jvm::events::attack_block(&uuid, dim, pos, face, selected)
+                });
+                self.apply_java_actor_slots(&uuid);
+                taken.unwrap_or_else(|e| {
+                    log::warn!("Java mods: attacking a block failed: {e}");
+                    false
+                })
+            }
+            #[cfg(not(feature = "java-mods"))]
+            {
+                let _ = (pos, face);
+                false
+            }
+        }
+
+        /// The game broke `state` at `pos` after [`Game::java_break`] said `after`: the mods'
+        /// injections at `destroyBlock`'s end.
+        pub(in crate::game) fn java_after_break(&mut self, pos: [i32; 3], state: BlockStateId) {
+            #[cfg(feature = "java-mods")]
+            {
+                if !java_mods_on() || !self.hears_players() {
+                    return;
                 }
                 let uuid = self
                     .lan_acting_uuid
@@ -2195,21 +2361,126 @@ mod run {
                     .unwrap_or_else(|| self.player_uuid_string());
                 let state = state_string(self.pack.assets.registry, state);
                 let dim = self.dim.id();
-                let allowed = self
-                    .with_java_world(|| horizon_jvm::events::before_break(&uuid, dim, pos, &state));
+                let ran = self
+                    .with_java_world(|| horizon_jvm::events::after_break(&uuid, dim, pos, &state));
                 self.apply_java_actor_slots(&uuid);
-                match allowed {
-                    Ok(allowed) => allowed,
-                    Err(e) => {
-                        log::warn!("Java mods: a block break failed: {e}");
-                        true
-                    }
+                if let Err(e) = ran {
+                    log::warn!("Java mods: after a block break: {e}");
                 }
             }
             #[cfg(not(feature = "java-mods"))]
             {
                 let _ = (pos, state);
-                true
+            }
+        }
+
+        /// The player acting now touches `orb` (their `takeXpDelay` is 0), when a Java mod
+        /// patches experience orbs' pickup (Clumps): vanilla's `ExperienceOrb.playerTouch` with
+        /// the patches, on the player's experience, which it sets. Some((count left, delay));
+        /// None: the game picks it up itself.
+        pub(in crate::game) fn java_orb_touch(
+            &mut self,
+            orb: &horizon_client::entities::ExperienceOrb,
+        ) -> Option<(u32, i32)> {
+            #[cfg(feature = "java-mods")]
+            {
+                if !java_mods_on() || !super::java_routed("experience_orbs") {
+                    return None;
+                }
+                let uuid = self
+                    .lan_acting_uuid
+                    .map(uuid_string)
+                    .unwrap_or_else(|| self.player_uuid_string());
+                let dim = self.dim.id();
+                let (p, xp) = (orb.position, self.experience);
+                let touched = self.with_java_world(|| {
+                    horizon_jvm::events::orb_touch(
+                        &uuid,
+                        dim,
+                        [p.x, p.y, p.z],
+                        orb.value as i32,
+                        orb.count as i32,
+                        xp.level,
+                        xp.progress,
+                        xp.total,
+                    )
+                });
+                self.apply_java_actor_slots(&uuid);
+                match touched {
+                    Ok(Some(t)) => {
+                        let level_before = self.experience.level;
+                        self.experience.level = t.level.max(0);
+                        self.experience.progress = t.progress.clamp(0.0, 1.0);
+                        self.experience.total = t.total.max(0);
+                        // giveExperienceLevels' level-up sound every fifth level.
+                        if self.experience.level > level_before
+                            && self.experience.level % 5 == 0
+                            && self.ticks > self.last_level_up + 100
+                        {
+                            self.last_level_up = self.ticks;
+                            let level = self.experience.level;
+                            let volume = if level > 30 { 1.0 } else { level as f32 / 30.0 };
+                            let at = self.eye_position();
+                            self.audio.play(
+                                "minecraft:entity.player.levelup",
+                                at,
+                                volume * 0.75,
+                                1.0,
+                            );
+                        }
+                        Some((t.count.max(0) as u32, t.delay))
+                    }
+                    Ok(None) => None,
+                    Err(e) => {
+                        log::warn!("Java mods: an experience orb's pickup failed: {e}");
+                        None
+                    }
+                }
+            }
+            #[cfg(not(feature = "java-mods"))]
+            {
+                let _ = orb;
+                None
+            }
+        }
+
+        /// The player acting now touches the dropped `item` (it may pick it up), when a Java
+        /// mod patches item pickup: vanilla's `ItemEntity.playerTouch` with the patches; what
+        /// it takes comes back as the player's slots. Some(count left); None: the game does it.
+        pub(in crate::game) fn java_item_touch(
+            &mut self,
+            item: &horizon_client::entities::ItemEntity,
+        ) -> Option<u32> {
+            #[cfg(feature = "java-mods")]
+            {
+                if !java_mods_on() || !super::java_routed("item_pickup") {
+                    return None;
+                }
+                let uuid = self
+                    .lan_acting_uuid
+                    .map(uuid_string)
+                    .unwrap_or_else(|| self.player_uuid_string());
+                let dim = self.dim.id();
+                let snbt = horizon_client::snbt::to_snbt(&horizon_items::item_nbt::item_to_nbt(
+                    &item.stack,
+                ));
+                let p = item.position;
+                let left = self.with_java_world(|| {
+                    horizon_jvm::events::item_touch(&uuid, dim, [p.x, p.y, p.z], &snbt)
+                });
+                self.apply_java_actor_slots(&uuid);
+                match left {
+                    Ok(left) => left.map(|l| l.max(0) as u32),
+                    Err(e) => {
+                        log::warn!("Java mods: an item's pickup failed: {e}");
+                        None
+                    }
+                }
+            }
+            #[cfg(not(feature = "java-mods"))]
+            {
+                let _ = item;
+                None
             }
         }
 
@@ -2336,6 +2607,13 @@ mod run {
                 else {
                     continue;
                 };
+                // An experience orb a mod's code spawned (a routed break's ore): its value.
+                if item == "#experience_orb" {
+                    if count > 0 {
+                        self.spawn_orbs(position, count as u32);
+                    }
+                    continue;
+                }
                 if self.res.items().get(&item).is_none() || count <= 0 {
                     log::debug!("Java mods: a mod dropped {count} {item}, not an item here");
                     continue;

@@ -18,7 +18,7 @@ saying something works.
 | Boot | `java/dev/horizonlab/bridge/Boot.java`, `fabric/FabricBoot.java` (Knot, entrypoints, headless client boot), `Natives.java` (Java→Rust) |
 | Server mirror | `java/platform/.../HorizonServer.java`: set-up (`setUp`, `level`), the tick (`tick`: players, events, hooks, menus, block entities, frames), menus shown in Horizon's window (`syncMenus`, `SHOWN`), payloads (`payload`), `syncInventories` (end of every call) |
 | Mod block entities | `HorizonBlockEntities.java`: `LIVE` (mods' own, ticked, saved in `horizon-java/block_entities/`), `COPIES` (Horizon's vanilla ones as lasting copies, refreshed each tick, written back on change), Fabric load/unload events |
-| Ticks, light, data, hooks | `HorizonTicks.java`, `HorizonLight.java`, `HorizonData.java` (data packs, recipes), `HorizonHooks.java` (mods' injections fired by name) |
+| Ticks, light, data, hooks | `HorizonTicks.java`, `HorizonLight.java`, `HorizonData.java` (data packs, recipes), `HorizonHooks.java` (mods' injections fired by name), `HorizonMixinTable.java` (every patch of every kind, where it runs, which actions go to the mirror) |
 | Headless client | `HorizonClient.java`: an allocated `Minecraft` (options, font, gui, window, language with mods' translations, sound/text-input managers, game mode), a `LocalPlayer` per player, screens (`openScreen`, client menus, `frame`, `input`, `tickScreen`), client-only screens (`setScreen` via `GuiMixin`, `CLIENT_ONLY`), the client half of item use (`useItem`), the client's tick (`clientTick`), `/modconfig`, `as(player, …)` swaps `minecraft.player` and `gui.screen` |
 | Screen drawing | `HorizonGraphics.java` records `GuiGraphicsExtractor` calls as JSON ops (blit, sprite, fill, gradient, text, item, decorations, tooltips, pose, `typing`) |
 | Mods' messages | `HorizonLoop.java`: server→client payloads queued and delivered after `syncMenus` (`flush`); client→server run at once. Mixins: `PlayNetworkingMixin` (server side), `ClientPlayNetworkingMixin` |
@@ -147,6 +147,50 @@ saying something works.
 - Mods' top-level `textures/*.png` and `textures/hud/` join Horizon's GUI atlas (AppleSkin's
   `icons.png`).
 - `HORIZON_JAVA_DEBUG=hud` logs each HUD frame's size and each Fabric HUD element's ops.
+
+## Mods that change vanilla's behaviour (the mixin table, routed actions)
+
+Most of vanilla's code never runs on the Java side: Horizon does it in Rust. A mod's Mixin into
+it does nothing unless Horizon fires it or hands the action to the mirror.
+
+- **The table.** At start-up `HorizonMixinTable` reads every mod's Mixin configs (common,
+  server and client) and records every patch: `@Inject` at any point, `@Redirect`,
+  `@Modify*`, `@Overwrite`, MixinExtras' `@WrapOperation`/`@WrapWithCondition`/
+  `@ModifyExpressionValue`/`@ModifyReturnValue`/`@WrapMethod`. Each patched method gets a side
+  (`where`): `java` (the mirror or headless client runs it), `fired` (Horizon fires its
+  HEAD/TAIL/RETURN injections), `routed` (the action goes to the mirror when patched), `rust`
+  (Horizon's; the patch does nothing). The log has a line of sums (`Mixin table: …`) and one
+  line per method a mod patches that Rust does (`Mixin table: Rust does Biome.shouldSnow …`);
+  the whole table is `horizon-java/mixin-table.tsv` in the game folder.
+- **Routed actions** (a mod patches their inside, Fabric API not counted: Horizon fires its
+  events itself). Decided per block/item class, cached, logged once (`… goes to the mods`):
+  - Breaking a block (`HorizonServer.breakBlock`, Rust `java_break`): a patch of
+    `ServerPlayerGameMode.destroyBlock` past its head/end, or of the block's or tool's
+    `playerWillDestroy`/`playerDestroy`/`dropResources`/`getDrops`/`spawnAfterBreak`/
+    `mineBlock`: vanilla's whole `destroyBlock` runs on the mirror (removal → Horizon's world,
+    drops and experience orbs → Horizon's entities, tool wear → slots); Rust does nothing
+    more. Otherwise Horizon breaks it after firing `destroyBlock`'s HEAD injections and
+    Fabric's BEFORE, and its RETURN/TAIL ones after (`afterBreak`).
+  - Starting to dig: Fabric's `AttackBlockCallback` (`attackBlock`, from the START action).
+  - Random ticks (`routedRandomTicks`): a vanilla block whose class chain's `randomTick`
+    (`growCrops`, `getGrowthSpeed`, `advanceTree`…) is patched, and growing plants (crops,
+    stems, saplings, cane, cactus, berries, bamboo, kelp…) when `BlockStateBase.randomTick`
+    is (Serene Seasons). horizon-world's `RANDOM_TICK_HOOK` now returns true to take the tick;
+    Java runs `BlockState.randomTick` at the end of the level's block tick.
+  - Using an item on a block (`useRouted`, `GameModeMixin`): a patch of `useItemOn` past its
+    head, the block's `useItemOn`/`useWithoutItem`, the item's `useOn`/`place`, bone meal's
+    `growCrop`, `performBonemeal`: vanilla's body runs instead of PASS to Horizon.
+  - Item pickup (`itemTouch`) and experience orbs (`orbTouch`, Clumps): an `ItemEntity` /
+    `ExperienceOrb` made for the call, `playerTouch` on the mirrored player (the orb's count,
+    the player's experience given first), the result back (count left, delay, experience;
+    slots). Server-thread/LAN players only (`guest_pickups`, `guest_orbs`); in-frame not yet.
+  - An `ExperienceOrb` a mod's code spawns becomes Horizon's orb (`dropItem` of
+    `#experience_orb`, the value as the count).
+- `HORIZON_JAVA_DEBUG=ticks` logs each random tick the mods run and what it made.
+- Fixture `java/fixtures/mixinmod` (`fixture_mod.sh mixinmod <jar>`, which now copies
+  `*.mixins.json`): an `@Inject` at INVOKE inside `destroyBlock` (every break drops a
+  diamond), an `@Redirect` inside `CropBlock.randomTick` (crops grow in the dark), a HEAD
+  cancel of `ItemEntity.playerTouch` (dirt can't be picked up).
 
 ## 26.3 facts that cost time
 
@@ -297,6 +341,13 @@ saying something works.
   dimension type holder, its dimension key) and a level's `LevelStem` from the registries.
   Lithium caches a level's height there: without it every level was 0 tall and every chunk's
   structure step failed (`Size must be positive, was: 1x0x1`). `<init>*` targets count.
+- Mirrored players aren't ticked, so their pose doesn't follow the sneak key: `isCrouching()`
+  (Veinminer's "sneak to mine a vein") reads the pose, now set to CROUCHING with the key.
+- Veinminer (Miraculixx) has no mixin into breaking: it uses Fabric's `AttackBlockCallback` and
+  `PlayerBlockBreakEvents.BEFORE`, then calls `player.gameMode.destroyBlock` for each block of
+  the vein over the next ticks (vanilla's whole break on the mirror).
+- Serene Seasons' `RandomUpdateHandler` (snow and ice by season) walks
+  `ServerChunkCache.chunkMap.forEachBlockTickingChunk`: null on the mirror, fails each tick.
 - `MinecraftServer.weatherData` (Serene Seasons reads `ServerLevel.getWeatherData`): clear.
 - A recipe display with a null category (a mod's recipe type) can't cross vanilla's codec, so
   `HorizonClient.recipeBook` skips it; otherwise the whole client recipe book fails.
@@ -378,6 +429,20 @@ router's climate (TerraBlender doesn't change it), then the spiral reads generat
 `GRAPHICS=file` (a `horizon-graphics.txt`, e.g. `lodDistance:256`) for `launch.sh` turns far
 terrain on.
 
+Vanilla-patching mods (tested headless 2026-10-31, server thread, survival):
+- Veinminer: sneak + one dig breaks a 7-block iron vein, raw iron and experience drop, the
+  pickaxe wears 7.
+- Serene Seasons: crop growth goes through it (wheat and cane don't grow in early spring, do
+  in mid summer: `/season set mid_summer`). Its biome/weather patches (`Biome.shouldSnow`,
+  `Level.isRainingAt`, `tickPrecipitation`) stay Rust's: logged, not applied.
+- Clumps: orbs' pickup goes through its `playerTouch` (6 orbs of 7: 42 points).
+- Right Click Harvest: a mature wheat right-clicked goes back to age 0 (jamlib's useItemOn head).
+- Carry On: loads; its UseBlock/AttackBlock/BEFORE events fire; the carried block isn't drawn
+  in Horizon's hand (client rendering), and its `Inventory` slot lock and `Entity` riding
+  patches are Rust's (logged).
+- The `mixinmod` fixture: routed break (diamond with every block, loot and orbs), routed crop
+  ticks (wheat to age 7 in a sealed cave), routed pickup (dirt refused, cobblestone taken).
+
 Works (tested): content (blocks with their own states, items, food, crops, light), mod block
 logic and block entities, Fabric and vanilla menus in Horizon's window, mods' own screens with
 clicks, keys, typing, scroll, tooltips, recipe book; creative tabs with Fabric pages; mod
@@ -422,6 +487,11 @@ Next (top failure of the pack, in order):
    cell's owner is the player; look at corelib's `BaseWidget.mousePressed` order and
    `isClickable`). The owner's name next to the head is empty (profile lookup).
    No list of Java mods' settings in Horizon's own menus yet (`/modconfig` is the way in).
+3. Vanilla patches Horizon still does in Rust (the `Mixin table: Rust does …` lines): biome
+   weather and snow (Serene Seasons' seasons in the sky), entity riding, the inventory's slot
+   picking; in-frame single player's pickups aren't routed. Next actions to route by the
+   same pattern: mob drops (`LivingEntity.dropAllDeathLoot` past its head), fishing, crafting
+   results.
 Then: NeoForge later.
 
 Nature's Compass searches (tested: right-click, pick a biome, Search; it samples and finds,

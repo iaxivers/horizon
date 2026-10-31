@@ -33,6 +33,10 @@ public abstract class GameModeMixin {
         var state = level.getBlockState(hit.getBlockPos());
         if (HorizonBlockEntities.modded(state)) return;
         if (HorizonServer.moddedItem(stack) && !HorizonServer.usable(state)) return;
+        // A vanilla block and item whose use a mod patches inside (the block's useItemOn or
+        // useWithoutItem, the item's useOn, bone meal's growCrop, a crop's performBonemeal,
+        // BlockItem.place, useItemOn past its head): vanilla's body with the patches uses it.
+        if (HorizonServer.useRouted(state, stack)) return;
         cir.setReturnValue(InteractionResult.PASS);
     }
 

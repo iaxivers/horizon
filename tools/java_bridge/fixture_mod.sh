@@ -21,6 +21,7 @@ done
 W=$(mktemp -d)
 "$JAVA_HOME/bin/javac" -nowarn -proc:none -d "$W" -cp "$CP" $(find "$SRC" -name '*.java')
 cp "$SRC/fabric.mod.json" "$W/"
+cp "$SRC"/*.mixins.json "$W/" 2>/dev/null || true
 [ -d "$SRC/assets" ] && cp -r "$SRC/assets" "$W/"
 mkdir -p "$(dirname "$OUT")"
 rm -f "$OUT"
