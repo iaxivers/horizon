@@ -91,6 +91,23 @@ pub const MAP_SLOTS: usize = 256;
 /// chunk maps; game/java_screen.rs), each [`JAVA_IMAGE_SIZE`] square; bigger images are shrunk.
 pub const JAVA_IMAGE_SLOTS: usize = 128;
 pub const JAVA_IMAGE_SIZE: u32 = 64;
+/// Bigger slots for Java mods' images that a 64-pixel slot would blur: what they draw with
+/// the GPU (Xaero's minimap, a picture in picture at the GUI scale), [`JAVA_BIG_IMAGE_SIZE`]
+/// square. Slot `JAVA_IMAGE_SLOTS + i` is `horizon/javabig{i}`.
+pub const JAVA_BIG_IMAGE_SLOTS: usize = 4;
+pub const JAVA_BIG_IMAGE_SIZE: u32 = 256;
+
+/// A Java image slot's atlas sprite and side (small slots first, then big ones).
+pub fn java_image_slot(slot: usize) -> (String, u32) {
+    if slot < JAVA_IMAGE_SLOTS {
+        (format!("horizon/java{slot}"), JAVA_IMAGE_SIZE)
+    } else {
+        (
+            format!("horizon/javabig{}", slot - JAVA_IMAGE_SLOTS),
+            JAVA_BIG_IMAGE_SIZE,
+        )
+    }
+}
 /// The atlas slot the minimap extra draws into.
 pub const MINIMAP_SPRITE: &str = "horizon/minimap";
 /// Atlas slots for downloaded player skins (`skins/<sha1>`), 64x64 each.
@@ -296,6 +313,10 @@ impl HudAtlas {
     fn slots(images: &mut Vec<PackedImage>, trim: (u32, u32)) {
         for i in 0..MAP_SLOTS {
             images.push((format!("horizon/map{i}"), 128, 128, vec![0; 128 * 128 * 4]));
+        }
+        for i in JAVA_IMAGE_SLOTS..JAVA_IMAGE_SLOTS + JAVA_BIG_IMAGE_SLOTS {
+            let (name, side) = java_image_slot(i);
+            images.push((name, side, side, vec![0; (side * side * 4) as usize]));
         }
         for i in 0..JAVA_IMAGE_SLOTS {
             let side = JAVA_IMAGE_SIZE;

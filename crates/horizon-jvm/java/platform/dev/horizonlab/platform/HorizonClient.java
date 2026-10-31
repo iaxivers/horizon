@@ -128,6 +128,9 @@ public final class HorizonClient {
             Natives.log("Horizon's client: no language manager: " + t);
         }
         language(mc.options.languageCode);
+        // A GPU device (RenderSystem.getDevice()) on Horizon's wgpu, for mods that draw with
+        // the GPU (Xaero's minimap): HorizonGpu.
+        HorizonGpu.install();
         Natives.log("Horizon's headless client is up");
     }
 
@@ -594,6 +597,10 @@ public final class HorizonClient {
                     server != null ? server.registryAccess() : level.registryAccess());
             set(net.minecraft.client.multiplayer.ClientPacketListener.class, connection, "enabledFeatures",
                     level.enabledFeatures());
+            // Its world clocks (a client level's clockManager(): mods' environment attributes,
+            // Xaero's sun brightness).
+            set(net.minecraft.client.multiplayer.ClientPacketListener.class, connection, "clockManager",
+                    new net.minecraft.client.ClientClockManager());
             if (minecraft.gameMode != null) {
                 set(net.minecraft.client.multiplayer.MultiPlayerGameMode.class, minecraft.gameMode, "connection", connection);
             }
@@ -875,12 +882,28 @@ public final class HorizonClient {
     public static void clientTick() {
         if (minecraft == null || minecraft.font == null) return;
         Thread.currentThread().setContextClassLoader(HorizonClient.class.getClassLoader());
+        renderThread();
+        // The game renderer's GPU parts, made on the render thread (the client's) once.
+        if (!gpuParts) {
+            gpuParts = true;
+            if (HorizonGpu.installed()) guiRenderer(minecraft.gameRenderer);
+        }
         tasks();
         // ClientLifecycleEvents.CLIENT_STARTED: Minecraft's first frame, before any world (Jade
         // finishes registering its tooltip providers there).
         if (!started) {
             started = true;
             reloadClientResources();
+            // The GPU's shaders: the GUI pipelines' fallback cache over the client's resources
+            // (vanilla's and the mods' shaders), as Minecraft's start makes it.
+            if (HorizonGpu.installed() && minecraft.getResourceManager() != null) {
+                try {
+                    net.minecraft.client.renderer.GameRenderer.preloadUiShader(minecraft.getResourceManager());
+                } catch (Throwable t) {
+                    Natives.log("Horizon's client: the GPU's shaders couldn't be loaded: " + t);
+                }
+                models();
+            }
             HorizonServer.fireEach("ClientLifecycleEvents.CLIENT_STARTED",
                     net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents.CLIENT_STARTED, l -> l.onClientStarted(minecraft));
         }
@@ -897,8 +920,19 @@ public final class HorizonClient {
         for (var player : players) {
             try {
                 inWorld(player, () -> withKeys(player.getUUID(), () -> {
+                    joined();
+                    long t = HorizonProfile.start();
                     tickOnce();
+                    t = HorizonProfile.add("client: tick", t);
+                    // A frame: the mods' work at its start and end (GameRenderer.extract), its HUD
+                    // between.
+                    HorizonHooks.fireFrame(minecraft.gameRenderer, true);
+                    t = HorizonProfile.add("client: frame start", t);
                     sendHud(player);
+                    t = HorizonProfile.add("client: HUD", t);
+                    HorizonHooks.fireFrame(minecraft.gameRenderer, false);
+                    HorizonGpu.endFrame();
+                    HorizonProfile.add("client: frame end", t);
                 }));
             } catch (Throwable t) {
                 Throwable root = t;
@@ -912,6 +946,153 @@ public final class HorizonClient {
     }
 
     private static boolean started;
+
+    /**
+     * The client's block and item models, as Minecraft's resource reload makes them, now that
+     * there is a GPU to stitch their atlases on: block colours (BlockColors.createDefault, with
+     * the mods' through Fabric), the atlases (a real AtlasManager: blocks, items...) and a
+     * ModelManager reloaded over the client resources (vanilla's and the mods' models). Mods
+     * read them (Xaero's minimap: blocks' models and textures for its colours). The headless
+     * GUI atlas stays (screens' sprites are Horizon's): the others join its atlas manager.
+     */
+    private static void models() {
+        long started = System.nanoTime();
+        try {
+            var colors = net.minecraft.client.color.block.BlockColors.createDefault();
+            set(Minecraft.class, minecraft, "blockColors", colors);
+            var atlases = new net.minecraft.client.resources.model.sprite.AtlasManager(minecraft.getTextureManager(), 0);
+            var skins = (net.minecraft.client.renderer.PlayerSkinRenderCache) Natives.allocate(net.minecraft.client.renderer.PlayerSkinRenderCache.class);
+            var models = new net.minecraft.client.resources.model.ModelManager(colors, atlases, skins);
+            java.util.concurrent.Executor here = Runnable::run;
+            net.minecraft.server.packs.resources.SimpleReloadInstance.of(minecraft.getResourceManager(), java.util.List.of(atlases, models),
+                    here, here, java.util.concurrent.CompletableFuture.completedFuture(net.minecraft.util.Unit.INSTANCE)).done().join();
+            set(Minecraft.class, minecraft, "modelManager", models);
+            // The real atlases beside the headless GUI one.
+            Class<?> owner = net.minecraft.client.resources.model.sprite.AtlasManager.class;
+            var headless = minecraft.getAtlasManager();
+            @SuppressWarnings("unchecked")
+            var byId = (java.util.Map<Object, Object>) field(owner, headless, "atlasById");
+            @SuppressWarnings("unchecked")
+            var byTexture = (java.util.Map<Object, Object>) field(owner, headless, "atlasByTexture");
+            @SuppressWarnings("unchecked")
+            var realById = (java.util.Map<Object, Object>) field(owner, atlases, "atlasById");
+            @SuppressWarnings("unchecked")
+            var realByTexture = (java.util.Map<Object, Object>) field(owner, atlases, "atlasByTexture");
+            realById.forEach((id, entry) -> {
+                if (!id.equals(net.minecraft.data.AtlasIds.GUI)) byId.put(id, entry);
+            });
+            realByTexture.forEach((id, entry) -> {
+                if (!id.equals(net.minecraft.client.renderer.Sheets.GUI_SHEET)) byTexture.put(id, entry);
+            });
+            set(owner, headless, "spriteLookup", field(owner, atlases, "spriteLookup"));
+            Natives.log("Horizon's client: block and item models loaded in " + (System.nanoTime() - started) / 1_000_000 + " ms");
+        } catch (Throwable t) {
+            Throwable root = t;
+            while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+            Natives.log("Horizon's client: the models couldn't be loaded: " + root);
+            for (var f : root.getStackTrace()) Natives.log("    at " + f);
+        }
+    }
+    private static boolean gpuParts;
+    private static boolean joined;
+
+    /**
+     * The game renderer's GUI renderer, as far as mods drawing with the GPU read it: its GUI
+     * projection and that projection's matrix buffer (Xaero's minimap draws its picture in
+     * picture with them). Nothing renders through it: HorizonGraphics records the GUI.
+     */
+    private static void guiRenderer(Object gameRenderer) {
+        try {
+            var gui = Natives.allocate(net.minecraft.client.gui.render.GuiRenderer.class);
+            // GuiRenderer.draw's: the GUI's size, z from 1000 to 11000 (Xaero sets its size).
+            var projection = new net.minecraft.client.renderer.Projection();
+            projection.setupOrtho(1000.0F, 11000.0F, width, height, true);
+            set(net.minecraft.client.gui.render.GuiRenderer.class, gui, "guiProjection", projection);
+            set(net.minecraft.client.gui.render.GuiRenderer.class, gui, "guiProjectionMatrixBuffer",
+                    new net.minecraft.client.renderer.ProjectionMatrixBuffer("gui"));
+            set(net.minecraft.client.renderer.GameRenderer.class, gameRenderer, "guiRenderer", gui);
+        } catch (Throwable t) {
+            Natives.log("Horizon's client: no GUI renderer: " + t);
+        }
+        // The rest of what GameRenderer's constructor makes that GPU drawing reads: the lights'
+        // buffer, the overlay and light map textures, no fog, a main render target (the GUI's
+        // size at the window's scale: drawing aimed at the screen lands there, unseen).
+        Class<?> owner = net.minecraft.client.renderer.GameRenderer.class;
+        ThrowingRunnable[] parts = {
+            () -> set(owner, gameRenderer, "lighting", new com.mojang.blaze3d.platform.Lighting()),
+            () -> set(owner, gameRenderer, "overlayTexture", new net.minecraft.client.renderer.texture.OverlayTexture()),
+            () -> set(owner, gameRenderer, "lightmap", new net.minecraft.client.renderer.Lightmap()),
+            () -> {
+                var fog = new net.minecraft.client.renderer.fog.FogRenderer();
+                set(owner, gameRenderer, "fogRenderer", fog);
+                com.mojang.blaze3d.systems.RenderSystem.setShaderFog(fog.getBuffer(net.minecraft.client.renderer.fog.FogRenderer.FogMode.NONE));
+            },
+            () -> set(owner, gameRenderer, "mainRenderTarget", new com.mojang.blaze3d.pipeline.TextureTarget("main", width * 3, height * 3,
+                    com.mojang.renderpearl.api.GpuFormat.RGBA8_UNORM, com.mojang.renderpearl.api.GpuFormat.D32_FLOAT)),
+        };
+        for (var part : parts) {
+            try {
+                part.run();
+            } catch (Throwable t) {
+                Natives.log("Horizon's client: a part of the game renderer couldn't be made: " + t);
+            }
+        }
+    }
+
+    /**
+     * The client's join (ClientPacketListener.handleLogin), once the first player's client is
+     * in a world: the mods' injections into it run, wherever in it they inject (Xaero's
+     * minimap starts its session there), with no packet.
+     */
+    private static void joined() {
+        if (joined || minecraft.level == null) return;
+        joined = true;
+        // The client's server is the mirror, in this process (as single player's is, and as
+        // its connections are memory ones): mods name their per-world data by it (Xaero's
+        // minimap: "waypoints" of the world folder).
+        try {
+            if (HorizonServer.server() instanceof net.minecraft.client.server.IntegratedServer integrated
+                    && minecraft.getSingleplayerServer() == null) {
+                set(Minecraft.class, minecraft, "singleplayerServer", integrated);
+            }
+        } catch (ReflectiveOperationException e) {
+            Natives.log("Horizon's client: no single-player server: " + e);
+        }
+        var connection = connection(minecraft.level);
+        if (connection == null) return;
+        for (var m : net.minecraft.client.multiplayer.ClientPacketListener.class.getDeclaredMethods()) {
+            var merged = m.getAnnotation(org.spongepowered.asm.mixin.transformer.meta.MixinMerged.class);
+            Class<?>[] params = m.getParameterTypes();
+            // (Fabric's own needs the connection's networking add-on, which the headless
+            // client has none of.)
+            if (merged == null || merged.mixin().startsWith("dev.horizonlab.") || merged.mixin().startsWith("net.fabricmc.")
+                    || params.length != 2
+                    || params[0] != net.minecraft.network.protocol.game.ClientboundLoginPacket.class
+                    || !org.spongepowered.asm.mixin.injection.callback.CallbackInfo.class.isAssignableFrom(params[1])) {
+                continue;
+            }
+            try {
+                m.setAccessible(true);
+                m.invoke(connection, null, new org.spongepowered.asm.mixin.injection.callback.CallbackInfo("handleLogin", true));
+            } catch (Throwable t) {
+                Throwable cause = t.getCause() != null ? t.getCause() : t;
+                Natives.log("Horizon's client: " + merged.mixin() + " failed at the client's join: " + cause);
+            }
+        }
+    }
+
+    /**
+     * The client's thread is the render thread (RenderSystem.assertOnRenderThread): the
+     * headless client runs on the thread that ticks it (the server's).
+     */
+    private static void renderThread() {
+        if (com.mojang.blaze3d.systems.RenderSystem.isOnRenderThread()) return;
+        try {
+            set(com.mojang.blaze3d.systems.RenderSystem.class, null, "renderThread", Thread.currentThread());
+        } catch (ReflectiveOperationException e) {
+            Natives.log("Horizon's client: no render thread: " + e);
+        }
+    }
 
     /**
      * The client's resource reload (Minecraft's constructor starts it, before CLIENT_STARTED),
@@ -944,6 +1125,15 @@ public final class HorizonClient {
             return;
         }
         var manager = new net.minecraft.server.packs.resources.MultiPackResourceManager(type, packs);
+        // The client's resource manager (Minecraft.getResourceManager: Xaero reads its radar
+        // icons' definitions there), over the same packs.
+        try {
+            var reloadable = new net.minecraft.server.packs.resources.ReloadableResourceManager(type);
+            set(net.minecraft.server.packs.resources.ReloadableResourceManager.class, reloadable, "resources", manager);
+            set(Minecraft.class, minecraft, "resourceManager", reloadable);
+        } catch (Throwable t) {
+            Natives.log("Horizon's client: no client resource manager: " + t);
+        }
         java.util.concurrent.Executor here = Runnable::run;
         int ran = 0;
         for (var listener : new java.util.ArrayList<>(listeners)) {
@@ -965,6 +1155,14 @@ public final class HorizonClient {
         HorizonHooks.fireClient(minecraft, "tick");
         HorizonServer.fireEach("ClientTickEvents.START_CLIENT_TICK",
                 net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.START_CLIENT_TICK, l -> l.onStartTick(minecraft));
+        // The client player's tick (the client level ticks it: Player.tick), as far as mods hook
+        // it at its head and tail (Xaero's minimap follows its world there); the player itself
+        // is the server's.
+        var local = minecraft.player;
+        if (local != null) {
+            HorizonHooks.fire(local, net.minecraft.world.entity.player.Player.class, "tick", "()V", "HEAD", new Object[0], null, true);
+            HorizonHooks.fire(local, net.minecraft.world.entity.player.Player.class, "tick", "()V", "TAIL", new Object[0], null, true);
+        }
         HorizonServer.fireEach("ClientTickEvents.END_CLIENT_TICK",
                 net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK, l -> l.onEndTick(minecraft));
     }

@@ -348,14 +348,14 @@ impl Game<'_> {
                         continue;
                     };
                     let atlas = &self.gui.atlas;
-                    let Some(sprite) = atlas.sprites.get(&format!("horizon/java{slot}")).copied()
-                    else {
+                    let (sprite_name, slot_side) = horizon_client::hud::java_image_slot(slot);
+                    let Some(sprite) = atlas.sprites.get(&sprite_name).copied() else {
                         continue;
                     };
-                    let side = horizon_client::hud::JAVA_IMAGE_SIZE as f32;
+                    let side = slot_side as f32;
                     let (fw, fh) = (
-                        w.min(horizon_client::hud::JAVA_IMAGE_SIZE) as f32 / side,
-                        h.min(horizon_client::hud::JAVA_IMAGE_SIZE) as f32 / side,
+                        w.min(slot_side) as f32 / side,
+                        h.min(slot_side) as f32 / side,
                     );
                     let (u, v) = ((sprite.u1 - sprite.u0) * fw, (sprite.v1 - sprite.v0) * fh);
                     let mut r = sprite;
@@ -518,24 +518,43 @@ impl Game<'_> {
         if w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
             return;
         }
+        use horizon_client::hud::{
+            JAVA_BIG_IMAGE_SLOTS, JAVA_IMAGE_SIZE, JAVA_IMAGE_SLOTS, java_image_slot,
+        };
+        // Images bigger than a small slot take a big one (small and big slots are evicted
+        // apart, least recently stored first).
+        let big = w > JAVA_IMAGE_SIZE || h > JAVA_IMAGE_SIZE;
+        let range = if big {
+            JAVA_IMAGE_SLOTS..JAVA_IMAGE_SLOTS + JAVA_BIG_IMAGE_SLOTS
+        } else {
+            0..JAVA_IMAGE_SLOTS
+        };
         let images = &mut self.java_images.slots;
-        let slot = match images.iter().position(|s| s.0 == name) {
+        let own = images
+            .iter()
+            .position(|s| s.0 == name && range.contains(&s.1));
+        let slot = match own {
             Some(i) => images.remove(i).1,
-            None if images.len() < horizon_client::hud::JAVA_IMAGE_SLOTS => images.len(),
-            None => images.remove(0).1,
+            None => {
+                images.retain(|s| s.0 != name);
+                match range.clone().find(|r| !images.iter().any(|s| s.1 == *r)) {
+                    Some(free) => free,
+                    None => {
+                        let oldest = images
+                            .iter()
+                            .position(|s| range.contains(&s.1))
+                            .unwrap_or(0);
+                        images.remove(oldest).1
+                    }
+                }
+            }
         };
         images.push((name.to_owned(), slot, w, h));
-        let Some(rect) = self
-            .gui
-            .atlas
-            .sprites
-            .get(&format!("horizon/java{slot}"))
-            .copied()
-        else {
+        let (sprite_name, side) = java_image_slot(slot);
+        let Some(rect) = self.gui.atlas.sprites.get(&sprite_name).copied() else {
             return;
         };
         // Nearest-neighbour into the slot's square (the part the image fills).
-        let side = horizon_client::hud::JAVA_IMAGE_SIZE;
         let (sw, sh) = (w.min(side), h.min(side));
         let mut out = vec![0u8; (side * side * 4) as usize];
         for y in 0..sh {

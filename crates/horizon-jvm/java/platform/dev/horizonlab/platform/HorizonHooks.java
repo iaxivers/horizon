@@ -189,13 +189,14 @@ public final class HorizonHooks {
     private static void readClient(String mod, byte[] bytes) {
         ClassNode node = new ClassNode();
         new ClassReader(bytes).accept(node, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
-        boolean minecraft = false, hud = false;
+        boolean minecraft = false, hud = false, frame = false;
         for (AnnotationNode a : annotations(node.invisibleAnnotations, node.visibleAnnotations)) {
             if (!"Lorg/spongepowered/asm/mixin/Mixin;".equals(a.desc)) continue;
             if (get(a, "value") instanceof List<?> list) {
                 for (Object t : list) {
                     minecraft |= CLIENT_OWNER.equals(((org.objectweb.asm.Type) t).getInternalName());
                     hud |= HUD_OWNER.equals(((org.objectweb.asm.Type) t).getInternalName());
+                    frame |= FRAME_OWNER.equals(((org.objectweb.asm.Type) t).getInternalName());
                 }
             }
             if (get(a, "targets") instanceof List<?> list) {
@@ -206,6 +207,7 @@ public final class HorizonHooks {
             }
         }
         if (hud) readHud(mod, node);
+        if (frame) readFrame(mod, node);
         if (!minecraft) return;
         String mixin = node.name.replace('/', '.');
         for (MethodNode m : node.methods) {
@@ -222,6 +224,73 @@ public final class HorizonHooks {
                     // registry fields) or just after (AFTER).
                     String start = name.equals("<init>") && !modifyArg ? startPoint(get(a, "at")) : null;
                     if (start != null) CLIENT_HOOKS.add(new ClientHook(mod, start, mixin, m.name, false));
+                }
+            }
+        }
+    }
+
+    /** The game renderer, whose frame (extract) mods hook at its head and tail. */
+    private static final String FRAME_OWNER = "net/minecraft/client/renderer/GameRenderer";
+    /** The mods' injections at the head and tail of GameRenderer.extract: (at, mixin, handler). */
+    private static final List<String[]> FRAME_HOOKS = new ArrayList<>();
+    private static final Map<String, List<Method>> FRAME_RESOLVED = new ConcurrentHashMap<>();
+
+    private static void readFrame(String mod, ClassNode node) {
+        String mixin = node.name.replace('/', '.');
+        for (MethodNode m : node.methods) {
+            for (AnnotationNode a : annotations(m.invisibleAnnotations, m.visibleAnnotations)) {
+                if (!"Lorg/spongepowered/asm/mixin/injection/Inject;".equals(a.desc)) continue;
+                if (!(get(a, "method") instanceof List<?> specs)) continue;
+                List<?> ats = get(a, "at") instanceof List<?> l ? l : List.of();
+                if (ats.size() != 1 || !(ats.get(0) instanceof AnnotationNode at)) continue;
+                Object value = get(at, "value");
+                if (!"HEAD".equals(value) && !"TAIL".equals(value) && !"RETURN".equals(value)) continue;
+                for (Object spec : specs) {
+                    if (!parseSpec((String) spec)[0].equals("extract")) continue;
+                    FRAME_HOOKS.add(new String[] {"HEAD".equals(value) ? "HEAD" : "TAIL", mixin, m.name});
+                }
+            }
+        }
+    }
+
+    /**
+     * The mods' injections at the head ({@code head}) or tail of GameRenderer.extract, the
+     * frame's start and end (Xaero's render tick: its minimap's chunk writing), with
+     * (DeltaTracker.ONE, true) as the frame's arguments.
+     */
+    public static void fireFrame(Object gameRenderer, boolean head) {
+        if (FRAME_HOOKS.isEmpty() || gameRenderer == null) return;
+        String at = head ? "HEAD" : "TAIL";
+        List<Method> handlers = FRAME_RESOLVED.computeIfAbsent(at, k -> {
+            List<Method> found = new ArrayList<>();
+            for (Method m : gameRenderer.getClass().getDeclaredMethods()) {
+                MixinMerged merged = m.getAnnotation(MixinMerged.class);
+                if (merged == null) continue;
+                for (String[] h : FRAME_HOOKS) {
+                    if (!h[0].equals(at) || !merged.mixin().equals(h[1])) continue;
+                    if (!m.getName().equals(h[2]) && !m.getName().endsWith("$" + h[2])) continue;
+                    Class<?>[] p = m.getParameterTypes();
+                    if (p.length == 3 && p[0] == net.minecraft.client.DeltaTracker.class && p[1] == boolean.class
+                            && CallbackInfo.class.isAssignableFrom(p[2])) {
+                        m.setAccessible(true);
+                        found.add(m);
+                    }
+                }
+            }
+            if (!found.isEmpty()) Natives.log("Horizon's client: " + found.size() + " mod injection(s) run at the " + at + " of each frame");
+            return found;
+        });
+        for (Method handler : handlers) {
+            try {
+                handler.invoke(Modifier.isStatic(handler.getModifiers()) ? null : gameRenderer,
+                        net.minecraft.client.DeltaTracker.ONE, true, new CallbackInfo("extract", true));
+            } catch (Throwable t) {
+                Throwable cause = t instanceof java.lang.reflect.InvocationTargetException ite && ite.getCause() != null ? ite.getCause() : t;
+                while (cause.getCause() != null && cause.getCause() != cause) cause = cause.getCause();
+                if (FAILURES.merge(handler.toString(), 1, Integer::sum) <= 3) {
+                    Natives.log("A mod failed in the client's frame (" + handler.getName() + "): " + cause);
+                    StackTraceElement[] frames = cause.getStackTrace();
+                    for (int f = 0; f < Math.min(frames.length, 16); f++) Natives.log("    at " + frames[f]);
                 }
             }
         }

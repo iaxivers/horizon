@@ -24,6 +24,7 @@ saying something works.
 | Mods' messages | `HorizonLoop.java`: server→client payloads queued and delivered after `syncMenus` (`flush`); client→server run at once. Mixins: `PlayNetworkingMixin` (server side), `ClientPlayNetworkingMixin` |
 | Mixins | `java/platform/horizon-platform.mixins.json` (`client` list: headless-client only) |
 | Mods' entities | `HorizonEntities.java` (live per level, ticked as `tickNonPassenger`, saved in `horizon-java/entities/`, attack/interact), `HorizonEntityRender.java` (the mod's renderer submits into a recording collector: part trees once, poses + matrix + texture per tick), `HorizonSpawner.java` (natural spawning, the levels' biomes), `HorizonPackets.java` (sounds and particles to Horizon's players), mixins `ServerChunkCacheMixin` (a chunk source holding nothing), `PathNavigationRegionMixin`, `BlockScanMixin`, `ItemModelResolverMixin` + `ItemStackRenderStateMixin` (held items), `EntitySelectorMixin`; Rust: `game/java_entities.rs` (draw, aim), `server_mods.rs` (`send_java_entities`, `java_entity_attack`/`interact`, `/summon`) |
+| GPU (mods that draw with the GPU) | `crates/horizon-jvm/src/gpu/` (`mod.rs`: renderpearl's device on wgpu, natives on `dev.horizonlab.bridge.Gpu`; `spirv.rs`: combined samplers split for naga), `HorizonGpu.java` (the renderpearl backend: textures, buffers, transient memory, encoder, passes, pipelines), `HorizonGraphics` (pictures in picture, GPU textures as HUD images), `HorizonClient.guiRenderer` (the game renderer's GPU parts) |
 | Mods' worldgen | `HorizonWorldgen.java` (also the biome queries: `biomes`, `findBiome`), `HorizonChunks.java` (chunk copies for code that reads chunks: saplings), `HorizonTints.java` (mods' block tints for the mesher) (vanilla's chunk steps on the mirror's level, chunks back as vanilla saves them), mixin `WorldGenRegionMixin`; Rust: `game/java_worldgen.rs` (`JavaTerrain`, wraps `VanillaTerrain` in `world_loading::make_streaming`), mods' biomes in `biome.rs` (`mod_biomes`) and the biome registry (`lan/data.rs`) |
 | Content conversion | `crates/horizon-port-pack` (`oracle.rs`, `carry.rs`), `HorizonContent.java` (facts, creative tabs), `crates/horizon-client/src/mod_content.rs` (content root) |
 | Game side (Rust) | `crates/horizon-client/src/game/java_mods.rs` (start, content, creative), `server_mods.rs` (actions from Java, menus, block entities, random ticks, `JAVA_STATES`, `JAVA_WINDOWS`), `java_screen.rs` (draws frames, sends input, key maps; `Screen::JavaMod` and `CLIENT_WINDOW` for client-only screens) |
@@ -147,6 +148,53 @@ saying something works.
 - Mods' top-level `textures/*.png` and `textures/hud/` join Horizon's GUI atlas (AppleSkin's
   `icons.png`).
 - `HORIZON_JAVA_DEBUG=hud` logs each HUD frame's size and each Fabric HUD element's ops.
+
+## Mods that draw with the GPU
+
+26.3's blaze3d GPU API is `com.mojang.renderpearl` (`api/`: `GpuDevice`, `CommandEncoder`,
+`RenderPass`, textures, buffers, pipelines), with a backend interface under it
+(`backend/api/`: `GpuDeviceBackend`, `CommandEncoderBackend`, `RenderPassBackend`) that its
+OpenGL and Vulkan backends implement. The headless client has a third: `HorizonGpu`, whose every
+call is a native into `crates/horizon-jvm/src/gpu/` (wgpu, the game's version, on its own
+device: Vulkan, else GL). Vanilla's `FrontendGpuDevice` sits on it unchanged: its checks, GLSL
+compiled to SPIR-V by shaderc (LWJGL's, from the game's libraries) and reflected; the backend
+gets SPIR-V, vertex layouts and uniform lists.
+
+- Textures, views, samplers and buffers are wgpu objects by id. A render pass is recorded and
+  encoded when it ends; copies and clears are submitted at once (queue writes in between land
+  in order). Readbacks wait for the GPU.
+- Shaders: naga reads the SPIR-V after `gpu/spirv.rs` splits each combined image sampler
+  (`sampler2D`) into a texture (group 0) and a sampler (group 1, same binding), function
+  parameters and calls included, and drops `OpLine`s. Pipelines use wgpu's derived layouts;
+  bind groups are made per draw from the bound uniforms (the bindings the shaders use).
+  Variants per depth format (Vulkan's backend has with/without depth).
+- Coordinates are renderpearl-Vulkan's: NDC y -1 is row 0 (naga's reader flips y for wgpu),
+  depth 0..1, so front faces are clockwise for wgpu (`FrontFace::Cw`).
+- The headless client gets `RenderSystem.initRenderer(new FrontendGpuDevice(HorizonGpu))` at
+  `finish`, then on the first client tick (the render thread is the client's: the server
+  thread) the game renderer's GPU parts: a GUI renderer with its GUI projection, lighting,
+  overlay and light map textures, a fog buffer (`Fog` uniform, mode NONE), a main render
+  target; and `GameRenderer.preloadUiShader` over the client resource manager (vanilla's and
+  the mods' shaders: the fallback pipeline cache).
+- A frame per player and client tick: the mods' injections at the head and tail of
+  `GameRenderer.extract` (`HorizonHooks.fireFrame`), the HUD between, then the dynamic uniforms'
+  `reset`, fenced tasks, transient memory reused (`HorizonGpu.endFrame`). Mods' HEAD/TAIL
+  injections into `Player.tick` run for the client player each tick.
+- Pictures in picture (`GuiRenderState.addPicturesInPictureState`: Xaero's minimap): the
+  renderer Fabric's registry made for its class (`PictureInPictureRendererRegistryImpl.FACTORIES`)
+  prepares it into its texture, and its blit of that texture becomes a HUD image op
+  (`horizon:dynamic/gpu<id>`, read back when it changed) and a blit. Drawn at most 10 times a
+  second per player (`PIP_INTERVAL`); in between the last blit is repeated.
+- Textures the headless client never uploaded (`HorizonTextures.View`: a mod's PNG, a dynamic
+  texture) are uploaded the first time a pass samples them; atlases' views bind white.
+- Horizon's window draws images over 64 pixels from 4 slots of 256 (`JAVA_BIG_IMAGE_SLOTS`).
+  Only render targets (textures drawn into, up to 1024 square) become HUD images; real atlases'
+  quads go the headless sprites' way.
+- `HORIZON_JAVA_GPU=0` turns the device off. `HORIZON_JAVA_DEBUG=gpu` logs textures,
+  pipelines and GPU blits (and saves one in 100 as `/tmp/horizon-gpu-N.png`);
+  `HORIZON_GPU_TRACE=1` logs each pass (targets, draws, pipelines, its first draw's vertices and
+  uniforms, the target's lit pixels after it); `HORIZON_JAVA_GPU_DUMP=dir` writes each
+  pipeline's SPIR-V, which `HORIZON_SPV_DIR=dir cargo test -p horizon-jvm gpu` reads back.
 
 ## 26.3 facts that cost time
 
@@ -317,6 +365,25 @@ saying something works.
   headless. Screens that read `mouseHandler.xpos()` get Horizon's mouse.
 - Commands through `horizon-ctl command` run as the owner's console; server mods' commands
   (and `/summon` of a mod entity) now go to the mods first (`owner_console_command`).
+
+- blaze3d's GPU classes moved to `com.mojang.renderpearl` (`GpuDevice` is
+  `renderpearl.api.device.GpuDevice`); shaders are GLSL 330 compiled to Vulkan SPIR-V with
+  `auto_bind_uniforms` (renderpearl rewrites each descriptor to set 0, binding = the uniform's
+  index). Vanilla's `core/clouds` uses a texel buffer: no wgpu binding, that pipeline fails.
+- `GpuBufferSlice.MappedView.data()` is written by moving its position: write back from the
+  memory's own address (`MemoryUtil.memAddress0`), not `memAddress` (all zeros reached the GPU:
+  every model-view matrix zero, nothing drawn).
+- naga sizes a std140 uniform block rounded to 16 (the 40-byte `Fog` block needs 48 bound):
+  buffers are made in 16-byte steps and uniform bindings rounded up.
+- `DynamicGpuDataStorageMapped` grows its ring every frame unless `getDynamicUniforms().reset()`
+  runs at the frame's end.
+- Xaero's minimap: its session starts in `ClientPacketListener.handleLogin` (the client's join
+  fires the mods' injections there, `HorizonClient.joined`), names its world by
+  `Minecraft.getSingleplayerServer()` (the mirror, set at the join when it is an
+  `IntegratedServer`), follows the world from `Player.tick` HEAD, writes its map chunks from
+  `GameRenderer.extract` HEAD and draws in a picture in picture (`MinimapPipRenderer`), reading
+  `gameRenderer.guiRenderer`'s projection, `lighting()`, `mainRenderTarget()`, a client level's
+  `clockManager()` (`ClientPacketListener.clockManager`) and `Minecraft.getResourceManager()`.
 
 - **The client level needs a connection.** REI (and others) read the client's registries as
   `minecraft.level.connection.registryAccess()` once there is a level; with a null one REI
@@ -499,12 +566,25 @@ name, mod, item icon), AppleSkin's food overlays over Horizon's food bar.
 
 Known gaps: extended (Fabric) menus share the server's menu with the screen (no client copy);
 the recipe book lists every recipe (not the player's unlocked ones); sounds from Java's client
-side are silent; HUD mods that render with the GPU (Xaero's Minimap: framebuffers,
-`RenderSystem.getDevice()`) draw nothing, nor do textured GUI elements mods add directly or
-textured quads with a GPU texture of their own (neither a named view nor a headless sprite);
+side are silent; textured GUI elements mods add directly with a GPU texture of their own
+are drawn only when the texture is the headless GPU's (pictures in picture);
 HUD frames go to every player but each player's
 client tick shares the mods' static state;
 saved data is written every 10 s and when the world saves.
+
+Mods that draw with the GPU (tested 2026-10-31 headless, Xaero's Minimap 26.6.2 alone,
+llvmpipe): Xaero's minimap draws on Horizon's HUD at its place: the map of the land around
+(its own colours from the blocks' models and textures, terrain slopes), its frame, the
+compass marks, the player's arrow and the coordinates under it, all through Xaero's own
+pipelines and shaders on wgpu. The client's block and item models are loaded at the client's
+start (`HorizonClient.models`: `BlockColors.createDefault`, a real `AtlasManager` and a
+`ModelManager` reloaded over the client resources, ~4 s; the real atlases join the headless
+GUI one in `Minecraft.getAtlasManager()`). Left: the compass letters (text drawn on the GPU:
+the headless font has no glyph textures), water and other tints to check against the real
+game; the client tick is ~35 ms with the minimap on llvmpipe (the frame's start ~25: Xaero's
+writer, the HUD ~10: the picture drawn and read back at 10 Hz); dedicated servers' players
+get no minimap world yet (the mirror isn't an `IntegratedServer` there); every player shares
+Xaero's one session.
 
 Big pack (tested 2026-10-31, `SCENE=none`, 72 jars, 213 mods with nested ones: the 40-mod
 pack plus REI, Modonomicon, Tech Reborn, Energized Power, Storage Drawers, Extended Drawers,
@@ -519,7 +599,7 @@ Left: REI's item list panel is empty (its creative tab collection fails); REI's 
 over Horizon's inventory and its R/U keys aren't wired (Horizon's inventory isn't a Java
 screen); sprites drawn under a scissor overflow it (Tech Reborn's energy bars); GraphLib logs
 an error each tick per level (`ServerChunkCache.chunkMap` is null on the mirror); Glitchcore's
-client tick wants `LevelExtractor`; Xaero's HUD wants a GPU device; Traveler's Backpack's model
+client tick wants `LevelExtractor`; Traveler's Backpack's model
 reload listener fails.
 
 ### Profiling

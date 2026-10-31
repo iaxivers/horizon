@@ -24,6 +24,17 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 sha2 = "0.10"
 # Java discovery, shared with horizon-prepare: JAVA_HOME, the PATH, Minecraft's runtimes.
 horizon-prepare = { path = "../horizon-prepare" }
+# The headless client's GPU (src/gpu/): renderpearl's device carried out on wgpu, the
+# game's version; its SPIR-V (shaderc's, from the pipelines' GLSL) read by naga.
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "naga-ir"] }
+naga = { version = "30.0.1", features = ["spv-in"] }
+pollster = "0.4"
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
+
+[target.'cfg(windows)'.dependencies]
+wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
 
 [build-dependencies]
 # build.rs compiles the bridge's Java against Fabric Loader (src/libs.rs, shared) and packs it.

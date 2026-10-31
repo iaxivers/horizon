@@ -1510,9 +1510,12 @@ dependencies = [
  "jni 0.21.1",
  "libloading",
  "log",
+ "naga",
+ "pollster",
  "serde_json",
  "sha2",
  "ureq",
+ "wgpu",
  "zip",
 ]
 
@@ -2252,6 +2255,7 @@ dependencies = [
  "naga-types",
  "num-traits",
  "once_cell",
+ "petgraph",
  "pp-rs",
  "rustc-hash 1.1.0",
  "spirv",

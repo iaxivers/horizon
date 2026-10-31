@@ -20,6 +20,7 @@
 pub mod content;
 pub mod events;
 pub mod facade;
+pub mod gpu;
 pub mod libs;
 pub mod world;
 
@@ -516,6 +517,7 @@ fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
             },
         ],
     )?;
+    gpu::register(env)?;
     let jars: Vec<String> = jars
         .iter()
         .map(|j| j.to_string_lossy().into_owned())

@@ -1,6 +1,7 @@
 package dev.horizonlab.platform;
 
 import com.google.gson.JsonArray;
+import dev.horizonlab.bridge.Natives;
 import com.google.gson.JsonObject;
 import com.mojang.renderpearl.api.pipeline.RenderPipeline;
 import net.minecraft.client.gui.Font;
@@ -49,6 +50,46 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
             capture(element);
         }
 
+        /**
+         * A picture in picture (Xaero's minimap, an entity in a screen): its renderer draws it
+         * into its texture now, on the headless client's GPU (HorizonGpu), and adds the blit of
+         * that texture here, as GuiRenderer.preparePictureInPicture does.
+         */
+        @Override
+        public void addPicturesInPictureState(net.minecraft.client.renderer.state.gui.pip.PictureInPictureRenderState state) {
+            if (owner == null || !HorizonGpu.installed()) return;
+            var renderer = pictureRenderer(state);
+            if (renderer == null) return;
+            // Drawn (and read back) at most PIP_INTERVAL apart for each receiver; in between the
+            // last blit is repeated, the receiver keeping its image.
+            Object key = java.util.List.of(state.getClass(), owner.imagesSent == null ? "" : System.identityHashCode(owner.imagesSent));
+            long now = System.nanoTime();
+            Object[] last = PIP_LAST.get(key);
+            if (last != null && now - (long) last[0] < PIP_INTERVAL && last[1] != null) {
+                owner.gpuQuad((Object[]) last[1], false);
+                return;
+            }
+            Object[] record = {now, null};
+            PIP_LAST.put(key, record);
+            owner.recording = record;
+            try {
+                prepare(renderer, state, this);
+            } catch (Throwable t) {
+                if (PIP_FAILURES.merge(state.getClass().getName(), 1, Integer::sum) <= 3) {
+                    Natives.log("Horizon's client: a picture in picture (" + state.getClass().getName() + ") failed: " + t);
+                    for (var f : t.getStackTrace()) Natives.log("    at " + f);
+                }
+            } finally {
+                owner.recording = null;
+            }
+        }
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        private static void prepare(net.minecraft.client.gui.render.pip.PictureInPictureRenderer renderer,
+                                    net.minecraft.client.renderer.state.gui.pip.PictureInPictureRenderState state, GuiRenderState into) {
+            renderer.prepare(state, into, null, guiScale());
+        }
+
         private void capture(net.minecraft.client.renderer.state.gui.GuiElementRenderState element) {
             if (owner == null) return;
             Vertices vertices = new Vertices(new java.util.ArrayList<>(), new java.util.ArrayList<>());
@@ -80,6 +121,16 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
                         y1 = v[1];
                         bottom = color;
                     }
+                }
+                if (textured && texture.texure0() instanceof HorizonGpu.View gpu && HorizonGpu.drawnInto(gpu)) {
+                    // A texture of the headless client's GPU (a picture in picture): its pixels
+                    // as an image, the UVs' direction kept (renderpearl's rows are bottom up).
+                    float[] first = vertices.points().get(i);
+                    float[] third = vertices.points().get(i + 2);
+                    boolean flipU = (first[0] < third[0]) != (first[2] < third[2]) && first[2] != third[2];
+                    boolean flipV = (first[1] < third[1]) != (first[3] < third[3]) && first[3] != third[3];
+                    owner.gpuQuad(gpu, x0, y0, x1, y1, flipU ? u1 : u0, flipU ? u0 : u1, flipV ? v1 : v0, flipV ? v0 : v1, top);
+                    continue;
                 }
                 if (textured && texture.texure0() instanceof HorizonTextures.View view
                         && !view.name().contains("textures/atlas/")) {
@@ -155,6 +206,140 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
         @Override
         public com.mojang.blaze3d.vertex.VertexConsumer setLineWidth(float width) {
             return this;
+        }
+    }
+
+    private static final boolean DEBUG_GPU = "gpu".equals(System.getenv("HORIZON_JAVA_DEBUG"));
+    /** How often a picture in picture is drawn and read back (ns): 10 a second. */
+    private static final long PIP_INTERVAL = 100_000_000L;
+    /** Per picture-in-picture class and receiver: when it was last drawn, and its blit. */
+    private static final java.util.Map<Object, Object[]> PIP_LAST = new java.util.concurrent.ConcurrentHashMap<>();
+    /** While a picture in picture draws: where its blit is kept. */
+    private Object[] recording;
+    private static long debugImages;
+
+    /** HORIZON_JAVA_DEBUG=gpu: a GPU texture blitted is saved as /tmp/horizon-gpu-N.png now and then. */
+    private static void debugImage(String name, HorizonGpu.View view, byte[] rgba) {
+        if (rgba == null) {
+            Natives.log("gpu: " + name + " has no pixels");
+            return;
+        }
+        if (debugImages++ % 100 != 0) return;
+        int w = view.getWidth(0), h = view.getHeight(0), opaque = 0;
+        var image = new java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int i = (y * w + x) * 4;
+                int a = rgba[i + 3] & 255;
+                if (a != 0) opaque++;
+                image.setRGB(x, y, (a << 24) | ((rgba[i] & 255) << 16) | ((rgba[i + 1] & 255) << 8) | (rgba[i + 2] & 255));
+            }
+        }
+        try {
+            javax.imageio.ImageIO.write(image, "png", new java.io.File("/tmp/horizon-gpu-" + (debugImages / 100) + ".png"));
+        } catch (java.io.IOException e) {
+            Natives.log("gpu: " + e);
+        }
+        Natives.log("gpu: " + name + " " + w + "x" + h + ", " + opaque + " pixels not transparent");
+    }
+    private static final java.util.Map<String, Integer> PIP_FAILURES = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final java.util.Map<Class<?>, net.minecraft.client.gui.render.pip.PictureInPictureRenderer<?>> PIP_RENDERERS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** The GUI scale pictures in picture are drawn at (the window's: HorizonClient's). */
+    private static int guiScale() {
+        try {
+            return Math.max(1, HorizonClient.minecraft().getWindow().getGuiScale());
+        } catch (Throwable t) {
+            return 3;
+        }
+    }
+
+    /**
+     * The renderer of a picture in picture's class: one of each renderer mods registered
+     * through Fabric's registry (made once, as GameRenderer makes them for its GuiRenderer).
+     */
+    @SuppressWarnings("unchecked")
+    private static synchronized net.minecraft.client.gui.render.pip.PictureInPictureRenderer<?> pictureRenderer(
+            net.minecraft.client.renderer.state.gui.pip.PictureInPictureRenderState state) {
+        if (!pipRenderersMade) {
+            pipRenderersMade = true;
+            try {
+                Class<?> registry = Class.forName("net.fabricmc.fabric.impl.client.rendering.PictureInPictureRendererRegistryImpl");
+                var field = registry.getDeclaredField("FACTORIES");
+                field.setAccessible(true);
+                net.fabricmc.fabric.api.client.rendering.v1.PictureInPictureRendererRegistry.Context context = HorizonClient::minecraft;
+                for (var factory : (java.util.List<net.fabricmc.fabric.api.client.rendering.v1.PictureInPictureRendererRegistry.Factory>) field.get(null)) {
+                    try {
+                        var renderer = factory.createRenderer(context);
+                        if (renderer != null) PIP_RENDERERS.putIfAbsent(renderer.getRenderStateClass(), renderer);
+                    } catch (Throwable t) {
+                        Natives.log("Horizon's client: a picture-in-picture renderer couldn't be made: " + t);
+                    }
+                }
+                Natives.log("Horizon's client: " + PIP_RENDERERS.size() + " picture-in-picture renderer(s)");
+            } catch (Throwable t) {
+                Natives.log("Horizon's client: no picture-in-picture renderers: " + t);
+            }
+        }
+        return PIP_RENDERERS.get(state.getClass());
+    }
+
+    private static boolean pipRenderersMade;
+
+    /**
+     * A captured blit of a texture of the headless client's GPU: its pixels go first (as a
+     * dynamic texture's do) when they changed for the receiver, then the blit.
+     */
+    private void gpuQuad(HorizonGpu.View view, float x0, float y0, float x1, float y1,
+                         float u0, float u1, float v0, float v1, int color) {
+        Object[] blit = {view, x0, y0, x1, y1, u0, u1, v0, v1, color};
+        if (recording != null) recording[1] = blit;
+        gpuQuad(blit, true);
+    }
+
+    /** A blit of a GPU texture ({view, x0, y0, x1, y1, u0, u1, v0, v1, color}); {@code read}: its pixels are read back. */
+    private void gpuQuad(Object[] blit, boolean read) {
+        var view = (HorizonGpu.View) blit[0];
+        float x0 = (float) blit[1], y0 = (float) blit[2], x1 = (float) blit[3], y1 = (float) blit[4];
+        float u0 = (float) blit[5], u1 = (float) blit[6], v0 = (float) blit[7], v1 = (float) blit[8];
+        int color = (int) blit[9];
+        String name = HorizonTextures.DYNAMIC_PREFIX + "gpu" + view.id;
+        if (DEBUG_GPU) Natives.log("gpu: a blit of " + name + " " + view.getWidth(0) + "x" + view.getHeight(0) + " at " + x0 + "," + y0 + " " + x1 + "," + y1
+                + " uv " + u0 + "," + v0 + " " + u1 + "," + v1 + (modsOnly && !drawnByModNow() ? " (not a mod's)" : ""));
+        if (read && imagesSent != null && (!modsOnly || drawnByModNow())) {
+            byte[] rgba = HorizonGpu.pixels(view);
+            if (DEBUG_GPU) debugImage(name, view, rgba);
+            if (rgba != null) {
+                int version = java.util.Arrays.hashCode(rgba);
+                if (!Integer.valueOf(version).equals(imagesSent.get(name))) {
+                    imagesSent.put(name, version);
+                    var image = new JsonObject();
+                    image.addProperty("op", "image");
+                    image.addProperty("name", name);
+                    image.addProperty("width", view.getWidth(0));
+                    image.addProperty("height", view.getHeight(0));
+                    image.addProperty("rgba", java.util.Base64.getEncoder().encodeToString(rgba));
+                    ops.add(image);
+                }
+            }
+        }
+        pose().pushMatrix();
+        pose().identity();
+        try {
+            JsonObject o = op("blit");
+            o.addProperty("texture", name);
+            o.addProperty("x0", x0);
+            o.addProperty("y0", y0);
+            o.addProperty("x1", x1);
+            o.addProperty("y1", y1);
+            o.addProperty("u0", u0);
+            o.addProperty("u1", u1);
+            o.addProperty("v0", v0);
+            o.addProperty("v1", v1);
+            if (color != -1) o.addProperty("color", color);
+        } finally {
+            pose().popMatrix();
         }
     }
 

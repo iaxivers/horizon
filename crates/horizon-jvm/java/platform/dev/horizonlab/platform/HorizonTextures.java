@@ -118,6 +118,56 @@ public final class HorizonTextures {
         }
     }
 
+    /** A named view's pixels' version (a dynamic texture's uploads; 0 for a file's). */
+    static int version(String name) {
+        return VERSIONS.getOrDefault(name, 0);
+    }
+
+    /**
+     * A named view's pixels as RGBA rows in memory to free (MemoryUtil), its size in
+     * {@code size}: a dynamic texture's, or its PNG's; null when it has none (an atlas).
+     */
+    static java.nio.ByteBuffer rgba(String name, int[] size) {
+        var texture = DYNAMIC.get(name);
+        if (texture != null) {
+            var pixels = texture.getPixels();
+            if (pixels == null) return null;
+            int w = pixels.getWidth(), h = pixels.getHeight();
+            var out = org.lwjgl.system.MemoryUtil.memAlloc(w * h * 4);
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    int argb = pixels.getPixel(x, y);
+                    int i = (y * w + x) * 4;
+                    out.put(i, (byte) (argb >> 16)).put(i + 1, (byte) (argb >> 8)).put(i + 2, (byte) argb).put(i + 3, (byte) (argb >>> 24));
+                }
+            }
+            size[0] = w;
+            size[1] = h;
+            return out;
+        }
+        Identifier id = Identifier.tryParse(name);
+        if (id == null || id.getPath().startsWith("textures/atlas/")) return null;
+        try (var in = HorizonTextures.class.getClassLoader().getResourceAsStream("assets/" + id.getNamespace() + "/" + id.getPath())) {
+            if (in == null) return null;
+            var image = javax.imageio.ImageIO.read(in);
+            if (image == null) return null;
+            int w = image.getWidth(), h = image.getHeight();
+            var out = org.lwjgl.system.MemoryUtil.memAlloc(w * h * 4);
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    int argb = image.getRGB(x, y);
+                    int i = (y * w + x) * 4;
+                    out.put(i, (byte) (argb >> 16)).put(i + 1, (byte) (argb >> 8)).put(i + 2, (byte) argb).put(i + 3, (byte) (argb >>> 24));
+                }
+            }
+            size[0] = w;
+            size[1] = h;
+            return out;
+        } catch (java.io.IOException e) {
+            return null;
+        }
+    }
+
     /**
      * The image op for a dynamic texture a frame draws, when its receiver hasn't the current
      * pixels yet ({@code sent}: name to version): {@code {"op":"image","name","width","height",
