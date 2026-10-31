@@ -515,6 +515,14 @@ public final class HorizonServer {
         return HorizonWorldgen.finish(dimension, x, z, token);
     }
 
+    public static long worldgenProtoFilled(String dimension, int x, int z, String[] palette, int[] blocks, int[] post) {
+        return HorizonWorldgen.proto(dimension, x, z, palette, blocks, post);
+    }
+
+    public static boolean worldgenNoiseFromHorizon(String dimension) {
+        return HorizonWorldgen.noiseFromHorizon(dimension);
+    }
+
     public static String[] worldgenBiomes(String dimension, int[] quarts) {
         return HorizonWorldgen.biomes(dimension, quarts);
     }

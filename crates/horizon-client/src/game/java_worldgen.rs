@@ -25,6 +25,8 @@ pub(super) struct JavaTerrain {
     world: std::path::PathBuf,
     /// Whether the mods generate this dimension, asked once (the first chunk waits for Java).
     modded: Arc<OnceLock<bool>>,
+    /// Whether Horizon's noise fills the Java protos (asked once the mods generate it).
+    horizon_noise: OnceLock<bool>,
     registry: &'static BlockRegistry,
     biomes: Arc<Biomes>,
 }
@@ -70,6 +72,7 @@ impl JavaTerrain {
             structures,
             world: world.to_path_buf(),
             modded: Arc::new(OnceLock::new()),
+            horizon_noise: OnceLock::new(),
             registry,
             biomes,
         })
@@ -164,9 +167,34 @@ impl ChunkGenerator for JavaTerrain {
         if !self.modded() {
             return self.inner.proto(worker, x, z);
         }
+        let horizon_noise = *self.horizon_noise.get_or_init(|| {
+            horizon_jvm::events::worldgen_noise_from_horizon(&self.dimension).unwrap_or(false)
+        });
+        // Horizon's noise (the same router, aquifers and ore veins as vanilla's), so Java only
+        // runs the surface, carvers and what follows on the mods' biomes.
+        let fill = horizon_noise
+            .then(|| {
+                let chunk = {
+                    let _timed = super::java_profile::Timed::named("worldgen horizon noise");
+                    self.inner.noise_chunk(worker, x, z)
+                }?;
+                let _timed = super::java_profile::Timed::named("worldgen horizon noise copy");
+                Some(self.inner.noise_fill_of(&chunk, x, z))
+            })
+            .flatten();
         let made = {
             let _timed = super::java_profile::Timed::named("worldgen proto");
-            horizon_jvm::events::worldgen_proto(&self.dimension, x, z)
+            match fill {
+                Some(fill) => horizon_jvm::events::worldgen_proto_filled(
+                    &self.dimension,
+                    x,
+                    z,
+                    &fill.palette,
+                    &fill.blocks,
+                    &fill.postprocess,
+                ),
+                None => horizon_jvm::events::worldgen_proto(&self.dimension, x, z),
+            }
         };
         match made {
             Ok(Some(token)) => Box::new(JavaProto {

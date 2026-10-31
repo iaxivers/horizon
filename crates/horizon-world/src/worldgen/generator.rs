@@ -1136,6 +1136,17 @@ where
         pos: ChunkPos,
         context: &mut SamplerContext,
     ) -> Result<ProtoChunk, GeneratorError> {
+        self.generate_stages(worker, pos, context, false)
+    }
+    /// The proto chunk at TERRAIN, or with `noise_only` at doFill's end (noise, aquifers,
+    /// ore veins: what another generator's surface and carvers then run on).
+    fn generate_stages(
+        &self,
+        worker: &mut WorkerState,
+        pos: ChunkPos,
+        context: &mut SamplerContext,
+        noise_only: bool,
+    ) -> Result<ProtoChunk, GeneratorError> {
         let data = &self.data;
         let (min, height, sea) = (
             self.settings.noise_min_y,
@@ -1145,8 +1156,10 @@ where
         let mut clock = std::time::Instant::now();
         let mut neighbors = Vec::with_capacity(9);
         let mut possible = BTreeSet::new();
-        for dz in -1..=1 {
-            for dx in -1..=1 {
+        // The noise alone reads no biomes: its proto keeps its own chunk's only.
+        let around = if noise_only { 0..=0 } else { -1..=1 };
+        for dz in around.clone() {
+            for dx in around.clone() {
                 let chunk = self.biome_chunk(
                     worker,
                     ChunkPos::new(pos.x.wrapping_add(dx), pos.z.wrapping_add(dz)),
@@ -1159,9 +1172,12 @@ where
                 neighbors.push((*chunk).clone());
             }
         }
-        let center = neighbors[4].clone();
-        let biomes =
-            BiomeRegion::new(neighbors, obfuscate_seed(self.seed)).map_err(stage("biomes"))?;
+        let center = neighbors[neighbors.len() / 2].clone();
+        let biomes = if noise_only {
+            None
+        } else {
+            Some(BiomeRegion::new(neighbors, obfuscate_seed(self.seed)).map_err(stage("biomes"))?)
+        };
         let possible = possible
             .into_iter()
             .map(|id| data.biome_name(id).to_owned())
@@ -1176,7 +1192,14 @@ where
         )
         .map_err(stage("noise"))?;
         chunk.set_generation_stage(PreLightChunkStage::Biomes);
-        let (references, own_starts) = match &self.structures {
+        // The noise alone leaves structures out: their terrain adaptation (the beardifier)
+        // is the other generator's, from its own structures.
+        let structures = if noise_only {
+            None
+        } else {
+            self.structures.as_ref()
+        };
+        let (references, own_starts) = match structures {
             Some(structures) => {
                 let mut queries = StructureQueries {
                     pipeline: self,
@@ -1190,11 +1213,7 @@ where
             }
             None => (Vec::new(), Starts::default()),
         };
-        if let Some(beard) = self
-            .structures
-            .as_ref()
-            .and_then(|s| s.beardifier(&references, pos))
-        {
+        if let Some(beard) = structures.and_then(|s| s.beardifier(&references, pos)) {
             *context = std::mem::take(context).with_world_fields(
                 horizon_core::density::WorldFields::default().with_field(
                     horizon_core::density::WorldField::Beardifier,
@@ -1239,8 +1258,23 @@ where
             self.settings.default_block,
         )
         .map_err(stage("noise"))?;
-        let generation = self.generation();
         worker.timings.noise += lap(&mut clock);
+        if noise_only {
+            return Ok(ProtoChunk {
+                terrain: chunk,
+                biomes: center,
+                data: data.clone(),
+                decorated: false,
+                block_entities: Vec::new(),
+                structure_starts: references,
+                own_starts,
+                entities: Vec::new(),
+            });
+        }
+        let Some(biomes) = biomes else {
+            return Err(stage("biomes")("no biome region"));
+        };
+        let generation = self.generation();
         if !self.identity_end_surface(pos) {
             build_surface(
                 &mut chunk,
@@ -1738,6 +1772,13 @@ trait SeededPipeline: Send + Sync {
         worker: &mut WorkerState,
         pos: ChunkPos,
     ) -> Result<ProtoChunk, GeneratorError>;
+    /// The chunk at NoiseBasedChunkGenerator.doFill's end: noise, aquifers and ore veins,
+    /// without surface or carvers.
+    fn generate_noise(
+        &self,
+        worker: &mut WorkerState,
+        pos: ChunkPos,
+    ) -> Result<ProtoChunk, GeneratorError>;
     fn decorate(
         &self,
         worker: &mut WorkerState,
@@ -1806,6 +1847,17 @@ where
         pos: ChunkPos,
     ) -> Result<ProtoChunk, GeneratorError> {
         Pipeline::generate(self, worker, pos)
+    }
+    fn generate_noise(
+        &self,
+        worker: &mut WorkerState,
+        pos: ChunkPos,
+    ) -> Result<ProtoChunk, GeneratorError> {
+        let mut context = std::mem::take(&mut worker.terrain_context);
+        let result = self.generate_stages(worker, pos, &mut context, true);
+        context.reset();
+        worker.terrain_context = context;
+        result
     }
     fn decorate(
         &self,
@@ -2572,6 +2624,11 @@ pub struct GeneratorWorker {
 impl GeneratorWorker {
     /// Biomes, noise fill and aquifers, material surface and carvers: the
     /// vanilla statuses up to TERRAIN. Independent of neighbor chunks' state.
+    /// The chunk at doFill's end (noise, aquifers, ore veins), for another generator's
+    /// surface, carvers and features (the Java mod bridge's).
+    pub fn generate_noise(&mut self, pos: ChunkPos) -> Result<ProtoChunk, GeneratorError> {
+        self.pipeline.generate_noise(&mut self.state, pos)
+    }
     pub fn generate_proto(&mut self, pos: ChunkPos) -> Result<ProtoChunk, GeneratorError> {
         let result = self.pipeline.generate(&mut self.state, pos);
         self.state.timings.chunks += 1;

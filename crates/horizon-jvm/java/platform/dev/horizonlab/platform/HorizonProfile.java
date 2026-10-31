@@ -18,12 +18,12 @@ public final class HorizonProfile {
     private static int ticks;
 
     /** A phase's start (0 when off). */
-    static long start() {
+    public static long start() {
         return ON ? System.nanoTime() : 0L;
     }
 
     /** A phase ended: its time since {@code started} added to {@code phase}; the next one's start. */
-    static long add(String phase, long started) {
+    public static long add(String phase, long started) {
         if (!ON) return 0L;
         long now = System.nanoTime();
         synchronized (PHASES) {
@@ -39,12 +39,17 @@ public final class HorizonProfile {
         StringBuilder line = new StringBuilder("Java profile (mirror tick):");
         synchronized (PHASES) {
             double total = 0;
-            for (long[] p : PHASES.values()) total += p[0];
+            // Parts of a phase ("worldgen terrain: surface") are inside it: not added again.
+            for (var e : PHASES.entrySet()) if (!e.getKey().contains(": ")) total += e.getValue()[0];
             line.append(String.format(" %.2f ms a tick;", total / 1e6 / ticks));
             PHASES.entrySet().stream()
                     .sorted((a, b) -> Long.compare(b.getValue()[0], a.getValue()[0]))
-                    .limit(10)
-                    .forEach(e -> line.append(String.format(" %s %.2f ms", e.getKey(), e.getValue()[0] / 1e6 / ticks)));
+                    .limit(14)
+                    .forEach(e -> line.append(e.getKey().startsWith("worldgen")
+                            // Worldgen runs a chunk at a time: its time a chunk too.
+                            ? String.format(" %s %.2f ms (%.1f ms each)", e.getKey(), e.getValue()[0] / 1e6 / ticks,
+                                    e.getValue()[0] / 1e6 / Math.max(1, e.getValue()[1]))
+                            : String.format(" %s %.2f ms", e.getKey(), e.getValue()[0] / 1e6 / ticks)));
             PHASES.clear();
         }
         ticks = 0;
