@@ -27,6 +27,45 @@ Horizon is Minecraft: Java Edition 26.3 rewritten in Rust: a native game that re
 
 > Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft. Horizon contains no Minecraft code, assets or data: you need your own legally obtained copy of Minecraft: Java Edition 26.3.
 
+## This fork: Fabric mods in Horizon
+
+> **Branch `java-bridge`** of [iaxivers/horizon](https://github.com/iaxivers/horizon). Work in progress, not part of upstream Horizon yet.
+
+The Java bridge runs **real Fabric mods for 26.3** inside Horizon. A Java VM in the game's own process loads Fabric Loader and the real 26.3 jar; the mods' code runs there, against a mirror of Horizon's world, and Horizon draws and plays the result. The goal is big packs, SkyFactory-style, at Horizon's speed.
+
+| Area | Status |
+|---|---|
+| Loading | A 72-jar pack starts (213 mods with the ones they bundle): Biomes O' Plenty, Farmer's Delight, Tech Reborn, REI, Jade, Waystones, Storage Drawers… |
+| Blocks, items, recipes, creative tabs | ✅ |
+| Machines and their screens (block entities, menus) | ✅ Farmer's Delight's pot and stove, Tom's Storage terminal |
+| Recipe book and REI recipes (`/recipes`, `/uses`) | ✅ (REI's item list and overlay: in progress) |
+| Mod mobs: AI, combat, models, saving | ✅ (GeckoLib: in progress) |
+| Mod worldgen: biomes, trees, colours, `/locate biome` | ✅ Overworld (Nether and End: in progress) |
+| HUD mods | ✅ Jade, AppleSkin (Xaero's minimap: in progress) |
+| Client↔server mod messages, key bindings, chunk loaders | ✅ |
+| Mixins that change vanilla behaviour (Veinminer, Carry On…) | 🚧 Injections at the start or end of a dozen vanilla methods only |
+| Speed with big packs | 🚧 Mobs and chunk generation are being optimized |
+| Multiplayer with mods | 🚧 |
+
+How it works, the tick flow, 26.3 traps and the test tools: **[docs/java-bridge.md](docs/java-bridge.md)**.
+
+### Try it
+
+You need the usual Horizon setup ([CONTRIBUTING.md](CONTRIBUTING.md): your own Minecraft 26.3 files prepared in `.local/`) and a JDK 25.
+
+```sh
+git clone -b java-bridge https://github.com/iaxivers/horizon && cd horizon
+cargo build --profile fast -p horizon-client --features horizon-client/java-mods
+```
+
+Put Fabric 26.3 mod jars (not Fabric API: the bridge brings its own) in a `mods-java/` folder beside the game's `options.txt`, then start the game. To test headless with screenshots:
+
+```sh
+MODS=~/my-mods SCENE=none tools/java_bridge/screen_test.sh
+```
+
+Add `HORIZON_JAVA_PROFILE=1` to see what the mods cost each tick.
+
 ## Download
 
 Horizon is installed through **the Horizon launcher**. Get it from [playhorizon.dev](https://playhorizon.dev) (the Download button picks your system) or from [the launcher releases](https://github.com/horizon-rust/horizon/releases?q=launcher-v&expanded=true), for Linux x86-64, macOS on Apple Silicon or Windows x64. The launcher installs and updates the game, prepares its files from your copy of Minecraft (your own install, or downloaded from Mojang for your account), and updates itself.
