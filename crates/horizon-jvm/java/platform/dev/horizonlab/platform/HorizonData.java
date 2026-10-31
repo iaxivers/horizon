@@ -53,12 +53,14 @@ public final class HorizonData {
         PackRepository packs = ServerPacksSource.createPackRepository(
                 folder, new net.minecraft.world.level.validation.DirectoryValidator(path -> true));
         packs.reload();
-        List<String> ids = new ArrayList<>(packs.getAvailableIds());
-        ids.remove("vanilla");
-        ids.addFirst("vanilla");
-        Natives.log("data packs: " + ids);
-        WorldDataConfiguration configuration =
-                new WorldDataConfiguration(new DataPackConfig(ids, List.of()), FeatureFlags.DEFAULT_FLAGS);
+        // A new world's packs, as vanilla picks them (MinecraftServer.configurePackRepository):
+        // vanilla, then every pack whose source adds it on its own (Fabric's mod data and its
+        // default-enabled built-in packs). Mods' optional built-in packs stay off: BetterEnd's
+        // "flamboyant_extensions" holds recipes for a mod that may not be there, and enabling it
+        // fails the whole registry load.
+        WorldDataConfiguration configuration = net.minecraft.server.MinecraftServer.configurePackRepository(
+                packs, new WorldDataConfiguration(DataPackConfig.DEFAULT, FeatureFlags.DEFAULT_FLAGS), false, false);
+        Natives.log("data packs: " + configuration.dataPacks().getEnabled());
         WorldLoader.PackConfig packConfig = new WorldLoader.PackConfig(packs, configuration, false, true);
         WorldLoader.InitConfig init = new WorldLoader.InitConfig(
                 packConfig, Commands.CommandSelection.DEDICATED, LevelBasedPermissionSet.OWNER);

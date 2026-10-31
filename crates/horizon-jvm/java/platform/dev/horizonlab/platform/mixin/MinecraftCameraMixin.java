@@ -7,6 +7,7 @@ import net.minecraft.world.entity.Entity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
@@ -24,5 +25,14 @@ public abstract class MinecraftCameraMixin {
     @Inject(method = "getDeltaTracker", at = @At("HEAD"), cancellable = true)
     private void horizon$deltaTracker(CallbackInfoReturnable<DeltaTracker> cir) {
         if (HorizonClient.headless()) cir.setReturnValue(DeltaTracker.ONE);
+    }
+
+    /**
+     * No window to draw a frame into: setScreenAndShow (a screen opened mid-tick, REI's recipe
+     * view) draws one at once; Horizon draws the screen from its recorded frames instead.
+     */
+    @Inject(method = "renderFrame", at = @At("HEAD"), cancellable = true)
+    private void horizon$noFrame(boolean advanceGameTime, CallbackInfo ci) {
+        if (HorizonClient.headless()) ci.cancel();
     }
 }

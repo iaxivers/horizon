@@ -239,6 +239,41 @@ saying something works.
   content `FORMAT` 9).
 - The command parser's biome ids come from the vanilla export's `by_registry` first, not
   `Registries.biomes`: mods' biomes are added to both (`chat.rs` `build_registries`).
+- Fabric starts the client entrypoints from `Minecraft.<init>` at its first
+  `Thread.currentThread()`; mods inject there (`shift = BEFORE`: before the entrypoints,
+  `AFTER`: after). SuperMartijn642's Core Lib gathers its `@RegistryEntryAcceptor` fields in
+  the BEFORE one, so without it every mod on it (Trash Cans...) fails Fabric's whole start.
+  `HorizonHooks` records these as `<start before/after entrypoints>` and `FabricBoot` fires them
+  around `main` (`HorizonClient.gameStart`); the headless client now boots before `main`.
+- Mods read `Minecraft.languageManager` (Server Translations API in `Language.inject`): the
+  headless client has one now.
+- Data packs: a new world's packs are vanilla's choice (`MinecraftServer.configurePackRepository`
+  with `DataPackConfig.DEFAULT`), not every available pack: mods ship optional built-in packs
+  for other mods (BetterEnd's `flamboyant_extensions`) whose recipes fail the whole registry
+  load when that mod is missing.
+- Constructor-end hooks on mirrored objects (`HorizonHooks.constructed`) now get the
+  constructor's arguments the object kept (the field of that type, up the classes: Level's
+  dimension type holder, its dimension key) and a level's `LevelStem` from the registries.
+  Lithium caches a level's height there: without it every level was 0 tall and every chunk's
+  structure step failed (`Size must be positive, was: 1x0x1`). `<init>*` targets count.
+- `MinecraftServer.weatherData` (Serene Seasons reads `ServerLevel.getWeatherData`): clear.
+- A recipe display with a null category (a mod's recipe type) can't cross vanilla's codec, so
+  `HorizonClient.recipeBook` skips it; otherwise the whole client recipe book fails.
+- REI: its client fills displays only from the server's sync packet (raw
+  `player.connection.send`, which Horizon doesn't deliver) and builds them on a server it finds
+  through `Minecraft.getSingleplayerServer()`. `HorizonRecipeViewer` reloads REI's plugins
+  with the mirror as that server, then copies the server registry's displays into the client's
+  as synced ones (what `DisplaySyncPacket` does). REI's registry access comes through the
+  client's connection: the search connection now has the server's registries and is the game
+  mode's connection.
+- REI draws through its own `GuiGraphics.of(graphics)` (a second extractor on the same render
+  state), so HorizonGraphics' overrides were skipped: `ReiGuiGraphicsMixin` returns a class
+  made at run time (`HorizonGraphicsWrappers`, ASM) that extends REI's and forwards every
+  recorded method and `pose()` to the HorizonGraphics. Access wideners make vanilla's private
+  `innerBlit` public *final*: no override, so `GuiGraphicsMixin` forwards it. GUI atlas sprites
+  mods look up themselves (`getAtlasOrThrow(GUI).getSprite`) are made on demand (name only)
+  and drawn by name. `setScreenAndShow` draws a frame at once: `renderFrame` is a no-op
+  headless. Screens that read `mouseHandler.xpos()` get Horizon's mouse.
 - Commands through `horizon-ctl command` run as the owner's console; server mods' commands
   (and `/summon` of a mod entity) now go to the mods first (`owner_console_command`).
 
@@ -407,6 +442,22 @@ sprites from the GUI atlas by `TextureAtlasSprite`; HUD text loses its colours a
 client tick shares the mods' static state;
 saved data is written every 10 s, not on quit.
 
+Big pack (tested 2026-10-31, `SCENE=none`, 72 jars, 213 mods with nested ones: the 40-mod
+pack plus REI, Modonomicon, Tech Reborn, Energized Power, Storage Drawers, Extended Drawers,
+Traveler's Backpack, Trash Cans, Lootr, CC: Tweaked, BetterEnd/BetterNether, Universal Graves,
+Serene Seasons, Mutant Monsters...): Fabric starts, 9305 recipes load, the overworld generates
+through the mods with no failed chunk. Not available for 26.3 Fabric yet: EMI, Patchouli
+(Modonomicon instead), AE2, Mekanism, Create, Sophisticated Backpacks (Traveler's instead).
+`/recipes [item]` and `/uses [item]` (the held item without one) open REI's recipe view
+(`HorizonRecipeViewer`): vanilla crafting, Farmer's Delight cooking, Tech Reborn's compressor,
+Energized Power's recipes draw. The first one reloads REI (~3 s).
+Left: REI's item list panel is empty (its creative tab collection fails); REI's overlay
+over Horizon's inventory and its R/U keys aren't wired (Horizon's inventory isn't a Java
+screen); sprites drawn under a scissor overflow it (Tech Reborn's energy bars); GraphLib logs
+an error each tick per level (`ServerChunkCache.chunkMap` is null on the mirror); Glitchcore's
+client tick wants `LevelExtractor`; Xaero's HUD wants a GPU device; Traveler's Backpack's model
+reload listener fails.
+
 ### Profiling
 
 `HORIZON_JAVA_PROFILE=1` logs every 200 server ticks where the time goes: the game's calls into
@@ -425,6 +476,13 @@ the mirror tick is ~1 ms (spawner ~0.5, client tick ~0.2). Java worldgen is the 
 of `minecraft:terrain` (noise) per chunk, features ~10–20, structure starts and references
 ~20–40 in the first seconds. A mod that adds any overworld biome or feature sends the whole
 overworld through Java; making Horizon's Rust noise feed the Java proto is the big win left.
+
+Measured 2026-10-31, the 72-jar big pack (same container), standing still after spawn: the
+game's calls into Java are 85–170 ms a tick, of which the mirror tick (`server_mods.rs:943`) is
+37–84 ms: mod entities 22–75 ms (many mobs from Naturalist, Friends&Foes, Mutant Monsters,
+Ecologics spawned around), the client tick 5–10 ms, level hooks ~2 ms; the rest is worldgen
+work done on the server thread's calls (proto 35–65 ms). Entities are the first thing to
+look at for a big pack.
 
 ## Working on it
 

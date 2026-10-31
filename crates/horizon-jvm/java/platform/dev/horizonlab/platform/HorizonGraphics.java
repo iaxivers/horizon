@@ -274,6 +274,17 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
         image(texture, x, y, u, v, w, h, uw, vh, texW, texH, color);
     }
 
+    /**
+     * Vanilla's private innerBlit(pipeline, texture, x0, x1, y0, y1, u0, u1, v0, v1, colour),
+     * which mods widen and call themselves (REI's textured widgets): what a wrapper made by
+     * HorizonGraphicsWrappers forwards it to.
+     */
+    public void horizon$innerBlit(RenderPipeline pipeline, Identifier texture, int x0, int x1, int y0, int y1,
+                                  float u0, float u1, float v0, float v1, int color) {
+        blit(texture, x0, y0, x1, y1, u0, u1, v0, v1);
+        if (color != -1) ops.get(ops.size() - 1).getAsJsonObject().addProperty("color", color);
+    }
+
     @Override
     public void blit(Identifier texture, int x0, int y0, int x1, int y1, float u0, float u1, float v0, float v1) {
         JsonObject o = op("blit");
@@ -325,6 +336,19 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
                            int w, int h, int color) {
         blitSprite(pipeline, sprite, texW, texH, u, v, x, y, w, h);
         ops.get(ops.size() - 1).getAsJsonObject().addProperty("color", color);
+    }
+
+    /** A sprite mods looked up themselves (an atlas's TextureAtlasSprite): drawn by its name. */
+    @Override
+    public void blitSprite(RenderPipeline pipeline, net.minecraft.client.renderer.texture.TextureAtlasSprite sprite,
+                           int x, int y, int w, int h) {
+        sprite(sprite.contents().name(), x, y, w, h);
+    }
+
+    @Override
+    public void blitSprite(RenderPipeline pipeline, net.minecraft.client.renderer.texture.TextureAtlasSprite sprite,
+                           int x, int y, int w, int h, int color) {
+        sprite(sprite.contents().name(), x, y, w, h).addProperty("color", color);
     }
 
     // ---- Rectangles -----------------------------------------------------------------------

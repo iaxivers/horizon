@@ -51,6 +51,8 @@
     "TextInputManagerMixin",
     "ClientPlayNetworkingMixin",
     "ItemModelResolverMixin",
-    "ItemStackRenderStateMixin"
+    "ItemStackRenderStateMixin",
+    "ReiGuiGraphicsMixin",
+    "GuiGraphicsMixin"
   ]
 }

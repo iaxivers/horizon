@@ -42,6 +42,16 @@ public final class HorizonClient {
      * After the client entrypoints, as Minecraft's constructor goes on after Fabric's hook at
      * its head: the options (with the key bindings mods registered).
      */
+    /**
+     * The game's start, around Fabric's entrypoints (Minecraft's constructor at its first
+     * Thread.currentThread(): EntrypointPatch): the mods' injections there, before (FabricBoot,
+     * just before the main entrypoints) or after (after the client ones).
+     */
+    public static void gameStart(boolean after) {
+        HorizonHooks.scanNow();
+        HorizonHooks.fireClient(minecraft, after ? HorizonHooks.START_AFTER : HorizonHooks.START_BEFORE);
+    }
+
     public static void finish() throws ReflectiveOperationException {
         Minecraft mc = minecraft;
         // options.txt is brought up to date by the game's data fixer, as the server's saves are.
@@ -104,6 +114,15 @@ public final class HorizonClient {
         set(Minecraft.class, mc, "window", Natives.allocate(com.mojang.blaze3d.platform.Window.class));
         windowSize();
         registerCommands();
+        // The language manager (mods' translation hooks ask it which language is chosen:
+        // Server Translations API's Language.inject), with no resource reloads behind it.
+        try {
+            String code = mc.options.languageCode == null ? "en_us" : mc.options.languageCode;
+            set(Minecraft.class, mc, "languageManager",
+                    new net.minecraft.client.resources.language.LanguageManager(mc, code, lang -> { }));
+        } catch (Throwable t) {
+            Natives.log("Horizon's client: no language manager: " + t);
+        }
         language(mc.options.languageCode);
         Natives.log("Horizon's headless client is up");
     }
@@ -166,6 +185,19 @@ public final class HorizonClient {
                                 .suggests((c, b) -> net.minecraft.commands.SharedSuggestionProvider.suggest(configScreens().keySet(), b))
                                 .executes(c -> openConfig(c.getSource(),
                                         com.mojang.brigadier.arguments.StringArgumentType.getString(c, "mod"))))));
+        // /recipes [item] and /uses [item]: the recipe viewer's screen for an item (REI's, as
+        // its R and U keys open it over an inventory), or the held item without one.
+        net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback.EVENT.register((dispatcher, context, environment) -> {
+            for (String name : new String[] {"recipes", "uses"}) {
+                boolean uses = name.equals("uses");
+                dispatcher.register(net.minecraft.commands.Commands.literal(name)
+                        .executes(c -> HorizonRecipeViewer.open(c.getSource(), null, uses))
+                        .then(net.minecraft.commands.Commands.argument("item",
+                                        net.minecraft.commands.arguments.item.ItemArgument.item(context))
+                                .executes(c -> HorizonRecipeViewer.open(c.getSource(),
+                                        net.minecraft.commands.arguments.item.ItemArgument.getItem(c, "item").createItemStack(1), uses))));
+            }
+        });
     }
 
     /** The mods with a settings screen, by id: what makes it from a parent screen. */
@@ -256,6 +288,24 @@ public final class HorizonClient {
         for (var id : new net.minecraft.resources.Identifier[] {net.minecraft.data.AtlasIds.GUI}) {
             var atlas = (net.minecraft.client.renderer.texture.TextureAtlas)
                     Natives.allocate(net.minecraft.client.renderer.texture.TextureAtlas.class);
+            // Its sprites, made as they are asked for (mods look GUI sprites up themselves:
+            // Tech Reborn's machines' REI views): only a name, which Horizon draws by.
+            final var atlasId = id;
+            set(net.minecraft.client.renderer.texture.TextureAtlas.class, atlas, "location", atlasId);
+            set(net.minecraft.client.renderer.texture.TextureAtlas.class, atlas, "texturesByName",
+                    new java.util.concurrent.ConcurrentHashMap<net.minecraft.resources.Identifier, net.minecraft.client.renderer.texture.TextureAtlasSprite>() {
+                        @Override
+                        public net.minecraft.client.renderer.texture.TextureAtlasSprite getOrDefault(Object key,
+                                net.minecraft.client.renderer.texture.TextureAtlasSprite fallback) {
+                            if (!(key instanceof net.minecraft.resources.Identifier name)) return fallback;
+                            return computeIfAbsent(name, n -> sprite(atlasId, n));
+                        }
+
+                        @Override
+                        public net.minecraft.client.renderer.texture.TextureAtlasSprite get(Object key) {
+                            return getOrDefault(key, null);
+                        }
+                    });
             byId.put(id, make.newInstance(atlas, null));
         }
         Class<?> owner = net.minecraft.client.resources.model.sprite.AtlasManager.class;
@@ -263,6 +313,27 @@ public final class HorizonClient {
         set(owner, manager, "atlasByTexture", new java.util.HashMap<>());
         set(owner, manager, "spriteLookup", new java.util.HashMap<>());
         return manager;
+    }
+
+    /** A sprite that is only its name (and the whole of its texture's UVs). */
+    static net.minecraft.client.renderer.texture.TextureAtlasSprite sprite(net.minecraft.resources.Identifier atlas,
+                                                                         net.minecraft.resources.Identifier name) {
+        try {
+            var contents = Natives.allocate(net.minecraft.client.renderer.texture.SpriteContents.class);
+            set(net.minecraft.client.renderer.texture.SpriteContents.class, contents, "name", name);
+            set(net.minecraft.client.renderer.texture.SpriteContents.class, contents, "width", 16);
+            set(net.minecraft.client.renderer.texture.SpriteContents.class, contents, "height", 16);
+            set(net.minecraft.client.renderer.texture.SpriteContents.class, contents, "additionalMetadata", java.util.List.of());
+            var sprite = Natives.allocate(net.minecraft.client.renderer.texture.TextureAtlasSprite.class);
+            Class<?> owner = net.minecraft.client.renderer.texture.TextureAtlasSprite.class;
+            set(owner, sprite, "atlasLocation", atlas);
+            set(owner, sprite, "contents", contents);
+            set(owner, sprite, "u1", 1f);
+            set(owner, sprite, "v1", 1f);
+            return (net.minecraft.client.renderer.texture.TextureAtlasSprite) sprite;
+        } catch (ReflectiveOperationException e) {
+            return null;
+        }
     }
 
     // ---- Text widths ------------------------------------------------------------------------
@@ -367,6 +438,24 @@ public final class HorizonClient {
         }
     }
 
+    /**
+     * The mouse, at a GUI position (screens that read it themselves rather than from their
+     * arguments: REI's recipe view), in the window's pixels (its scale is 3).
+     */
+    static void mouseAt(double guiX, double guiY) {
+        try {
+            if (minecraft.mouseHandler == null) {
+                var mouse = Natives.allocate(net.minecraft.client.MouseHandler.class);
+                set(net.minecraft.client.MouseHandler.class, mouse, "minecraft", minecraft);
+                set(Minecraft.class, minecraft, "mouseHandler", mouse);
+            }
+            set(net.minecraft.client.MouseHandler.class, minecraft.mouseHandler, "xpos", guiX * 3);
+            set(net.minecraft.client.MouseHandler.class, minecraft.mouseHandler, "ypos", guiY * 3);
+        } catch (ReflectiveOperationException e) {
+            Natives.log("Horizon's client: no mouse: " + e);
+        }
+    }
+
     private static final java.util.Map<java.util.UUID, net.minecraft.client.gui.screens.Screen> SCREENS =
             new java.util.concurrent.ConcurrentHashMap<>();
     private static final java.util.Map<java.util.UUID, net.minecraft.client.player.LocalPlayer> PLAYERS =
@@ -451,7 +540,12 @@ public final class HorizonClient {
         var book = new net.minecraft.client.ClientRecipeBook();
         var recipes = player.level().getServer().getRecipeManager();
         for (var holder : recipes.getRecipes()) {
-            recipes.listDisplaysForRecipe(holder.id(), book::add);
+            // A display without a category (a mod's recipe type that answers null) couldn't
+            // cross vanilla's network codec, so a real client never sees it: skipped, or the
+            // whole book fails to build.
+            recipes.listDisplaysForRecipe(holder.id(), entry -> {
+                if (entry.category() != null) book.add(entry);
+            });
         }
         book.rebuildCollections();
         searchTrees(book, player.level());
@@ -475,6 +569,16 @@ public final class HorizonClient {
             var trees = new net.minecraft.client.multiplayer.SessionSearchTrees();
             trees.updateRecipes(book, level);
             set(net.minecraft.client.multiplayer.ClientPacketListener.class, connection, "searchTrees", trees);
+            // Its registries and features, the server's (what a client gets as it joins): mods
+            // reach them through the client's connection (REI's displays, through the game
+            // mode's connection when there is no level).
+            set(net.minecraft.client.multiplayer.ClientPacketListener.class, connection, "registryAccess",
+                    level.getServer().registryAccess());
+            set(net.minecraft.client.multiplayer.ClientPacketListener.class, connection, "enabledFeatures",
+                    level.enabledFeatures());
+            if (minecraft.gameMode != null) {
+                set(net.minecraft.client.multiplayer.MultiPlayerGameMode.class, minecraft.gameMode, "connection", connection);
+            }
             searchConnection = connection;
         } catch (Throwable t) {
             Natives.log("Horizon's client: no recipe search: " + t);
@@ -1207,7 +1311,10 @@ public final class HorizonClient {
         if (screen == null) return null;
         HorizonGraphics graphics = new HorizonGraphics(width, height);
         try {
-            as(OWNERS.get(player), () -> screen.extractRenderStateWithTooltipAndSubtitles(graphics, mouseX, mouseY, 0));
+            as(OWNERS.get(player), () -> {
+                mouseAt(mouseX, mouseY);
+                screen.extractRenderStateWithTooltipAndSubtitles(graphics, mouseX, mouseY, 0);
+            });
         } catch (Throwable t) {
             Throwable root = t;
             while (root.getCause() != null && root.getCause() != root) root = root.getCause();
