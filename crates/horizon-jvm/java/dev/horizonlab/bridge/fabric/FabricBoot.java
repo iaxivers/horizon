@@ -64,15 +64,35 @@ public final class FabricBoot {
         FabricLoaderImpl loader = FabricLoaderImpl.INSTANCE;
         bootstrapGame();
         loader.prepareModInit(HorizonGameProvider.gameDir, null);
-        loader.invokeEntrypoints("main", ModInitializer.class, ModInitializer::onInitialize);
         if (env == EnvType.CLIENT) {
-            // Horizon's headless client, which mods' client code reaches (Minecraft.getInstance()).
+            // Horizon's headless client, which mods' code reaches (Minecraft.getInstance()): made
+            // first, as a client's Minecraft starts Fabric's entrypoints from its constructor.
+            // Then the mods' injections at that start, before the entrypoints (gameStart).
             try {
-                Class.forName("dev.horizonlab.platform.HorizonClient", true, gameLoader)
-                        .getMethod("boot", String.class).invoke(null, gameDir);
+                Class<?> client = Class.forName("dev.horizonlab.platform.HorizonClient", true, gameLoader);
+                client.getMethod("boot", String.class).invoke(null, gameDir);
+                client.getMethod("gameStart", boolean.class).invoke(null, false);
             } catch (ClassNotFoundException e) {
                 // No platform mod: no headless client.
             }
+        }
+        try {
+            loader.invokeEntrypoints("main", ModInitializer.class, ModInitializer::onInitialize);
+        } catch (RuntimeException e) {
+            // Fabric stops every mod for one that fails here: say where, then give up as it does.
+            Throwable root = e;
+            while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+            Natives.log("A mod's initializer failed: " + e.getMessage() + ", caused by " + root);
+            StackTraceElement[] frames = root.getStackTrace();
+            for (int f = 0; f < Math.min(frames.length, 25); f++) Natives.log("    at " + frames[f]);
+            for (Throwable other : e.getSuppressed()) {
+                Throwable cause = other;
+                while (cause.getCause() != null && cause.getCause() != cause) cause = cause.getCause();
+                Natives.log("  and: " + other.getMessage() + ", caused by " + cause);
+            }
+            throw e;
+        }
+        if (env == EnvType.CLIENT) {
             // Every client entrypoint runs, then Fabric throws what failed: a mod whose client
             // code needs more of a client than the headless one has loses that, not the rest.
             try {
@@ -92,7 +112,18 @@ public final class FabricBoot {
                 }
             }
             try {
-                Class.forName("dev.horizonlab.platform.HorizonClient", true, gameLoader).getMethod("finish").invoke(null);
+                Class<?> client = Class.forName("dev.horizonlab.platform.HorizonClient", true, gameLoader);
+                client.getMethod("gameStart", boolean.class).invoke(null, true);
+                try {
+                    client.getMethod("finish").invoke(null);
+                } catch (java.lang.reflect.InvocationTargetException e) {
+                    Throwable root = e;
+                    while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+                    Natives.log("Horizon's headless client could not be set up: " + root);
+                    StackTraceElement[] frames = root.getStackTrace();
+                    for (int f = 0; f < Math.min(frames.length, 20); f++) Natives.log("    at " + frames[f]);
+                    throw e;
+                }
             } catch (ClassNotFoundException e) {
                 // No platform mod.
             }

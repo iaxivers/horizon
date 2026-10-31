@@ -216,9 +216,37 @@ public final class HorizonHooks {
                 for (Object spec : specs) {
                     String name = parseSpec((String) spec)[0];
                     if (CLIENT_METHODS.contains(name)) CLIENT_HOOKS.add(new ClientHook(mod, name, mixin, m.name, modifyArg));
+                    // The game's start: Fabric starts the entrypoints in Minecraft's constructor at
+                    // its first Thread.currentThread() (EntrypointPatch). Mods inject there to run
+                    // just before them (shift BEFORE: SuperMartijn642's Core Lib gathers its
+                    // registry fields) or just after (AFTER).
+                    String start = name.equals("<init>") && !modifyArg ? startPoint(get(a, "at")) : null;
+                    if (start != null) CLIENT_HOOKS.add(new ClientHook(mod, start, mixin, m.name, false));
                 }
             }
         }
+    }
+
+    /** The game's start point, before and after Fabric's entrypoints (fireClient's methods). */
+    public static final String START_BEFORE = "<start before entrypoints>";
+    public static final String START_AFTER = "<start after entrypoints>";
+
+    /** START_BEFORE or START_AFTER for an @At at Minecraft.<init>'s first Thread.currentThread(); else null. */
+    private static String startPoint(Object at) {
+        List<?> ats = at instanceof List<?> l ? l : at == null ? List.of() : List.of(at);
+        if (ats.size() != 1 || !(ats.get(0) instanceof AnnotationNode node)) return null;
+        if (!"INVOKE".equals(get(node, "value"))) return null;
+        if (!"Ljava/lang/Thread;currentThread()Ljava/lang/Thread;".equals(get(node, "target"))) return null;
+        Object ordinal = get(node, "ordinal");
+        if (ordinal instanceof Integer o && o != 0) return null;
+        Object shift = get(node, "shift");
+        boolean after = shift instanceof String[] e && e.length == 2 && "AFTER".equals(e[1]);
+        return after ? START_AFTER : START_BEFORE;
+    }
+
+    /** Reads the mods' Mixin configs now (the census), if not yet: before the entrypoints run. */
+    public static void scanNow() {
+        scan();
     }
 
     /**
@@ -385,6 +413,8 @@ public final class HorizonHooks {
         if (dot >= 0) head = head.substring(dot + 1);
         int colon = head.indexOf(':');
         if (colon >= 0) head = head.substring(0, colon);
+        // "<init>*": every constructor (Cardinal Components' level components).
+        if (head.endsWith("*")) head = head.substring(0, head.length() - 1);
         return new String[] {head, desc};
     }
 
@@ -461,8 +491,9 @@ public final class HorizonHooks {
             for (String at : new String[] {"RETURN", "TAIL"}) {
                 for (Method handler : constructorHandlers(owner, hooks, at)) {
                     Class<?>[] params = handler.getParameterTypes();
+                    java.lang.reflect.Type[] types = handler.getGenericParameterTypes();
                     Object[] call = new Object[params.length];
-                    for (int i = 0; i < params.length - 1; i++) call[i] = zero(params[i]);
+                    for (int i = 0; i < params.length - 1; i++) call[i] = argument(owner, self, params[i], types[i]);
                     call[params.length - 1] = new CallbackInfo("<init>", false);
                     try {
                         handler.invoke(Modifier.isStatic(handler.getModifiers()) ? null : self, call);
@@ -474,6 +505,49 @@ public final class HorizonHooks {
                 }
             }
         }
+    }
+
+    /**
+     * A constructor argument a handler takes, for an object made without its constructor: the
+     * value of the owner's one field of that exact (generic) type, which the constructor kept
+     * from it (Level's dimension type holder, which Lithium caches the height from at its end:
+     * without it every level is 0 blocks tall and worldgen fails); otherwise null or zero.
+     */
+    private static Object argument(Class<?> owner, Object self, Class<?> type, java.lang.reflect.Type generic) {
+        if (type.isPrimitive()) return zero(type);
+        // A level's stem (ServerLevel's constructor: its generator, which BCLib's and BetterEnd's
+        // handlers read), from the registries by the level's dimension.
+        if (type == net.minecraft.world.level.dimension.LevelStem.class && self instanceof net.minecraft.world.level.Level level) {
+            try {
+                return level.registryAccess().lookupOrThrow(net.minecraft.core.registries.Registries.LEVEL_STEM)
+                        .getValue(net.minecraft.resources.Identifier.parse(level.dimension().identifier().toString()));
+            } catch (RuntimeException e) {
+                return null;
+            }
+        }
+        // The owner's fields, then its superclasses' (ServerLevel's dimension key is Level's);
+        // by generic type, then (a handler declared with a raw type) by class alone.
+        for (boolean exact : new boolean[] {true, false}) {
+            for (Class<?> c = owner; c != null && c != Object.class; c = c.getSuperclass()) {
+                java.lang.reflect.Field match = null;
+                boolean several = false;
+                for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                    if (Modifier.isStatic(f.getModifiers())) continue;
+                    if (exact ? !f.getGenericType().equals(generic) : f.getType() != type) continue;
+                    if (match != null) several = true;
+                    match = f;
+                }
+                if (several) break;
+                if (match == null) continue;
+                try {
+                    match.setAccessible(true);
+                    return match.get(self);
+                } catch (ReflectiveOperationException | RuntimeException e) {
+                    return null;
+                }
+            }
+        }
+        return null;
     }
 
     private static Object zero(Class<?> type) {

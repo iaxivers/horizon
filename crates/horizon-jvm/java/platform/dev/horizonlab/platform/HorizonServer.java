@@ -246,7 +246,15 @@ public final class HorizonServer {
         } catch (ReflectiveOperationException | RuntimeException e) {
             Natives.log("Horizon's server mirror has no debug subscribers: " + e);
         }
-        // The registries and resources HorizonData loaded: vanilla's data pack and the mods'.
+        // Its weather (ServerLevel.getWeatherData reads the server's: Serene Seasons): clear.
+        try {
+            java.lang.reflect.Field weather = MinecraftServer.class.getDeclaredField("weatherData");
+            weather.setAccessible(true);
+            weather.set(server, new net.minecraft.world.level.saveddata.WeatherData());
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            Natives.log("Horizon's server mirror has no weather: " + e);
+        }
+                // The registries and resources HorizonData loaded: vanilla's data pack and the mods'.
         HorizonData.Loaded data = HorizonData.loaded;
         if (data != null) {
             ((MinecraftServerAccess) server).horizon$setRegistries(data.registries());

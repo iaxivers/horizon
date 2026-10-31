@@ -344,6 +344,17 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
         image(texture, x, y, u, v, w, h, uw, vh, texW, texH, color);
     }
 
+    /**
+     * Vanilla's private innerBlit(pipeline, texture, x0, x1, y0, y1, u0, u1, v0, v1, colour),
+     * which mods widen and call themselves (REI's textured widgets): what a wrapper made by
+     * HorizonGraphicsWrappers forwards it to.
+     */
+    public void horizon$innerBlit(RenderPipeline pipeline, Identifier texture, int x0, int x1, int y0, int y1,
+                                  float u0, float u1, float v0, float v1, int color) {
+        blit(texture, x0, y0, x1, y1, u0, u1, v0, v1);
+        if (color != -1) ops.get(ops.size() - 1).getAsJsonObject().addProperty("color", color);
+    }
+
     @Override
     public void blit(Identifier texture, int x0, int y0, int x1, int y1, float u0, float u1, float v0, float v1) {
         JsonObject o = op("blit");
@@ -423,6 +434,9 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
         blitSprite(pipeline, sprite, texW, texH, u, v, x, y, w, h);
         ops.get(ops.size() - 1).getAsJsonObject().addProperty("color", color);
     }
+
+    // Sprites mods look up themselves (TextureAtlasSprite) go through vanilla's blitSprite:
+    // HorizonSprites made them, with their GUI scaling, and innerBlit names their texture.
 
     // ---- Rectangles -----------------------------------------------------------------------
 
