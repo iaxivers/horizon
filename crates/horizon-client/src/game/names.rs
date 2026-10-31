@@ -188,8 +188,8 @@ impl Game<'_> {
                 discrete,
             });
         }
-        // Java mods' entities: a visible custom name, or the one under the crosshair
-        // (MobRenderer.shouldShowName), within 64 blocks.
+        // Java mods' entities: the name tag their renderer gives, shown always or when under
+        // the crosshair (its shouldShowName, asked both ways), within 64 blocks.
         let java_target = self.java_entity_hit().map(|(id, _)| id);
         for (id, at, height, name, visible) in self.java_entity_names(alpha) {
             if at.distance_squared(camera) >= 64.0 * 64.0

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "horizon_geo",
+  "version": "1.0.0",
+  "name": "Horizon Geo",
+  "description": "An entity and a block entity drawn the way GeckoLib draws: custom geometry (submitCustomGeometry), vertices written by the renderer, animated each frame. A check of the Java mod bridge.",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["dev.horizonlab.geomod.GeoMod"],
+    "client": ["dev.horizonlab.geomod.GeoClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.20",
+    "minecraft": "26.3",
+    "fabric-api": "*"
+  }
+}

@@ -49,6 +49,33 @@ struct Item {
     matrix: [f32; 16],
 }
 
+/// Custom geometry its renderer wrote (GeckoLib's bones): quads relative to the entity.
+#[derive(Clone)]
+struct Mesh {
+    sprite: String,
+    overlay: u32,
+    /// Per vertex: x, y, z, u, v, nx, ny, nz.
+    vertices: Vec<[f32; 8]>,
+    /// Per vertex: Java's ARGB.
+    colors: Vec<u32>,
+}
+
+fn mesh(v: &Value) -> Option<Mesh> {
+    let raw = v.get("v")?.as_array()?;
+    let mut vertices = Vec::with_capacity(raw.len() / 9);
+    let mut colors = Vec::with_capacity(raw.len() / 9);
+    for c in raw.chunks_exact(9) {
+        vertices.push(std::array::from_fn(|i| c[i].as_f64().unwrap_or(0.0) as f32));
+        colors.push(c[8].as_u64().unwrap_or(u64::from(u32::MAX)) as u32);
+    }
+    Some(Mesh {
+        sprite: sprite_key(v.get("tex")?.as_str()?),
+        overlay: v.get("overlay").and_then(Value::as_i64).unwrap_or(0) as u32,
+        vertices,
+        colors,
+    })
+}
+
 #[derive(Clone)]
 struct Shown {
     id: i32,
@@ -56,10 +83,13 @@ struct Shown {
     width: f64,
     height: f64,
     models: Vec<Drawn>,
+    meshes: Vec<Mesh>,
     items: Vec<Item>,
-    /// Its custom name, and whether it always shows (`isCustomNameVisible`).
+    /// Its name tag (its renderer's `nameTag`, else its custom name), whether it shows when
+    /// not looked at, and its height (the renderer's attachment, else the box's top).
     name: Option<horizon_client::text::Text>,
     name_visible: bool,
+    name_y: Option<f64>,
     /// The shadow's radius its renderer gives (0: none).
     shadow: f32,
     /// A mod's block entity its renderer draws (a cutting board's item), at its block's
@@ -140,13 +170,26 @@ fn shown(v: &Value) -> Option<Shown> {
             .flatten()
             .filter_map(item)
             .collect(),
-        name: v.get("name").map(|n| {
+        name: v.get("tag").or_else(|| v.get("name")).map(|n| {
             horizon_client::component::to_text(n, &mut |k| horizon_client::text::Text::literal(k))
         }),
         name_visible: v
-            .get("name_visible")
+            .get(if v.get("tag").is_some() {
+                "tag_always"
+            } else {
+                "name_visible"
+            })
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        name_y: f("tag_y"),
+        meshes: v
+            .get("models")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|m| m.get("v").is_some())
+            .filter_map(mesh)
+            .collect(),
         shadow: f("shadow").unwrap_or(0.0) as f32,
         block: v.get("block").and_then(Value::as_bool).unwrap_or(false),
         id: v.get("id")?.as_i64()? as i32,
@@ -335,6 +378,26 @@ impl Game<'_> {
                     out,
                 );
             }
+            // Custom geometry (GeckoLib's): its quads as written, moved with the entity
+            // between ticks.
+            for m in &s.meshes {
+                let Some(r) = atlas.sprites.get(&m.sprite) else {
+                    continue;
+                };
+                let overlay = overlay_code(m.overlay);
+                for (v, &argb) in m.vertices.iter().zip(&m.colors) {
+                    let n = [v[5], v[6], v[7]].map(|c| (c.clamp(-1.0, 1.0) * 127.0) as i8);
+                    out.push(Vertex {
+                        pos: (d.as_vec3() + glam::Vec3::new(v[0], v[1], v[2])).to_array(),
+                        uv: [r.u0 + (r.u1 - r.u0) * v[3], r.v0 + (r.v1 - r.v0) * v[4]],
+                        layer: overlay,
+                        color: abgr(argb),
+                        light: packed,
+                        normal: [n[0], n[1], n[2], -127],
+                        glint_uv: [0.0, 0.0],
+                    });
+                }
+            }
             // ItemInHandLayer and the like: the items, as Horizon's item renderer draws them
             // (ItemModelResolver.updateForLiving's seed: the entity id plus the context).
             for item in &s.items {
@@ -357,8 +420,8 @@ impl Game<'_> {
             .collect()
     }
 
-    /// The Java entities with a custom name: id, position, height, the name and whether it
-    /// always shows.
+    /// The Java entities with a name tag: id, position, the tag's height, the name and whether
+    /// it shows when not looked at.
     pub(super) fn java_entity_names(
         &self,
         alpha: f64,
@@ -369,7 +432,7 @@ impl Game<'_> {
             .filter_map(|s| {
                 let name = s.name.clone()?;
                 let at = glam::DVec3::from_array(java.position(s, alpha));
-                Some((s.id, at, s.height, name, s.name_visible))
+                Some((s.id, at, s.name_y.unwrap_or(s.height), name, s.name_visible))
             })
             .collect()
     }
