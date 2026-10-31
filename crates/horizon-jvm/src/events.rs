@@ -917,6 +917,16 @@ pub fn entity_types() -> Result<Vec<String>, String> {
     Ok(types.unwrap_or_default())
 }
 
+/// Horizon saved the world: the mirror's own files beside it (the mods' entities, block
+/// entities and saved data) are written now (`HorizonServer.saveAll`).
+pub fn save_all() -> Result<(), String> {
+    with_server(|env, class| {
+        env.call_static_method(class, "saveAll", "()V", &[])?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
 /// The mods' entities of every level as JSON (`HorizonEntityRender.snapshot`): per dimension
 /// each one's id, type, position, box and the models its renderer submitted, and the model
 /// trees not given before. Call it after [`server_tick`].

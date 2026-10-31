@@ -179,6 +179,7 @@ impl Game<'_> {
         false
     }
     pub(super) fn java_screen_input(&mut self, _host: &mut LanHost, _conn: u32, _data: &[u8]) {}
+    pub(super) fn save_java_mods(&mut self) {}
     pub(super) fn java_entity_attack(&mut self, _host: &mut LanHost, _conn: u32, _id: i32) -> bool {
         false
     }
@@ -2007,6 +2008,17 @@ mod run {
             {
                 let _ = (host, conn, p);
                 false
+            }
+        }
+
+        /// The world is saved (autosave, /save-all, closing): the Java mods' files beside it
+        /// too (their entities, block entities, saved data), not only every 10 s.
+        pub(in crate::game) fn save_java_mods(&mut self) {
+            #[cfg(feature = "java-mods")]
+            if java_mods_on()
+                && let Err(e) = horizon_jvm::events::save_all()
+            {
+                log::warn!("Java mods: saving failed: {e}");
             }
         }
 

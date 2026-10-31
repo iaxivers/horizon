@@ -1886,6 +1886,23 @@ public final class HorizonServer {
     }
 
     /**
+     * Horizon saves the world (its autosave, /save-all, the world closing): what the mirror
+     * keeps beside it is written now too, not only every 10 s (the mods' entities, their block
+     * entities and their saved data), as MinecraftServer.saveEverything saves its levels.
+     */
+    public static void saveAll() {
+        Thread.currentThread().setContextClassLoader(HorizonServer.class.getClassLoader());
+        if (server == null) return;
+        for (Runnable save : new Runnable[] {HorizonEntities::save, HorizonBlockEntities::save, HorizonSavedData::save}) {
+            try {
+                save.run();
+            } catch (Throwable t) {
+                Natives.log("Java mods: saving failed: " + t);
+            }
+        }
+    }
+
+    /**
      * The mods' entities of every level, with their looks when the headless client draws them
      * (HorizonEntityRender's snapshot), as JSON.
      */

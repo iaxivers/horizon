@@ -387,6 +387,9 @@ public final class HorizonClient {
             // Its keys (isShiftKeyDown: a collision context's descending): none pressed.
             set(net.minecraft.client.player.LocalPlayer.class, local, "input", new net.minecraft.client.player.ClientInput());
             set(net.minecraft.world.entity.player.Player.class, local, "inventory", player.getInventory());
+            // Its profile (its scoreboard name: the team whose name tag rules an entity
+            // renderer asks): the server player's.
+            set(net.minecraft.world.entity.player.Player.class, local, "gameProfile", player.getGameProfile());
             set(net.minecraft.world.entity.player.Player.class, local, "inventoryMenu", player.inventoryMenu);
             // Its level, which tooltips ask (enabled features): the server player's.
             set(net.minecraft.world.entity.Entity.class, local, "level", player.level());

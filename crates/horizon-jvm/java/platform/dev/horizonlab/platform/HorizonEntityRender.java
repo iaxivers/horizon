@@ -252,10 +252,19 @@ public final class HorizonEntityRender {
                 JsonArray items = new JsonArray();
                 o.add("models", models(entity, items));
                 if (!items.isEmpty()) o.add("items", items);
-                // Its custom name (Horizon shows it as its own mobs': visible, or looked at).
-                if (entity.getCustomName() != null) {
+                // Its custom name, when its renderer couldn't say (Horizon shows it as its own
+                // mobs': visible, or looked at).
+                if (!extracted && entity.getCustomName() != null) {
                     o.add("name", com.google.gson.JsonParser.parseString(HorizonServer.json(entity.getCustomName())));
                     o.addProperty("name_visible", entity.isCustomNameVisible());
+                }
+                // The name tag its renderer gives (a custom name, or a mod's own: a pet's
+                // owner, health): shown always, or when looked at; above its box, or where
+                // the renderer attaches it.
+                if (lastTag != null) {
+                    o.add("tag", com.google.gson.JsonParser.parseString(HorizonServer.json(lastTag)));
+                    if (lastTagAlways) o.addProperty("tag_always", true);
+                    if (lastTagY >= 0.0) o.addProperty("tag_y", lastTagY);
                 }
                 float shadow = lastShadow;
                 if (shadow > 0.0F) o.addProperty("shadow", shadow);
@@ -343,10 +352,33 @@ public final class HorizonEntityRender {
         }
     }
 
+    /** The name tag of the entity drawn last (null: none), where, and whether always shown. */
+    private static net.minecraft.network.chat.Component lastTag;
+    private static double lastTagY;
+    private static boolean lastTagAlways;
+    /** Whether the entity drawn last had its render state made (its renderer chose its name). */
+    private static boolean extracted;
+    private static java.lang.reflect.Method shouldShowName;
+
+    /** EntityRenderer.shouldShowName with nothing under the crosshair, from close by. */
+    private static boolean showsName(EntityRenderer<?, ?> renderer, Entity entity) {
+        try {
+            if (shouldShowName == null) {
+                shouldShowName = EntityRenderer.class.getDeclaredMethod("shouldShowName", Entity.class, double.class);
+                shouldShowName.setAccessible(true);
+            }
+            return (Boolean) shouldShowName.invoke(renderer, entity, 0.0);
+        } catch (Throwable t) {
+            return entity.isCustomNameVisible();
+        }
+    }
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static JsonArray models(Entity entity, JsonArray heldItems) {
         items = heldItems;
         lastShadow = 0.0F;
+        lastTag = null;
+        extracted = false;
         try {
             return modelsOf(entity);
         } finally {
@@ -360,7 +392,40 @@ public final class HorizonEntityRender {
         EntityRenderer renderer = renderer(entity.getType());
         if (renderer == null) return out;
         try {
-            EntityRenderState state = renderer.createRenderState(entity, 1.0F);
+            // Its name tag as a player looking at it from close by would see it
+            // (EntityRenderer.extractRenderState: shouldShowName, getNameTag): the camera on it
+            // and it under the crosshair; then whether it shows when not looked at.
+            var dispatcher = context().getEntityRenderDispatcher();
+            HorizonClient.set(net.minecraft.client.Camera.class, dispatcher.camera, "position", entity.position());
+            dispatcher.crosshairPickEntity = entity;
+            // The nearest player is the one looking (Minecraft.player: whether it is invisible to
+            // them, their team's name tag rules).
+            var viewer = entity.level() instanceof ServerLevel l
+                    ? l.getNearestPlayer(entity, -1.0) instanceof net.minecraft.server.level.ServerPlayer p ? p : null
+                    : null;
+            EntityRenderState[] made = new EntityRenderState[1];
+            boolean[] always = new boolean[1];
+            HorizonClient.ThrowingRunnable extract = () -> {
+                try {
+                    made[0] = renderer.createRenderState(entity, 1.0F);
+                } finally {
+                    dispatcher.crosshairPickEntity = null;
+                }
+                always[0] = made[0].nameTag != null && showsName(renderer, entity);
+            };
+            try {
+                if (viewer != null) HorizonClient.as(viewer, extract);
+                else extract.run();
+            } catch (RuntimeException | Error e) {
+                throw e;
+            } catch (Throwable t) {
+                throw new RuntimeException(t);
+            }
+            EntityRenderState state = made[0];
+            lastTag = state.nameTag;
+            lastTagY = state.nameTagAttachment == null ? -1.0 : state.nameTagAttachment.y;
+            lastTagAlways = always[0];
+            extracted = true;
             lastShadow = shadow(renderer, state);
             PoseStack pose = new PoseStack();
             var offset = renderer.getRenderOffset(state);
@@ -382,8 +447,9 @@ public final class HorizonEntityRender {
 
     /**
      * A SubmitNodeCollector keeping models (every model submit ends in the abstract
-     * {@code submitModel}; the others are its defaults, run as they are). Shadows, name tags,
-     * flames, items and the rest are not kept yet.
+     * {@code submitModel}; the others are its defaults, run as they are) and custom geometry
+     * (GeckoLib's models: {@code submitCustomGeometry}, vertices written by the renderer).
+     * Flames, leashes and the rest are not kept yet.
      */
     private static SubmitNodeCollector collector(JsonArray out) {
         InvocationHandler handler = new InvocationHandler() {
@@ -398,6 +464,8 @@ public final class HorizonEntityRender {
                         if (args.length == 9) model(out, (Model) args[0], args[1], (PoseStack) args[2], (RenderType) args[3],
                                 (Integer) args[4], (Integer) args[5], (Integer) args[6], args[7]);
                     }
+                    case "submitCustomGeometry" -> mesh(out, (PoseStack) args[0], (RenderType) args[1],
+                            (SubmitNodeCollector.CustomGeometryRenderer) args[2]);
                     case "hashCode" -> {
                         return System.identityHashCode(proxy);
                     }
@@ -451,6 +519,99 @@ public final class HorizonEntityRender {
         if (!hidden.isEmpty()) o.add("hidden", hidden);
         if (!skipped.isEmpty()) o.add("skip", skipped);
         out.add(o);
+    }
+
+    /**
+     * Custom geometry (SubmitNodeCollector.submitCustomGeometry: GeckoLib's bones, a mod's own
+     * quads): what its renderer writes to the vertex consumer, kept as quads relative to the
+     * entity (the pose stack is the renderer's to apply). Only quad render types (entities',
+     * blocks'): lines and the rest are left out.
+     */
+    private static void mesh(JsonArray out, PoseStack pose, RenderType type,
+                             SubmitNodeCollector.CustomGeometryRenderer renderer) throws ReflectiveOperationException {
+        if (!String.valueOf(type.primitiveTopology()).contains("QUAD")) return;
+        String texture = texture(type);
+        if (texture == null) return;
+        Recorder recorder = new Recorder();
+        renderer.render(pose.last(), recorder);
+        int n = recorder.vertices.size() / 4 * 4;
+        if (n == 0) return;
+        JsonObject o = new JsonObject();
+        o.addProperty("tex", texture);
+        o.addProperty("overlay", recorder.overlay);
+        JsonArray v = new JsonArray();
+        for (int i = 0; i < n; i++) {
+            float[] x = recorder.vertices.get(i);
+            for (int k = 0; k < 8; k++) v.add(Math.round(x[k] * 10000.0F) / 10000.0F);
+            v.add((long) Float.floatToRawIntBits(x[8]) & 0xFFFFFFFFL);
+        }
+        o.add("v", v);
+        out.add(o);
+    }
+
+    /**
+     * A vertex consumer keeping what is written: per vertex its position, UV, normal and
+     * colour (ARGB, as the float's bits); the overlay (UV1) of the last vertex for all.
+     */
+    private static final class Recorder implements com.mojang.blaze3d.vertex.VertexConsumer {
+        final List<float[]> vertices = new java.util.ArrayList<>();
+        int overlay = net.minecraft.client.renderer.texture.OverlayTexture.NO_OVERLAY;
+        private float[] last = new float[9];
+
+        @Override
+        public com.mojang.blaze3d.vertex.VertexConsumer addVertex(float x, float y, float z) {
+            last = new float[] {x, y, z, 0, 0, 0, 1, 0, Float.intBitsToFloat(-1)};
+            vertices.add(last);
+            return this;
+        }
+
+        @Override
+        public com.mojang.blaze3d.vertex.VertexConsumer setColor(int r, int g, int b, int a) {
+            last[8] = Float.intBitsToFloat(a << 24 | r << 16 | g << 8 | b);
+            return this;
+        }
+
+        @Override
+        public com.mojang.blaze3d.vertex.VertexConsumer setColor(int argb) {
+            last[8] = Float.intBitsToFloat(argb);
+            return this;
+        }
+
+        @Override
+        public com.mojang.blaze3d.vertex.VertexConsumer setUv(float u, float v) {
+            last[3] = u;
+            last[4] = v;
+            return this;
+        }
+
+        @Override
+        public com.mojang.blaze3d.vertex.VertexConsumer setUv1(int u, int v) {
+            overlay = u | v << 16;
+            return this;
+        }
+
+        @Override
+        public com.mojang.blaze3d.vertex.VertexConsumer setUv2(int u, int v) {
+            return this;
+        }
+
+        @Override
+        public com.mojang.blaze3d.vertex.VertexConsumer setUv3(float u, float v) {
+            return this;
+        }
+
+        @Override
+        public com.mojang.blaze3d.vertex.VertexConsumer setNormal(float x, float y, float z) {
+            last[5] = x;
+            last[6] = y;
+            last[7] = z;
+            return this;
+        }
+
+        @Override
+        public com.mojang.blaze3d.vertex.VertexConsumer setLineWidth(float width) {
+            return this;
+        }
     }
 
     /** The texture a render type samples first (its Sampler0: the entity's texture). */

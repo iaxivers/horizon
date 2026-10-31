@@ -11681,6 +11681,7 @@ impl Game<'_> {
         self.store_owner();
         self.level.write(&self.world_root)?;
         self.save_world_state();
+        self.save_java_mods();
         self.message = Some(("Saved the game".into(), Instant::now()));
         Ok(())
     }

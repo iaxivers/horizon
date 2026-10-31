@@ -171,6 +171,8 @@ saying something works.
   entities get the bridge's ids (`setId`) so they never clash with Horizon's.
 - A mirrored player isn't ticked: `detectEquipmentUpdates` (the held sword's damage) and its
   attack strength must be set before `Player.attack`.
+- An entity renderer's name tag reads `Minecraft.player` (`isInvisibleTo`, its team: the
+  `LocalPlayer` needs the server player's `gameProfile`): extract inside `HorizonClient.as`.
 - Renderers submit through `SubmitNodeCollector`; every model submit ends in the abstract
   `submitModel(model, state, pose, renderType, light, overlay, tint, UvMapping, outline)`,
   and `ModelFeatureRenderer` calls `model.setupAnim(state)` only then. A `Proxy` collector
@@ -387,13 +389,32 @@ creatures every 400 ticks), Horizon's commands reach them (`@e[type=mod:x]`, `/k
 and their held items, custom name tags, shadows, sounds and death poof show (tested with the
 critter fixture, which spawns in every overworld biome and holds a stick).
 
+Custom geometry (GeckoLib's way: `submitCustomGeometry`, the renderer writing vertices
+into a `VertexConsumer`) is recorded too (`HorizonEntityRender.mesh`, a `Recorder`
+consumer): quads relative to the entity, sent as `"v"` entries of `models` and drawn as they
+are (they move with the entity between ticks, the bones themselves step per tick). Entities
+and block entities alike (`GeoBlockRenderer` goes the same way). Tested with
+`java/fixtures/geomod` (a spinner whose renderer writes posed boxes, a block entity turning
+a cube over its block; `tools/java_bridge/fixture_mod.sh geomod …`); a real GeckoLib mod
+isn't tested here (this container may not run downloaded mods): GeckoLib's models load
+through its client reload listener, which `HorizonClient.reloadClientResources` runs.
+
+Name tags are the renderer's own (`EntityRenderState.nameTag`, made with the camera on the
+entity and it under the crosshair, the nearest player as `Minecraft.player`), shown always
+when `shouldShowName` says so with nothing under the crosshair, else when looked at; at the
+renderer's attachment height. The custom name is the fallback when the renderer fails.
+
+The mirror's files (mods' entities, block entities, saved data) are written whenever Horizon
+saves the world (`save_game_metadata` → `events::save_all` → `HorizonServer.saveAll`): its
+autosave, `/save-all` and the world closing, besides every 10 s.
+
 Known gaps of mod entities: vanilla mobs don't see them nor they vanilla mobs (a mod's wolf
 won't hunt Horizon's sheep); worn armour, fire, leashes and sprite-atlas models
-(`UvMapping`) aren't drawn; GeckoLib-style renderers that don't submit ModelPart models draw
-nothing; particles of a mod's own particle types and entity events other than the poof
-(a wolf's hearts) are left out; a mod's own sounds need their files in the content mod;
-natural spawns pick a height near the player (no heightmap), and spawn on world generation
-doesn't happen; entities save every 10 s (not at quit); in-frame single player is untested.
+(`UvMapping`) aren't drawn; custom geometry is sent whole each tick (fine for a few
+GeckoLib mobs, heavy for many); particles of a mod's own particle types and entity events
+other than the poof (a wolf's hearts) are left out; a mod's own sounds need their files in
+the content mod; natural spawns pick a height near the player (no heightmap), and spawn on
+world generation doesn't happen; in-frame single player is untested.
 
 Client HUD mods (tested headless, survival): Jade's tooltip for the block looked at (box,
 name, mod, item icon), AppleSkin's food overlays over Horizon's food bar.
@@ -405,7 +426,7 @@ side are silent; HUD mods that render with the GPU (Xaero's Minimap: framebuffer
 sprites from the GUI atlas by `TextureAtlasSprite`; HUD text loses its colours and styles
 (plain text from `FormattedCharSequence`); HUD frames go to every player but each player's
 client tick shares the mods' static state;
-saved data is written every 10 s, not on quit.
+saved data is written every 10 s and when the world saves.
 
 ### Profiling
 
