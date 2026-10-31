@@ -481,9 +481,32 @@ grep "Java profile" <scratch>/home/logs/latest.log
 
 Measured 2026-10-31, 17 mods (FD, BOP, Tom's, Naturalist, Friends&Foes…), 2-core container:
 the mirror tick is ~1 ms (spawner ~0.5, client tick ~0.2). Java worldgen is the cost: 25–50 ms
-of `minecraft:terrain` (noise) per chunk, features ~10–20, structure starts and references
-~20–40 in the first seconds. A mod that adds any overworld biome or feature sends the whole
-overworld through Java; making Horizon's Rust noise feed the Java proto is the big win left.
+of `minecraft:terrain` per chunk, features ~10–20, structure starts and references ~20–40 in
+the first seconds. A mod that adds any overworld biome or feature sends the whole overworld
+through Java.
+
+Worldgen lines now say a step's time per chunk (`(… ms each)`), and TERRAIN's parts
+(`worldgen terrain: fill`, `surface`, `carvers`, `noise chunk`: `NoiseFillMixin`). With BOP
+alone (2 cores, 2026-10-31) a chunk's TERRAIN is ~31 ms: the noise fill (`doFill`) 11,
+surface rules 9.5, carvers 1.4, `createNoiseChunk` 0.4, and ~9 waiting in
+`Util.backgroundExecutor`'s queue (buildTerrain and createBiomes hop there). "Terrain = noise"
+was wrong: the noise is a third of it.
+
+**Horizon's noise in Java protos** (`HORIZON_JAVA_NOISE=horizon`, off by default): Horizon's
+Rust noise fills the proto (`VanillaTerrain::noise_chunk`: biomes, structures and surface
+left out) and `NoiseFillMixin` skips `doFill` for it; Java keeps biomes, surface, carvers,
+features. It is exact: `HORIZON_JAVA_NOISE_CHECK=1` (with it on) runs vanilla's fill too and
+compares, 0 of 2100 chunks differed, villages included. Near a structure that adapts the
+terrain (a beard) Java fills (its structures follow the mods' biomes, Horizon's don't);
+mods' noise settings, density functions or noises, or a mod structure with terrain
+adaptation, turn it off for the dimension. It isn't faster here: Horizon's noise is 12–13 ms
+a chunk plus 3 to copy and 1 to apply, against HotSpot's batched `sampleVolume` at 11; time
+to generate 300 chunks after a teleport (render distance 8, three places, twice):
+Java 85 / 83 s, Horizon 90 / 87 s. Running buildTerrain and createBiomes on the calling
+worker instead of the executor (tried) was slower still (96–98 s): more threads at once on
+2 cores. Worth measuring on a many-core desktop before turning it on; the copy (98k
+`block()` calls) can go faster by section palettes. The other costs left: surface rules
+(~10 ms, the mods' biomes: Java's) and features (~15 ms).
 
 ## Working on it
 

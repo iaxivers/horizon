@@ -1240,3 +1240,56 @@ fn optional_string_array(
     }
     Ok(Some(out))
 }
+
+/// Whether Horizon's own noise fills `dimension`'s Java protos (`HorizonWorldgen.horizonNoise`:
+/// vanilla's noise settings, no mod's terrain-adapting structure).
+pub fn worldgen_noise_from_horizon(dimension: &str) -> Result<bool, String> {
+    let yes = with_server(|env, class| {
+        let dimension = env.new_string(dimension)?;
+        env.call_static_method(
+            class,
+            "worldgenNoiseFromHorizon",
+            "(Ljava/lang/String;)Z",
+            &[JValue::Object(&dimension)],
+        )?
+        .z()
+    })?;
+    Ok(yes.unwrap_or(false))
+}
+
+/// [`worldgen_proto`] with Horizon's noise fill of the chunk (`palette` of states, `blocks`
+/// indexing it from the chunk's bottom, `postprocess` x y z triples of fluids to update):
+/// the TERRAIN step takes it in place of vanilla's noise sampling.
+pub fn worldgen_proto_filled(
+    dimension: &str,
+    x: i32,
+    z: i32,
+    palette: &[String],
+    blocks: &[i32],
+    postprocess: &[i32],
+) -> Result<Option<i64>, String> {
+    let token = with_server(|env, class| {
+        let dimension = env.new_string(dimension)?;
+        let names: Vec<&str> = palette.iter().map(String::as_str).collect();
+        let names = strings(env, &names)?;
+        let array = env.new_int_array(blocks.len() as sys::jsize)?;
+        env.set_int_array_region(&array, 0, blocks)?;
+        let post = env.new_int_array(postprocess.len() as sys::jsize)?;
+        env.set_int_array_region(&post, 0, postprocess)?;
+        env.call_static_method(
+            class,
+            "worldgenProtoFilled",
+            "(Ljava/lang/String;II[Ljava/lang/String;[I[I)J",
+            &[
+                JValue::Object(&dimension),
+                JValue::Int(x),
+                JValue::Int(z),
+                JValue::Object(&names),
+                JValue::Object(&array),
+                JValue::Object(&post),
+            ],
+        )?
+        .j()
+    })?;
+    Ok(token.filter(|&t| t != 0))
+}

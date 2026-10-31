@@ -54,6 +54,15 @@ pub struct VanillaTerrain {
     /// bridge): biome queries of places not generated yet ask it first.
     biome_oracle: std::sync::OnceLock<Arc<dyn BiomeOracle>>,
 }
+/// A chunk's blocks after the noise fill ([`VanillaTerrain::noise_fill`]): `blocks[i]` (`i` =
+/// `((y - min_y) * 16 + z) * 16 + x`) indexes `palette` (`minecraft:water[level=0]`);
+/// `postprocess` holds x y z triples of fluids the aquifer marked for an update.
+pub struct NoiseFill {
+    pub min_y: i32,
+    pub palette: Vec<String>,
+    pub blocks: Vec<i32>,
+    pub postprocess: Vec<i32>,
+}
 /// A dimension's biomes as another generator makes them (Java mods' biome sources).
 pub trait BiomeOracle: Send + Sync {
     /// `BiomeSource.getNoiseBiome` at each quart position; None to use Horizon's own.
@@ -346,6 +355,72 @@ impl VanillaTerrain {
         let mut worker = self.query.lock().unwrap_or_else(|e| e.into_inner());
         let worker = worker.get_or_insert_with(|| self.generator.worker());
         worker.find_closest_biome(search)
+    }
+    /// Chunk `x z` at NoiseBasedChunkGenerator.doFill's end (noise, aquifers, ore veins:
+    /// no surface, carvers or features), for another generator to finish (the Java mod
+    /// bridge's). None if it failed.
+    pub fn noise_chunk(&self, worker: &mut GeneratorWorker, x: i32, z: i32) -> Option<ProtoChunk> {
+        match worker.generate_noise(ChunkPos::new(x, z)) {
+            Ok(chunk) => Some(chunk),
+            Err(e) => {
+                log::warn!("Horizon: noise of chunk {x} {z} failed: {e}");
+                None
+            }
+        }
+    }
+    /// [`VanillaTerrain::noise_chunk`]'s blocks as a [`NoiseFill`].
+    pub fn noise_fill_of(&self, chunk: &ProtoChunk, x: i32, z: i32) -> NoiseFill {
+        let terrain = &chunk.terrain;
+        let registry = self.generator.data().registry();
+        let (min_y, height) = (terrain.min_y(), terrain.height());
+        let mut palette: Vec<String> = Vec::new();
+        let mut index: std::collections::HashMap<u32, i32> = std::collections::HashMap::new();
+        let mut blocks = vec![0i32; (height as usize) * 256];
+        for (i, slot) in blocks.iter_mut().enumerate() {
+            let (bx, bz, y) = (
+                (i & 15) as i32,
+                ((i >> 4) & 15) as i32,
+                min_y + (i >> 8) as i32,
+            );
+            let state = terrain.block(x * 16 + bx, y, z * 16 + bz);
+            *slot = *index.entry(state.0).or_insert_with(|| {
+                palette.push(registry.state(state).map_or_else(
+                    || "minecraft:air".to_owned(),
+                    |s| {
+                        if s.properties.is_empty() {
+                            s.name.clone()
+                        } else {
+                            let props: Vec<String> = s
+                                .properties
+                                .iter()
+                                .map(|(k, v)| format!("{k}={v}"))
+                                .collect();
+                            format!("{}[{}]", s.name, props.join(","))
+                        }
+                    },
+                ));
+                palette.len() as i32 - 1
+            });
+        }
+        let mut postprocess = Vec::new();
+        let base_section = min_y >> 4;
+        for (i, marks) in terrain.postprocessing().iter().enumerate() {
+            let sy = (base_section + i as i32) * 16;
+            for &packed in marks {
+                let p = i32::from(packed);
+                postprocess.extend([
+                    x * 16 + (p & 15),
+                    sy + ((p >> 4) & 15),
+                    z * 16 + ((p >> 8) & 15),
+                ]);
+            }
+        }
+        NoiseFill {
+            min_y,
+            palette,
+            blocks,
+            postprocess,
+        }
     }
     /// Makes `oracle` the source of this dimension's biome queries (once).
     pub fn set_biome_oracle(&self, oracle: Arc<dyn BiomeOracle>) {

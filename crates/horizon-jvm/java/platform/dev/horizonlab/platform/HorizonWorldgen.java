@@ -27,6 +27,7 @@ import net.minecraft.util.StaticCache2D;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.StructureManager;
 import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.chunk.LevelChunkSection;
@@ -75,6 +76,8 @@ public final class HorizonWorldgen {
         final WorldGenContext context;
         final PalettedContainerFactory containers;
         final Map<Long, Live> live = new ConcurrentHashMap<>();
+        /** Horizon's noise fills the protos (horizonNoise). */
+        boolean horizonNoise;
         final Map<Long, ProtoChunk> partial = java.util.Collections.synchronizedMap(
                 new LinkedHashMap<>(PARTIAL_CHUNKS, 0.75f, true) {
                     @Override
@@ -125,7 +128,11 @@ public final class HorizonWorldgen {
             readyLevel(level, generator, server, containers, seed);
             WorldGenContext context = new WorldGenContext(level, generator, server.getStructureTemplateManager(),
                     null, Runnable::run, null);
-            DIMENSIONS.put(dimension, new Dimension(level, generator, context, containers));
+            Dimension made = new Dimension(level, generator, context, containers);
+            made.horizonNoise = horizonNoise(dimension, level, generator);
+            DIMENSIONS.put(dimension, made);
+            Natives.log("Java mods: " + dimension + "'s noise is "
+                    + (made.horizonNoise ? "Horizon's" : "Java's") + (CHECK ? " (checked against vanilla's)" : ""));
             Natives.log("Java mods: " + dimension + " generates through the mods (" + String.join(", ", mods) + ")");
             return true;
         } catch (Throwable t) {
@@ -203,8 +210,164 @@ public final class HorizonWorldgen {
 
     // ---- Horizon's calls ------------------------------------------------------------------
 
+    // ---- Horizon's noise -------------------------------------------------------------------
+
+    /** Horizon's noise fill of a chunk (NoiseBasedChunkGenerator.doFill's result): Fills.take. */
+    private record Fill(String[] palette, int[] blocks, int[] postprocess) {}
+
+    /** Fills Horizon handed over, by the proto chunk they are for (taken by doFill). */
+    private static final Map<ProtoChunk, Fill> FILLS = new ConcurrentHashMap<>();
+    /** HORIZON_JAVA_NOISE_CHECK=1: vanilla's doFill runs too, and differences are logged. */
+    private static final boolean CHECK = "1".equals(System.getenv("HORIZON_JAVA_NOISE_CHECK"));
+    private static final java.util.concurrent.atomic.AtomicLong CHECKED = new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong DIFFERENT = new java.util.concurrent.atomic.AtomicLong();
+
+    /**
+     * Whether Horizon's own noise fills this dimension's chunks (HORIZON_JAVA_NOISE=horizon,
+     * off by default: see below), when it can: its generator is vanilla's
+     * noise for the dimension (the level stem's noise settings are vanilla's key, and no data
+     * pack but vanilla's has noise settings, density functions or noises), and no mod's
+     * structure adapts the terrain (Horizon's beardifier knows vanilla's structures). Mods
+     * that add biomes and features (TerraBlender, BOP) leave the noise alone: the noise router
+     * doesn't read biomes.
+     */
+    private static boolean horizonNoise(String dimension, ServerLevel level, ChunkGenerator generator) {
+        // Opt-in (HORIZON_JAVA_NOISE=horizon): measured 2026-10-31 on 2 cores, Horizon's noise
+        // (12-13 ms a chunk, plus 3 ms to copy and 1 to apply) costs a little more than
+        // vanilla's doFill (11 ms: HotSpot's batched sampleVolume), and chunks came ~5% slower.
+        if (!"horizon".equals(System.getenv("HORIZON_JAVA_NOISE"))) return false;
+        if (!(generator instanceof net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator noise)) return false;
+        var vanilla = switch (dimension) {
+            case "minecraft:overworld" -> net.minecraft.world.level.levelgen.NoiseGeneratorSettings.OVERWORLD;
+            case "minecraft:the_nether" -> net.minecraft.world.level.levelgen.NoiseGeneratorSettings.NETHER;
+            case "minecraft:the_end" -> net.minecraft.world.level.levelgen.NoiseGeneratorSettings.END;
+            default -> null;
+        };
+        if (vanilla == null || !noise.generatorSettings().is(vanilla)) return false;
+        var resources = HorizonData.loaded.resources();
+        for (String folder : new String[] {"worldgen/noise_settings", "worldgen/density_function", "worldgen/noise"}) {
+            for (var stack : resources.listResourceStacks(folder, id -> true).values()) {
+                for (var resource : stack) {
+                    if (!"vanilla".equals(resource.sourcePackId())) {
+                        Natives.log("Java mods: " + dimension + "'s noise comes from " + resource.sourcePackId()
+                                + ": Java fills it");
+                        return false;
+                    }
+                }
+            }
+        }
+        var structures = level.registryAccess().lookupOrThrow(Registries.STRUCTURE);
+        for (var entry : structures.listElements().toList()) {
+            if (!entry.key().identifier().getNamespace().equals("minecraft")
+                    && entry.value().terrainAdaptation() != net.minecraft.world.level.levelgen.structure.TerrainAdjustment.NONE) {
+                Natives.log("Java mods: " + entry.key().identifier() + " adapts the terrain: Java fills " + dimension);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Whether Horizon's noise fills this dimension's protos (worldgenProto's fill). */
+    public static boolean noiseFromHorizon(String dimension) {
+        Dimension d = DIMENSIONS.get(dimension);
+        return d != null && d.horizonNoise;
+    }
+
+    /**
+     * NoiseBasedChunkGenerator.doFill for {@code chunk} with Horizon's fill, if it gave one:
+     * its blocks, the world-generation heightmaps doFill keeps, and the fluids the aquifer
+     * marked. True when filled (doFill is skipped).
+     */
+    public static boolean fill(net.minecraft.world.level.chunk.ChunkAccess chunk) {
+        if (!(chunk instanceof ProtoChunk proto)) return false;
+        // A structure here that adapts the terrain (a village's beard) is the mods' worldgen's
+        // own (its biomes chose it): Horizon's noise has none, so vanilla's fills this chunk.
+        if (adapted(proto)) {
+            FILLS.remove(proto);
+            return false;
+        }
+        Fill fill = CHECK ? FILLS.get(proto) : FILLS.remove(proto);
+        if (fill == null || CHECK) return false;
+        apply(proto, fill);
+        return true;
+    }
+
+    /** Whether a structure that adapts the terrain reaches the chunk (Beardifier.forStructuresInChunk's). */
+    private static boolean adapted(ProtoChunk chunk) {
+        for (var structure : chunk.getAllReferences().keySet()) {
+            if (structure.terrainAdaptation() != net.minecraft.world.level.levelgen.structure.TerrainAdjustment.NONE
+                    && !chunk.getAllReferences().get(structure).isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+
+    /** HORIZON_JAVA_NOISE_CHECK: after vanilla's doFill, how Horizon's fill compares. */
+    public static void check(net.minecraft.world.level.chunk.ChunkAccess chunk) {
+        if (!CHECK || !(chunk instanceof ProtoChunk proto)) return;
+        Fill fill = FILLS.remove(proto);
+        if (fill == null) return;
+        BlockState[] states = states(fill.palette());
+        int minY = chunk.getMinY();
+        long different = 0;
+        String first = null;
+        for (int i = 0; i < fill.blocks().length; i++) {
+            int x = i & 15, z = (i >> 4) & 15, y = minY + (i >> 8);
+            BlockState mine = chunk.getSection(chunk.getSectionIndex(y)).getBlockState(x, y & 15, z);
+            if (mine != states[fill.blocks()[i]]) {
+                if (first == null) first = (chunk.getPos().getMinBlockX() + x) + " " + y + " " + (chunk.getPos().getMinBlockZ() + z)
+                        + ": vanilla " + mine + ", Horizon " + states[fill.blocks()[i]];
+                different++;
+            }
+        }
+        long n = CHECKED.incrementAndGet();
+        if (different > 0) DIFFERENT.incrementAndGet();
+        if (different > 0 || n % 50 == 0) {
+            Natives.log("Java mods' worldgen: noise check: " + n + " chunks, " + DIFFERENT.get() + " differ"
+                    + (different > 0 ? "; " + chunk.getPos() + " has " + different + " (first at " + first + ")" : ""));
+        }
+    }
+
+    private static BlockState[] states(String[] palette) {
+        BlockState[] states = new BlockState[palette.length];
+        for (int i = 0; i < palette.length; i++) {
+            BlockState state = HorizonServer.parseState(palette[i]);
+            states[i] = state != null ? state : net.minecraft.world.level.block.Blocks.AIR.defaultBlockState();
+        }
+        return states;
+    }
+
+    private static void apply(ProtoChunk chunk, Fill fill) {
+        BlockState[] states = states(fill.palette());
+        int minY = chunk.getMinY();
+        int[] blocks = fill.blocks();
+        LevelChunkSection[] sections = chunk.getSections();
+        for (int i = 0; i < blocks.length; i++) {
+            BlockState state = states[blocks[i]];
+            if (state.isAir()) continue;
+            int y = minY + (i >> 8);
+            sections[chunk.getSectionIndex(y)].setBlockState(i & 15, y & 15, (i >> 4) & 15, state, false);
+        }
+        net.minecraft.world.level.levelgen.Heightmap.primeHeightmaps(chunk, java.util.EnumSet.of(
+                net.minecraft.world.level.levelgen.Heightmap.Types.OCEAN_FLOOR_WG,
+                net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE_WG));
+        int[] post = fill.postprocess();
+        for (int i = 0; i + 2 < post.length; i += 3) chunk.markPosForPostProcessing(new BlockPos(post[i], post[i + 1], post[i + 2]));
+    }
+
     /** Brings chunk x z of dimension to TERRAIN and holds it for Horizon: its token (0: failed). */
     public static long proto(String dimension, int x, int z) {
+        return proto(dimension, x, z, null, null, null);
+    }
+
+    /**
+     * {@link #proto(String, int, int)} with Horizon's noise fill of the chunk (palette of
+     * states, an index a block from the chunk's bottom, fluids to update as x y z triples):
+     * TERRAIN's doFill takes it in place of sampling the noise.
+     */
+    public static long proto(String dimension, int x, int z, String[] palette, int[] blocks, int[] postprocess) {
         // Horizon's generation threads, attached to the JVM, have no context class loader.
         Thread.currentThread().setContextClassLoader(HorizonWorldgen.class.getClassLoader());
         Dimension d = DIMENSIONS.get(dimension);
@@ -217,7 +380,15 @@ public final class HorizonWorldgen {
             if (chunk == null) chunk = fresh(d, x, z);
             long token = TOKENS.incrementAndGet();
             d.live.put(key, new Live(chunk, token));
-            advance(d, chunk, ChunkStatus.TERRAIN);
+            if (palette != null && blocks != null && chunk.getPersistedStatus().isBefore(ChunkStatus.TERRAIN)
+                    && blocks.length == chunk.getHeight() * 256) {
+                FILLS.put(chunk, new Fill(palette, blocks, postprocess == null ? new int[0] : postprocess));
+            }
+            try {
+                advance(d, chunk, ChunkStatus.TERRAIN);
+            } finally {
+                FILLS.remove(chunk);
+            }
             return token;
         } catch (Throwable t) {
             failed("proto", t);

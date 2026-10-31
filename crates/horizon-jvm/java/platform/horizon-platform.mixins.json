@@ -29,6 +29,7 @@
     "ServerChunkCacheMixin",
     "PathNavigationRegionMixin",
     "WorldGenRegionMixin",
+    "NoiseFillMixin",
     "EntitySelectorMixin",
     "BlockScanMixin"
   ],
