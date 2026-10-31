@@ -81,6 +81,38 @@ saying something works.
   boolean, from client mixin configs too), then `ClientTickEvents` START and END. The client
   has no level and no player of its own (like a client at its title screen).
 
+## Client HUD mods
+
+- Once players exist, `HorizonClient.clientTick` runs each player's client in turn inside
+  `inWorld(player, …)`: `as()`, plus `minecraft.level` = the dimension's client level
+  (`clientLevel`: a `ClientLevel` made without its constructor and registered as a mirror, so
+  `LevelMixin` gives Horizon's blocks; block entities and writes go to the server level via
+  `HorizonServer.serverSide`; entities via `ClientLevelMixin`, without the player's own server
+  copy), `minecraft.hitResult` (`pick`: block, or a nearer mirrored entity), the `LocalPlayer`
+  standing where the server player stands. Then the client tick, then `sendHud`.
+- `hud(player)` draws into a `HorizonGraphics` with `modsOnly`: an op is kept when, walking out
+  from the draw call, a mod's frame (a mod class, or a non-Fabric mixin handler merged into a
+  vanilla class: `MixinMerged`) comes before Horizon's driver. Drawn: Fabric's HUD elements
+  that mods added (`HudElementRegistryImpl` roots, vanilla layers skipped), the vanilla Hud
+  parts mods inject into (`HorizonHooks.hudMethods`; `extractPlayerHealth` for the hearts and
+  food, in survival/adventure), and handlers on `Hud.extractRenderState` (`fireHud`).
+- Frames go `Natives.hudFrame` → `Action::HudFrame` → `horizon:java_hud` (only when changed);
+  the client draws them over its HUD (`draw_java_hud`, under titles and chat) and sends its HUD
+  size on `horizon:java_screen_input` as window `-2`.
+- `HorizonGraphics` also captures GUI elements mods add to the render state themselves
+  (`GuiRenderState.addGuiElement`: Jade's float rectangles) by building their vertices:
+  untextured quads become fills and gradients; textured ones are dropped (no texture name).
+- What the headless client gained for HUD mods: a game renderer whose main camera answers
+  from the player (`CameraMixin`, `MinecraftCameraMixin`: camera entity, delta tracker), a
+  `GameRenderState`, debug entries, Hud's tab list and boss overlay (none showing), the
+  `LocalPlayer`'s attributes, effects, food, fluid state and input (shared with or made for
+  its server player), `ClientLifecycleEvents.CLIENT_STARTED`, and the mods' client resource
+  reload (`reloadClientResources`: Fabric's CLIENT_RESOURCES reloaders over vanilla's jar and
+  the mods' packs; Jade's themes).
+- Mods' top-level `textures/*.png` and `textures/hud/` join Horizon's GUI atlas (AppleSkin's
+  `icons.png`).
+- `HORIZON_JAVA_DEBUG=hud` logs each HUD frame's size and each Fabric HUD element's ops.
+
 ## 26.3 facts that cost time
 
 - Keys are SDL3: `KeyEvent(scancode, keycode, mods)`; letters' scancodes from 4, keycodes are
@@ -158,6 +190,14 @@ saying something works.
   `@ModifyArg` on `Minecraft.runTick`'s `renderFrame` call; without a client frame before
   SERVER_STARTING it failed with "Registry is not frozen yet!".
 - `horizon-ctl key <name>` needs an action: `key escape tap`.
+- Jade catches its own exceptions (its tick, its overlay) and logs them to its own logger,
+  not ours: when it draws nothing, call `WailaTickHandler.tickClient` and
+  `OverlayRenderer.renderOverlay*` by reflection to see the throw.
+- `ClientLevel.getLevelData()` is its `clientLevelData` (a `ClientLevel.ClientLevelData`), not
+  `Level.levelData`; `getEntities()` reads its `entityStorage`.
+- `Minecraft.getCameraEntity()` reads `gameRenderer.mainCamera().entity()`.
+- `VanillaPackResourcesBuilder.build` gives a `VanillaPackResources`, which is not a
+  `PackResources`: use `.fullResources()`.
 - Worldgen mods set up in `MinecraftServer`'s constructor (TerraBlender's `MixinMinecraftServer`
   puts its regions into the level stems' parameter lists and its surface rules into the noise
   settings; Fabric's biome modifications): the mirror skips it, so `HorizonWorldgen.start`
@@ -355,9 +395,16 @@ nothing; particles of a mod's own particle types and entity events other than th
 natural spawns pick a height near the player (no heightmap), and spawn on world generation
 doesn't happen; entities save every 10 s (not at quit); in-frame single player is untested.
 
+Client HUD mods (tested headless, survival): Jade's tooltip for the block looked at (box,
+name, mod, item icon), AppleSkin's food overlays over Horizon's food bar.
+
 Known gaps: extended (Fabric) menus share the server's menu with the screen (no client copy);
 the recipe book lists every recipe (not the player's unlocked ones); sounds from Java's client
-side are silent; client HUD mods (Jade, AppleSkin, minimaps) draw nothing in Horizon's window;
+side are silent; HUD mods that render with the GPU (Xaero's Minimap: framebuffers,
+`RenderSystem.getDevice()`) draw nothing, nor do textured GUI elements mods add directly or
+sprites from the GUI atlas by `TextureAtlasSprite`; HUD text loses its colours and styles
+(plain text from `FormattedCharSequence`); HUD frames go to every player but each player's
+client tick shares the mods' static state;
 saved data is written every 10 s, not on quit.
 
 ### Profiling

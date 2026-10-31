@@ -153,6 +153,9 @@ pub enum Action {
     /// book, Nature's Compass's list) opened or closed: their game shows it with no menu's
     /// window under it, its frames as a menu screen's.
     ClientScreen { uuid: String, open: bool },
+    /// What mods draw on a player's HUD (Jade, AppleSkin), drawn by their client code in the
+    /// headless client each tick: operations as a screen frame's, sent when they change.
+    HudFrame { uuid: String, frame: String },
     /// A mod fed (or starved) a player: its `FoodData` now (a pie's slice).
     Food {
         uuid: String,

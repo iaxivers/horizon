@@ -45,21 +45,21 @@ public abstract class LevelMixin {
     /** Vanilla blocks' block entities are Horizon's (none here); mod blocks' are Java's. */
     @Inject(method = "getBlockEntity", at = @At("HEAD"), cancellable = true)
     private void horizon$blockEntity(BlockPos pos, CallbackInfoReturnable<BlockEntity> cir) {
-        if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonBlockEntities.get((Level) (Object) this, pos));
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonBlockEntities.get(HorizonServer.serverSide((Level) (Object) this), pos));
     }
 
     @Inject(method = "setBlockEntity", at = @At("HEAD"), cancellable = true)
     private void horizon$setBlockEntity(BlockEntity be, CallbackInfo ci) {
         if (!HorizonServer.isMirror(this)) return;
         ci.cancel();
-        HorizonBlockEntities.put((Level) (Object) this, be);
+        HorizonBlockEntities.put(HorizonServer.serverSide((Level) (Object) this), be);
     }
 
     @Inject(method = "removeBlockEntity", at = @At("HEAD"), cancellable = true)
     private void horizon$removeBlockEntity(BlockPos pos, CallbackInfo ci) {
         if (!HorizonServer.isMirror(this)) return;
         ci.cancel();
-        HorizonBlockEntities.removed((Level) (Object) this, pos);
+        HorizonBlockEntities.removed(HorizonServer.serverSide((Level) (Object) this), pos);
     }
 
     /** BlockEntity.setChanged: saved with the others; the level holds no chunk to mark. */
@@ -67,7 +67,7 @@ public abstract class LevelMixin {
     private void horizon$blockEntityChanged(BlockPos pos, CallbackInfo ci) {
         if (!HorizonServer.isMirror(this)) return;
         ci.cancel();
-        HorizonBlockEntities.changed((Level) (Object) this, pos);
+        HorizonBlockEntities.changed(HorizonServer.serverSide((Level) (Object) this), pos);
     }
 
     /** Comparators are Horizon's. */
@@ -94,7 +94,7 @@ public abstract class LevelMixin {
     @Inject(method = "setBlock(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;II)Z",
             at = @At("HEAD"), cancellable = true)
     private void horizon$setBlock(BlockPos pos, BlockState state, int flags, int recursion, CallbackInfoReturnable<Boolean> cir) {
-        if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.setBlock((Level) (Object) this, pos, state));
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.setBlock(HorizonServer.serverSide((Level) (Object) this), pos, state));
     }
 
     /**

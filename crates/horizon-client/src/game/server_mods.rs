@@ -1218,6 +1218,20 @@ mod run {
                             Self::send_java_screen_frame(host, conn, window, &frame);
                         }
                     }
+                    horizon_jvm::events::Action::HudFrame { uuid, frame } => {
+                        let Some(host) = host.as_deref_mut().or(self.lan.as_mut()) else {
+                            continue;
+                        };
+                        if let Some(conn) = host
+                            .hub
+                            .guests
+                            .iter()
+                            .find(|g| uuid_string(g.uuid) == uuid)
+                            .map(|g| g.conn)
+                        {
+                            Self::send_java_hud_frame(host, conn, &frame);
+                        }
+                    }
                     horizon_jvm::events::Action::ClientScreen { uuid, open } => {
                         let Some(host) = host.as_deref_mut().or(self.lan.as_mut()) else {
                             continue;
@@ -2092,10 +2106,10 @@ mod run {
                     return;
                 };
                 let window = input.get("window").and_then(Value::as_i64).unwrap_or(-1) as i32;
-                // A key of a Java mod's key binding, pressed or released while playing: the
-                // connection's player's, whatever window is open.
+                // A key of a Java mod's key binding, pressed or released while playing, and the
+                // HUD's size: the connection's player's, whatever window is open.
                 let bind = input.get("kind").and_then(Value::as_str) == Some("bind");
-                let uuid = if bind {
+                let uuid = if bind || window == super::super::java_screen::HUD_WINDOW {
                     host.hub
                         .guests
                         .iter()

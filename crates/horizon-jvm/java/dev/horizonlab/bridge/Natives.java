@@ -56,6 +56,9 @@ public final class Natives {
      */
     public static native void clientScreen(String uuid, boolean open);
 
+    /** What mods draw on a player's HUD (HorizonGraphics' operations, JSON), when it changed. */
+    public static native void hudFrame(String uuid, String frame);
+
     /** A mod changed a player's food (FoodData): its food level and saturation now. */
     public static native void setFood(String uuid, int food, float saturation);
 

@@ -21,7 +21,125 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
     private final JsonArray ops = new JsonArray();
 
     public HorizonGraphics(int width, int height) {
-        super(HorizonClient.minecraft(), new GuiRenderState(), width, height);
+        this(width, height, new Capture());
+    }
+
+    private HorizonGraphics(int width, int height, Capture state) {
+        super(HorizonClient.minecraft(), state, width, height);
+        state.owner = this;
+    }
+
+    /**
+     * The render state GUI elements go to when mods add them themselves (Jade's float
+     * rectangles: GuiRenderState.addGuiElement), or through a vanilla method this class doesn't
+     * record: their vertices, built as vanilla would build them, become rectangles. Untextured
+     * quads are fills (two colours down: gradients); textured ones have no texture name here.
+     */
+    private static final class Capture extends GuiRenderState {
+        HorizonGraphics owner;
+
+        @Override
+        public void addGuiElement(net.minecraft.client.renderer.state.gui.GuiElementRenderState element) {
+            if (owner == null) return;
+            java.util.List<float[]> vertices = new java.util.ArrayList<>();
+            try {
+                element.buildVertices(new Vertices(vertices));
+            } catch (RuntimeException e) {
+                return;
+            }
+            var texture = element.textureSetup();
+            boolean textured = texture != null && texture.texure0() != null;
+            for (int i = 0; i + 3 < vertices.size(); i += 4) {
+                float x0 = Float.MAX_VALUE, y0 = Float.MAX_VALUE, x1 = -Float.MAX_VALUE, y1 = -Float.MAX_VALUE;
+                int top = 0, bottom = 0;
+                for (int k = 0; k < 4; k++) {
+                    float[] v = vertices.get(i + k);
+                    x0 = Math.min(x0, v[0]);
+                    x1 = Math.max(x1, v[0]);
+                    if (v[1] < y0) {
+                        y0 = v[1];
+                        top = (int) v[2];
+                    }
+                    if (v[1] >= y1) {
+                        y1 = v[1];
+                        bottom = (int) v[2];
+                    }
+                }
+                if (textured) continue;
+                owner.quad(x0, y0, x1, y1, top, bottom);
+            }
+        }
+    }
+
+    /** Collects a GUI element's vertices: x, y (posed) and colour. */
+    private record Vertices(java.util.List<float[]> out) implements com.mojang.blaze3d.vertex.VertexConsumer {
+        @Override
+        public com.mojang.blaze3d.vertex.VertexConsumer addVertex(float x, float y, float z) {
+            out.add(new float[] {x, y, -1});
+            return this;
+        }
+
+        @Override
+        public com.mojang.blaze3d.vertex.VertexConsumer setColor(int r, int g, int b, int a) {
+            return setColor((a << 24) | (r << 16) | (g << 8) | b);
+        }
+
+        @Override
+        public com.mojang.blaze3d.vertex.VertexConsumer setColor(int argb) {
+            if (!out.isEmpty()) out.get(out.size() - 1)[2] = argb;
+            return this;
+        }
+
+        @Override
+        public com.mojang.blaze3d.vertex.VertexConsumer setUv(float u, float v) {
+            return this;
+        }
+
+        @Override
+        public com.mojang.blaze3d.vertex.VertexConsumer setUv1(int u, int v) {
+            return this;
+        }
+
+        @Override
+        public com.mojang.blaze3d.vertex.VertexConsumer setUv2(int u, int v) {
+            return this;
+        }
+
+        @Override
+        public com.mojang.blaze3d.vertex.VertexConsumer setUv3(float u, float v) {
+            return this;
+        }
+
+        @Override
+        public com.mojang.blaze3d.vertex.VertexConsumer setNormal(float x, float y, float z) {
+            return this;
+        }
+
+        @Override
+        public com.mojang.blaze3d.vertex.VertexConsumer setLineWidth(float width) {
+            return this;
+        }
+    }
+
+    /** A captured rectangle (already posed): a fill, or a gradient from top to bottom. */
+    private void quad(float x0, float y0, float x1, float y1, int top, int bottom) {
+        pose().pushMatrix();
+        pose().identity();
+        try {
+            JsonObject o = op(top == bottom ? "fill" : "gradient");
+            o.addProperty("x0", x0);
+            o.addProperty("y0", y0);
+            o.addProperty("x1", x1);
+            o.addProperty("y1", y1);
+            if (top == bottom) {
+                o.addProperty("color", top);
+            } else {
+                o.addProperty("top", top);
+                o.addProperty("bottom", bottom);
+            }
+        } finally {
+            pose().popMatrix();
+        }
     }
 
     /** Horizon's GUI size (the screen has no window to ask; read in the constructor too). */
@@ -40,9 +158,62 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
         return ops;
     }
 
+    /**
+     * Only what mods' code draws is kept (the HUD: vanilla's own parts are Horizon's, drawn by
+     * Horizon). An operation is the mods' when, going out from the drawing call, a mod's frame
+     * comes before Horizon's driver: a class of a mod, or a mod's mixin handler merged into a
+     * vanilla class (Fabric's own are vanilla's here: its HUD wrapper draws vanilla parts).
+     */
+    boolean modsOnly;
+    /** Operations left out as vanilla's (modsOnly). */
+    int dropped;
+
+    private static final java.util.Map<String, Boolean> MOD_FRAMES = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final StackWalker WALKER = StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE);
+
+    private static boolean drawnByMod() {
+        return WALKER.walk(frames -> {
+            var it = frames.iterator();
+            while (it.hasNext()) {
+                var frame = it.next();
+                Class<?> owner = frame.getDeclaringClass();
+                String name = owner.getName();
+                if (name.startsWith("dev.horizonlab.platform.HorizonGraphics")
+                        || owner == GuiGraphicsExtractor.class || name.startsWith("net.minecraft.client.gui.ActiveTextCollector")) {
+                    continue;
+                }
+                if (name.startsWith("dev.horizonlab.")) return false;
+                Boolean mod = MOD_FRAMES.computeIfAbsent(name + "#" + frame.getMethodName() + frame.getDescriptor(),
+                        k -> isModFrame(owner, frame));
+                if (mod) return true;
+            }
+            return false;
+        });
+    }
+
+    private static boolean isModFrame(Class<?> owner, StackWalker.StackFrame frame) {
+        String name = owner.getName();
+        boolean platform = name.startsWith("net.minecraft.") || name.startsWith("com.mojang.") || name.startsWith("net.fabricmc.")
+                || name.startsWith("java.") || name.startsWith("jdk.") || name.startsWith("sun.") || name.startsWith("org.joml.")
+                || name.startsWith("com.google.") || name.startsWith("it.unimi.") || name.startsWith("org.spongepowered.");
+        if (!platform) return true;
+        if (!frame.getMethodName().contains("$")) return false;
+        try {
+            var method = owner.getDeclaredMethod(frame.getMethodName(), frame.getMethodType().parameterArray());
+            var merged = method.getAnnotation(org.spongepowered.asm.mixin.transformer.meta.MixinMerged.class);
+            return merged != null && !merged.mixin().startsWith("net.fabricmc.") && !merged.mixin().startsWith("dev.horizonlab.");
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return false;
+        }
+    }
+
     private JsonObject op(String kind) {
         JsonObject o = new JsonObject();
         o.addProperty("op", kind);
+        if (modsOnly && !drawnByMod()) {
+            dropped++;
+            return o;
+        }
         Matrix3x2f m = new Matrix3x2f(pose());
         if (!m.equals(new Matrix3x2f())) {
             JsonArray pose = new JsonArray();

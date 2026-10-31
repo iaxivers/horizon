@@ -1795,6 +1795,8 @@ struct Game<'a> {
     java_screen: Option<java_screen::JavaScreen>,
     /// The keys the server's Java mods bind (game/java_screen.rs).
     java_binds: java_screen::JavaBinds,
+    /// What Java mods last drew on the HUD (game/java_screen.rs).
+    java_hud: Option<java_screen::JavaHud>,
     /// Java mods' entities the server last sent (game/java_entities.rs).
     java_entities: java_entities::JavaEntities,
     /// The horse inventory (game/mount_menu.rs).
@@ -6241,6 +6243,9 @@ impl Game<'_> {
         let draws = hud_overlays::sleep_overlay(wi, hi, self.sleep_timer as i32);
         hud_layout::paint(&mut batch, &self.gui.atlas, &draws);
         if show_hud {
+            // Java mods' HUD (Fabric's HUD elements come after vanilla's bars and before the
+            // titles' layer ends: under chat and titles is close enough).
+            self.draw_java_hud(&mut batch);
             self.draw_titles(&mut batch, bar_height);
             self.draw_scoreboard(&mut batch);
             self.draw_subtitles(&mut batch);
@@ -14164,6 +14169,7 @@ impl<'a> Game<'a> {
             recipe_ui: Default::default(),
             java_screen: None,
             java_binds: Default::default(),
+            java_hud: None,
             java_entities: Default::default(),
             mount_menu: Default::default(),
             hook: None,

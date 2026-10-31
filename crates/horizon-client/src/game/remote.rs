@@ -2690,6 +2690,9 @@ impl Game<'_> {
                 }
             }
             C::OpenScreen(p) => self.remote_open_screen(p),
+            C::CustomPayload(p) if p.channel == super::java_screen::HUD_CHANNEL => {
+                self.remote_java_hud(&p.data)
+            }
             C::CustomPayload(p) if p.channel == super::java_screen::CHANNEL => {
                 self.remote_java_screen(&p.data)
             }

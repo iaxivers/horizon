@@ -401,6 +401,18 @@ impl HudAtlas {
                 if entry.file_name() != "minecraft" {
                     walk(&entry.path().join("textures/gui"), &mut files);
                     walk(&entry.path().join("textures/entity"), &mut files);
+                    // HUD mods' sheets (AppleSkin's `textures/icons.png`, `textures/hud/`).
+                    walk(&entry.path().join("textures/hud"), &mut files);
+                    for file in fs::read_dir(entry.path().join("textures"))
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                    {
+                        let path = file.path();
+                        if path.extension().is_some_and(|e| e == "png") {
+                            files.push(path);
+                        }
+                    }
                 }
             }
         }

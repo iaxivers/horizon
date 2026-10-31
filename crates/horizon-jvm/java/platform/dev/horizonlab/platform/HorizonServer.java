@@ -187,6 +187,26 @@ public final class HorizonServer {
         return server;
     }
 
+    /**
+     * A mirrored level's server level: itself, or for a headless client's level
+     * (HorizonClient.clientLevel) its dimension's, whose block entities and blocks it shows.
+     */
+    public static Level serverSide(Level level) {
+        return level instanceof ServerLevel ? level : level(level.dimension().identifier().toString());
+    }
+
+    /** The mirrored players (the headless client's, one tick of HUD each). */
+    public static List<ServerPlayer> players() {
+        synchronized (PLAYERS) {
+            return new ArrayList<>(PLAYERS);
+        }
+    }
+
+    /** An object made without its constructor that counts as the mirror's (isMirror). */
+    static <T> T mirror(Class<T> type) {
+        return allocate(type);
+    }
+
     private static <T> T allocate(Class<T> type) {
         T object = type.cast(Natives.allocate(type));
         MIRRORS.add(object);
@@ -535,11 +555,6 @@ public final class HorizonServer {
     /** The mirrored levels (one a dimension Horizon has). */
     public static java.util.List<ServerLevel> levels() {
         return new ArrayList<>(LEVELS.values());
-    }
-
-    /** The mirrored players Horizon lists now. */
-    public static List<ServerPlayer> players() {
-        return new ArrayList<>(PLAYERS);
     }
 
     /** A mirrored player by id; null when Horizon doesn't list them. */

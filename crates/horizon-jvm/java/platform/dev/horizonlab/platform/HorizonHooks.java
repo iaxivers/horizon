@@ -96,6 +96,59 @@ public final class HorizonHooks {
 
     /** The client classes and methods whose injections run each headless client tick. */
     private static final String CLIENT_OWNER = "net/minecraft/client/Minecraft";
+    private static final String HUD_OWNER = "net/minecraft/client/gui/Hud";
+    /** The mods' injections into the HUD (Hud's methods): (method, mixin, handler). */
+    private static final List<String[]> HUD_HOOKS = new ArrayList<>();
+
+    private static void readHud(String mod, ClassNode node) {
+        String mixin = node.name.replace('/', '.');
+        for (MethodNode m : node.methods) {
+            for (AnnotationNode a : annotations(m.invisibleAnnotations, m.visibleAnnotations)) {
+                if (!a.desc.startsWith("Lorg/spongepowered/asm/mixin/injection/")
+                        && !a.desc.startsWith("Lcom/llamalad7/mixinextras/injector/")) continue;
+                if (!(get(a, "method") instanceof List<?> specs)) continue;
+                for (Object spec : specs) HUD_HOOKS.add(new String[] {parseSpec((String) spec)[0], mixin, m.name, mod});
+            }
+        }
+    }
+
+    /** The Hud methods mods inject into (any injector: their HUD overlays draw there). */
+    public static java.util.Set<String> hudMethods() {
+        java.util.Set<String> out = new java.util.HashSet<>();
+        for (String[] h : HUD_HOOKS) out.add(h[0]);
+        return out;
+    }
+
+    /**
+     * Calls the mods' handlers merged into Hud for {@code method} whose parameters are the
+     * method's own then a CallbackInfo (event-like injections at its head or end: what they
+     * draw is theirs), for a part Horizon does not run (Hud.extractRenderState).
+     */
+    public static void fireHud(Object hud, String method, Object... args) {
+        for (Method m : hud.getClass().getDeclaredMethods()) {
+            MixinMerged merged = m.getAnnotation(MixinMerged.class);
+            if (merged == null) continue;
+            for (String[] h : HUD_HOOKS) {
+                if (!h[0].equals(method) || !merged.mixin().equals(h[1])) continue;
+                if (!m.getName().equals(h[2]) && !m.getName().endsWith("$" + h[2])) continue;
+                Class<?>[] params = m.getParameterTypes();
+                if (params.length != args.length + 1 || !CallbackInfo.class.isAssignableFrom(params[args.length])) continue;
+                Object[] call = java.util.Arrays.copyOf(args, args.length + 1);
+                call[args.length] = new CallbackInfo(method, true);
+                try {
+                    m.setAccessible(true);
+                    m.invoke(Modifier.isStatic(m.getModifiers()) ? null : hud, call);
+                } catch (Throwable t) {
+                    Throwable cause = t instanceof java.lang.reflect.InvocationTargetException ite && ite.getCause() != null ? ite.getCause() : t;
+                    if (FAILURES.merge(m.toString(), 1, Integer::sum) <= 3) {
+                        Natives.log("A mod failed in the HUD's " + method + " (" + h[3] + "'s " + h[2] + "): " + cause);
+                        StackTraceElement[] frames = cause.getStackTrace();
+                        for (int f = 0; f < Math.min(frames.length, 8); f++) Natives.log("    at " + frames[f]);
+                    }
+                }
+            }
+        }
+    }
     private static final java.util.Set<String> CLIENT_METHODS = java.util.Set.of("runTick", "tick");
     private static final List<ClientHook> CLIENT_HOOKS = new ArrayList<>();
     private static final Map<String, List<Method>> CLIENT_RESOLVED = new ConcurrentHashMap<>();
@@ -136,16 +189,23 @@ public final class HorizonHooks {
     private static void readClient(String mod, byte[] bytes) {
         ClassNode node = new ClassNode();
         new ClassReader(bytes).accept(node, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
-        boolean minecraft = false;
+        boolean minecraft = false, hud = false;
         for (AnnotationNode a : annotations(node.invisibleAnnotations, node.visibleAnnotations)) {
             if (!"Lorg/spongepowered/asm/mixin/Mixin;".equals(a.desc)) continue;
             if (get(a, "value") instanceof List<?> list) {
-                for (Object t : list) minecraft |= CLIENT_OWNER.equals(((org.objectweb.asm.Type) t).getInternalName());
+                for (Object t : list) {
+                    minecraft |= CLIENT_OWNER.equals(((org.objectweb.asm.Type) t).getInternalName());
+                    hud |= HUD_OWNER.equals(((org.objectweb.asm.Type) t).getInternalName());
+                }
             }
             if (get(a, "targets") instanceof List<?> list) {
-                for (Object t : list) minecraft |= CLIENT_OWNER.equals(((String) t).replace('.', '/'));
+                for (Object t : list) {
+                    minecraft |= CLIENT_OWNER.equals(((String) t).replace('.', '/'));
+                    hud |= HUD_OWNER.equals(((String) t).replace('.', '/'));
+                }
             }
         }
+        if (hud) readHud(mod, node);
         if (!minecraft) return;
         String mixin = node.name.replace('/', '.');
         for (MethodNode m : node.methods) {

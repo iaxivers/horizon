@@ -33,6 +33,18 @@ pub(super) struct JavaBinds {
 /// guide book): no menu's window is open under it. Its frames say this window, and
 /// `{"window": -1, "close": true}` closes it.
 pub(super) const CLIENT_WINDOW: i32 = -1;
+/// What Java mods draw on the HUD (Jade's tooltip, AppleSkin's food overlay), server to
+/// client: a frame's operations (`[...]`), sent when they change.
+pub(super) const HUD_CHANNEL: &str = "horizon:java_hud";
+/// The HUD's "window" for [`INPUT`]: its GUI size, which the mods' HUD lays out in.
+pub(super) const HUD_WINDOW: i32 = -2;
+
+/// What Java mods last drew on the window's HUD.
+#[derive(Default)]
+pub(super) struct JavaHud {
+    ops: Vec<Value>,
+    sent_size: Option<(i32, i32)>,
+}
 
 /// The mod screen a window shows, as its last frame drew it.
 #[derive(Default)]
@@ -169,6 +181,37 @@ impl Game<'_> {
         }
     }
 
+    /// A frame of the mods' HUD ([`HUD_CHANNEL`]).
+    pub(super) fn remote_java_hud(&mut self, data: &[u8]) {
+        let Ok(Value::Array(ops)) = serde_json::from_slice::<Value>(data) else {
+            return;
+        };
+        self.java_hud.get_or_insert_with(Default::default).ops = ops;
+    }
+
+    /// Draws what Java mods draw on the HUD, over Horizon's own HUD; tells the server the HUD's
+    /// size when it changes.
+    pub(super) fn draw_java_hud(&mut self, batch: &mut HudBatch) {
+        let Some(hud) = self.java_hud.as_mut() else {
+            return;
+        };
+        let size = (batch.width as i32, batch.height as i32);
+        if hud.sent_size != Some(size) {
+            hud.sent_size = Some(size);
+            self.send_java_screen_input(
+                HUD_WINDOW,
+                json!({"kind": "size", "width": size.0, "height": size.1}),
+            );
+        }
+        let ops = std::mem::take(&mut self.java_hud.as_mut().expect("checked").ops);
+        if !ops.is_empty() {
+            self.draw_java_ops(batch, &ops);
+        }
+        if let Some(hud) = self.java_hud.as_mut() {
+            hud.ops = ops;
+        }
+    }
+
     /// Back to the world from a client-only screen.
     fn leave_java_screen(&mut self) {
         self.screen = Screen::Playing;
@@ -231,9 +274,28 @@ impl Game<'_> {
             .as_ref()
             .map(|s| s.ops.clone())
             .unwrap_or_default();
+        let (tooltip, lines_tooltip) = self.draw_java_ops(batch, &ops);
+        if let Some(stack) = tooltip {
+            let (x, y) = self.cursor;
+            self.draw_stack_tooltip(batch, &stack, x, y);
+        }
+        if let Some(lines) = lines_tooltip {
+            horizon_client::ui::tooltip(batch, &self.gui.atlas, &lines, self.cursor);
+        }
+        true
+    }
+
+    /// Draws a frame's operations (a mod screen's, or the HUD's): the item and text tooltips
+    /// they ask for, for the caller to draw over them.
+    #[allow(clippy::type_complexity)]
+    fn draw_java_ops(
+        &mut self,
+        batch: &mut HudBatch,
+        ops: &[Value],
+    ) -> (Option<ItemStack>, Option<Vec<horizon_client::text::Text>>) {
         let mut tooltip = None;
         let mut lines_tooltip = None;
-        for o in &ops {
+        for o in ops {
             // The GUI pose (Matrix3x2f: m00 m01 m10 m11 m20 m21). A translation moves the op;
             // anything more (a scale: Tom's Storage's small counts) transforms what it drew.
             let pose: [f32; 6] = match o.get("pose").and_then(Value::as_array) {
@@ -374,14 +436,7 @@ impl Game<'_> {
                 }
             }
         }
-        if let Some(stack) = tooltip {
-            let (x, y) = self.cursor;
-            self.draw_stack_tooltip(batch, &stack, x, y);
-        }
-        if let Some(lines) = lines_tooltip {
-            horizon_client::ui::tooltip(batch, &self.gui.atlas, &lines, self.cursor);
-        }
-        true
+        (tooltip, lines_tooltip)
     }
 
     /// A component as the screen shows it: its translations resolved in the game's language.
@@ -471,6 +526,18 @@ impl Game<'_> {
     }
 
     // ---- The server -----------------------------------------------------------------------
+
+    /// What Java mods draw on a player's HUD, from Java: to their game.
+    #[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+    pub(super) fn send_java_hud_frame(host: &mut LanHost, conn: u32, frame: &str) {
+        host.hub.send_to(
+            conn,
+            &C::CustomPayload(CustomPayload {
+                channel: HUD_CHANNEL.into(),
+                data: frame.as_bytes().to_vec(),
+            }),
+        );
+    }
 
     /// A player's client-only screen closed, from Java: their game leaves it.
     #[cfg_attr(not(feature = "java-mods"), allow(dead_code))]

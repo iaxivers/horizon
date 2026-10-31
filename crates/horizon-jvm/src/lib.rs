@@ -419,6 +419,11 @@ fn boot(env: &mut JNIEnv, jars: &[PathBuf]) -> jni::errors::Result<String> {
                 fn_ptr: native_screen_frame as *mut c_void,
             },
             NativeMethod {
+                name: "hudFrame".into(),
+                sig: "(Ljava/lang/String;Ljava/lang/String;)V".into(),
+                fn_ptr: native_hud_frame as *mut c_void,
+            },
+            NativeMethod {
                 name: "clientScreen".into(),
                 sig: "(Ljava/lang/String;Z)V".into(),
                 fn_ptr: native_client_screen as *mut c_void,
@@ -805,6 +810,24 @@ extern "system" fn native_screen_frame(
             return;
         };
         events::push(events::Action::ScreenFrame {
+            uuid: uuid.into(),
+            frame: frame.into(),
+        });
+    }));
+}
+
+/// `Natives.hudFrame(String uuid, String frame)`.
+extern "system" fn native_hud_frame(
+    mut env: JNIEnv,
+    _class: JClass,
+    uuid: JString,
+    frame: JString,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (Ok(uuid), Ok(frame)) = (env.get_string(&uuid), env.get_string(&frame)) else {
+            return;
+        };
+        events::push(events::Action::HudFrame {
             uuid: uuid.into(),
             frame: frame.into(),
         });

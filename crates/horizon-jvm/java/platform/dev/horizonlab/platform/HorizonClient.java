@@ -58,7 +58,19 @@ public final class HorizonClient {
         set(Minecraft.class, mc, "atlasManager", atlases());
         // The in-game GUI's object (screens reach its HUD), made without its constructor.
         var gui = (net.minecraft.client.gui.Gui) Natives.allocate(net.minecraft.client.gui.Gui.class);
-        set(net.minecraft.client.gui.Gui.class, gui, "hud", Natives.allocate(net.minecraft.client.gui.Hud.class));
+        var hud = (net.minecraft.client.gui.Hud) Natives.allocate(net.minecraft.client.gui.Hud.class);
+        // What the HUD's parts mods draw over read (HorizonClient.hud): the client, a random
+        // (the hearts' jitter).
+        set(net.minecraft.client.gui.Hud.class, hud, "minecraft", mc);
+        set(net.minecraft.client.gui.Hud.class, hud, "random", net.minecraft.util.RandomSource.create());
+        // Its overlays HUD mods ask about (Jade hides under an open tab list or a boss bar):
+        // none showing.
+        set(net.minecraft.client.gui.Hud.class, hud, "tabList",
+                Natives.allocate(net.minecraft.client.gui.components.PlayerTabOverlay.class));
+        var bosses = Natives.allocate(net.minecraft.client.gui.components.BossHealthOverlay.class);
+        set(net.minecraft.client.gui.components.BossHealthOverlay.class, bosses, "events", new java.util.LinkedHashMap<>());
+        set(net.minecraft.client.gui.Hud.class, hud, "bossOverlay", bosses);
+        set(net.minecraft.client.gui.Gui.class, gui, "hud", hud);
         set(Minecraft.class, mc, "gui", gui);
         // Screens click through the game mode (handleContainerInput): GameModeClientMixin.
         set(Minecraft.class, mc, "gameMode", Natives.allocate(net.minecraft.client.multiplayer.MultiPlayerGameMode.class));
@@ -68,6 +80,27 @@ public final class HorizonClient {
         set(Minecraft.class, mc, "soundManager", Natives.allocate(net.minecraft.client.sounds.SoundManager.class));
         // A window of Horizon's GUI size (mods' screens lay out by getWindow()'s scaled size and
         // scale: Xaero's settings), with no SDL window under it.
+        // The debug screen's entries (the crosshair's part asks whether the axes show): the
+        // game folder's, none shown.
+        try {
+            set(Minecraft.class, mc, "debugEntries", new net.minecraft.client.gui.components.debug.DebugScreenEntryList(
+                    mc.gameDirectory, net.minecraft.util.datafix.DataFixers.getDataFixer()));
+        } catch (Throwable t) {
+            Natives.log("Horizon's client: no debug screen entries: " + t);
+        }
+        // A game renderer that is only its main camera (CameraMixin: the player's eyes), which
+        // HUD mods aim with (Jade).
+        var renderer = Natives.allocate(net.minecraft.client.renderer.GameRenderer.class);
+        set(net.minecraft.client.renderer.GameRenderer.class, renderer, "mainCamera",
+                Natives.allocate(net.minecraft.client.Camera.class));
+        // Its render state (mods read the light map's and the options' state from it).
+        try {
+            set(net.minecraft.client.renderer.GameRenderer.class, renderer, "gameRenderState",
+                    new net.minecraft.client.renderer.state.GameRenderState());
+        } catch (Throwable t) {
+            Natives.log("Horizon's client: no game render state: " + t);
+        }
+        set(Minecraft.class, mc, "gameRenderer", renderer);
         set(Minecraft.class, mc, "window", Natives.allocate(com.mojang.blaze3d.platform.Window.class));
         windowSize();
         registerCommands();
@@ -351,19 +384,37 @@ public final class HorizonClient {
             local = (net.minecraft.client.player.LocalPlayer) Natives.allocate(net.minecraft.client.player.LocalPlayer.class);
             set(net.minecraft.client.player.LocalPlayer.class, local, "recipeBook", recipeBook(player));
             set(net.minecraft.client.player.LocalPlayer.class, local, "minecraft", minecraft);
+            // Its keys (isShiftKeyDown: a collision context's descending): none pressed.
+            set(net.minecraft.client.player.LocalPlayer.class, local, "input", new net.minecraft.client.player.ClientInput());
             set(net.minecraft.world.entity.player.Player.class, local, "inventory", player.getInventory());
             set(net.minecraft.world.entity.player.Player.class, local, "inventoryMenu", player.inventoryMenu);
             // Its level, which tooltips ask (enabled features): the server player's.
             set(net.minecraft.world.entity.Entity.class, local, "level", player.level());
             // Its synced data (health: isAlive, which a screen's tick asks): the server player's.
             set(net.minecraft.world.entity.Entity.class, local, "entityData", player.getEntityData());
+            // What it is in (water over its eyes: the HUD's air bubbles): the server player's.
+            set(net.minecraft.world.entity.Entity.class, local, "fluidInteraction",
+                    field(net.minecraft.world.entity.Entity.class, player, "fluidInteraction"));
             // Its worn and off-hand items (getItemInHand(OFF_HAND), an item's client use): the
             // server player's.
             set(net.minecraft.world.entity.LivingEntity.class, local, "equipment",
                     field(net.minecraft.world.entity.LivingEntity.class, player, "equipment"));
+            // Its attributes (max health, armour: the HUD's hearts) and effects: the server player's.
+            for (String f : new String[] {"attributes", "activeEffects"}) {
+                set(net.minecraft.world.entity.LivingEntity.class, local, f, field(net.minecraft.world.entity.LivingEntity.class, player, f));
+            }
             PLAYERS.put(player.getUUID(), local);
         }
         SERVER_PLAYERS.put(local, player);
+        // Its game mode as the client's game mode has it (Farmer's Delight's comfort overlay
+        // reads gameMode.getPlayerMode()): the server player's. (Fields: setLocalMode would
+        // also tell the player's abilities.)
+        if (minecraft.gameMode != null) {
+            set(net.minecraft.client.multiplayer.MultiPlayerGameMode.class, minecraft.gameMode, "localPlayerMode", player.gameMode());
+            set(net.minecraft.client.multiplayer.MultiPlayerGameMode.class, minecraft.gameMode, "previousLocalPlayerMode", player.gameMode());
+        }
+        // Its food (what HUD mods read: AppleSkin): the server player's.
+        set(net.minecraft.world.entity.player.Player.class, local, "foodData", player.getFoodData());
         // The client's menu: its own copy where its screen has one, else the server's.
         var client = CLIENT_MENUS.get(player.getUUID());
         local.containerMenu = client != null && player.containerMenu != null
@@ -688,6 +739,14 @@ public final class HorizonClient {
         if (minecraft == null || minecraft.font == null) return;
         Thread.currentThread().setContextClassLoader(HorizonClient.class.getClassLoader());
         tasks();
+        // ClientLifecycleEvents.CLIENT_STARTED: Minecraft's first frame, before any world (Jade
+        // finishes registering its tooltip providers there).
+        if (!started) {
+            started = true;
+            reloadClientResources();
+            HorizonServer.fireEach("ClientLifecycleEvents.CLIENT_STARTED",
+                    net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents.CLIENT_STARTED, l -> l.onClientStarted(minecraft));
+        }
         // Each player's game is a client of its own: its tick runs as that player
         // (Minecraft.player, the open screen), with its own keys (bindings). With no player, a
         // client at its title screen.
@@ -696,13 +755,72 @@ public final class HorizonClient {
             tickOnce();
             return;
         }
+        // In a world: each player's client in turn, standing in their level and looking at what
+        // they look at (the one client a vanilla game has), ticked, then its HUD drawn.
         for (var player : players) {
             try {
-                as(player, () -> withKeys(player.getUUID(), HorizonClient::tickOnce));
+                inWorld(player, () -> withKeys(player.getUUID(), () -> {
+                    tickOnce();
+                    sendHud(player);
+                }));
             } catch (Throwable t) {
-                Natives.log("Horizon's client: a tick as " + player.getScoreboardName() + " failed: " + t);
+                Throwable root = t;
+                while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+                if (HUD_FAILURES.merge("tick", 1, Integer::sum) <= 3) {
+                    Natives.log("Horizon's client: a player's client tick failed: " + root);
+                    for (StackTraceElement frame : root.getStackTrace()) Natives.log("    at " + frame);
+                }
             }
         }
+    }
+
+    private static boolean started;
+
+    /**
+     * The client's resource reload (Minecraft's constructor starts it, before CLIENT_STARTED),
+     * for the mods' own reload listeners only (Fabric's ResourceLoader, CLIENT_RESOURCES: Jade's
+     * themes): over vanilla's jar and every mod's assets, run here and now, one listener at a
+     * time. Vanilla's own listeners (textures, models, sounds) have nothing to load into.
+     */
+    @SuppressWarnings("unchecked")
+    private static void reloadClientResources() {
+        var type = net.minecraft.server.packs.PackType.CLIENT_RESOURCES;
+        java.util.List<net.minecraft.server.packs.PackResources> packs = new java.util.ArrayList<>();
+        try {
+            Class<?> source = net.minecraft.client.resources.ClientPackSource.class;
+            var metadata = (net.minecraft.server.packs.resources.ResourceMetadata) field(source, null, "BUILT_IN_METADATA");
+            var info = (net.minecraft.server.packs.PackLocationInfo) field(source, null, "VANILLA_PACK_INFO");
+            packs.add(new net.minecraft.server.packs.VanillaPackResourcesBuilder().setMetadata(metadata)
+                    .exposeNamespace("minecraft", "realms").applyDevelopmentConfig().pushJarResources().build(info).fullResources());
+        } catch (Throwable t) {
+            Natives.log("Horizon's client: no vanilla resources for the mods' reload: " + t);
+        }
+        java.util.Collection<net.minecraft.server.packs.resources.PreparableReloadListener> listeners;
+        try {
+            packs.addAll(net.fabricmc.fabric.impl.resource.pack.ModPackResourcesUtil.getModResourcePacks(
+                    net.fabricmc.loader.api.FabricLoader.getInstance(), type, null));
+            var loader = net.fabricmc.fabric.impl.resource.ResourceLoaderImpl.get(type);
+            listeners = ((java.util.Map<Object, net.minecraft.server.packs.resources.PreparableReloadListener>)
+                    field(net.fabricmc.fabric.impl.resource.ResourceLoaderImpl.class, loader, "addedReloaders")).values();
+        } catch (Throwable t) {
+            Natives.log("Horizon's client: the mods' resources could not be loaded: " + t);
+            return;
+        }
+        var manager = new net.minecraft.server.packs.resources.MultiPackResourceManager(type, packs);
+        java.util.concurrent.Executor here = Runnable::run;
+        int ran = 0;
+        for (var listener : new java.util.ArrayList<>(listeners)) {
+            try {
+                net.minecraft.server.packs.resources.SimpleReloadInstance.of(manager, java.util.List.of(listener), here, here,
+                        java.util.concurrent.CompletableFuture.completedFuture(net.minecraft.util.Unit.INSTANCE)).done().join();
+                ran++;
+            } catch (Throwable t) {
+                Throwable root = t;
+                while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+                Natives.log("Horizon's client: a mod's resource reload (" + listener.getClass().getName() + ") failed: " + root);
+            }
+        }
+        Natives.log("Horizon's client: " + ran + " of the mods' resource reload listeners ran over " + packs.size() + " packs");
     }
 
     private static void tickOnce() {
@@ -800,6 +918,285 @@ public final class HorizonClient {
                 }
                 mapping.setDown(false);
                 clickCount.setInt(mapping, 0);
+            }
+        }
+    }
+
+    // ---- The client in a world: its level, what it looks at, its HUD --------------------------
+
+    /** Each dimension's client level: the mirror's blocks, seen from the client side. */
+    private static final java.util.Map<net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level>,
+            net.minecraft.client.multiplayer.ClientLevel> CLIENT_LEVELS = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * A client level for a mirrored level (Minecraft.level, which HUD mods read: Jade's block
+     * under the crosshair): made without its constructor, as the mirror's levels are, so its
+     * blocks, fluids, light and block entities are Horizon's (LevelMixin), isClientSide true.
+     * No chunks, entities or renderer of its own.
+     */
+    static net.minecraft.client.multiplayer.ClientLevel clientLevel(net.minecraft.world.level.Level server) {
+        return CLIENT_LEVELS.computeIfAbsent(server.dimension(), key -> {
+            var level = HorizonServer.mirror(net.minecraft.client.multiplayer.ClientLevel.class);
+            var access = (dev.horizonlab.platform.mixin.LevelAccess) level;
+            access.horizon$setDimension(key);
+            access.horizon$setClientSide(true);
+            access.horizon$setRandom(net.minecraft.util.RandomSource.create());
+            access.horizon$setSoundSeedGenerator(net.minecraft.util.RandomSource.create());
+            access.horizon$setBlockEntityTickers(new java.util.ArrayList<>());
+            access.horizon$setPendingBlockEntityTickers(new java.util.ArrayList<>());
+            access.horizon$setRegistryAccess(server.registryAccess());
+            access.horizon$setDimensionType(server.dimensionTypeRegistration());
+            access.horizon$setDamageSources(server.damageSources());
+            // Its client data (ClientboundLoginPacket's: hardcore, difficulty, flat), from the
+            // server's; Horizon's world time is in the server's.
+            var serverData = server.getLevelData();
+            var clientData = new net.minecraft.client.multiplayer.ClientLevel.ClientLevelData(
+                    server.getDifficulty(), serverData.isHardcore(), false);
+            clientData.setGameTime(server.getGameTime());
+            access.horizon$setLevelData(clientData);
+            Class<?> owner = net.minecraft.client.multiplayer.ClientLevel.class;
+            try {
+                set(owner, level, "minecraft", minecraft);
+                set(owner, level, "clientLevelData", clientData);
+                set(owner, level, "players", new java.util.ArrayList<>());
+                set(owner, level, "dragonParts", new java.util.ArrayList<>());
+                set(owner, level, "worldBorder", new net.minecraft.world.level.border.WorldBorder());
+                set(owner, level, "environmentAttributes", server.environmentAttributes());
+                set(owner, level, "seaLevel", server.getSeaLevel());
+            } catch (ReflectiveOperationException e) {
+                Natives.log("Horizon's client: a client level is missing a part: " + e);
+            }
+            HorizonServer.emptyCollections(level, owner);
+            return level;
+        });
+    }
+
+    /** A client level's entities (ClientLevelMixin): its mirrored level's. */
+    public static net.minecraft.world.level.entity.LevelEntityGetter<net.minecraft.world.entity.Entity> entities(
+            net.minecraft.client.multiplayer.ClientLevel level) {
+        var all = HorizonServer.entities(HorizonServer.level(level.dimension().identifier().toString()));
+        // Not the client's own player's server copy: the client has its own player (LocalPlayer).
+        var self = serverPlayer(minecraft.player);
+        java.util.function.Predicate<net.minecraft.world.entity.Entity> other = e -> e != self;
+        return new net.minecraft.world.level.entity.LevelEntityGetter<>() {
+            @Override
+            public net.minecraft.world.entity.Entity get(int id) {
+                var e = all.get(id);
+                return other.test(e) ? e : null;
+            }
+
+            @Override
+            public net.minecraft.world.entity.Entity get(java.util.UUID id) {
+                var e = all.get(id);
+                return other.test(e) ? e : null;
+            }
+
+            @Override
+            public Iterable<net.minecraft.world.entity.Entity> getAll() {
+                java.util.List<net.minecraft.world.entity.Entity> out = new java.util.ArrayList<>();
+                for (var e : all.getAll()) if (other.test(e)) out.add(e);
+                return out;
+            }
+
+            @Override
+            public <U extends net.minecraft.world.entity.Entity> void get(
+                    net.minecraft.world.level.entity.EntityTypeTest<net.minecraft.world.entity.Entity, U> test,
+                    net.minecraft.util.AbortableIterationConsumer<U> consumer) {
+                all.get(test, e -> other.test(e) ? consumer.accept(e) : net.minecraft.util.Continuation.CONTINUE);
+            }
+
+            @Override
+            public void get(net.minecraft.world.phys.AABB box, java.util.function.Consumer<net.minecraft.world.entity.Entity> consumer) {
+                all.get(box, e -> {
+                    if (other.test(e)) consumer.accept(e);
+                });
+            }
+
+            @Override
+            public <U extends net.minecraft.world.entity.Entity> void get(
+                    net.minecraft.world.level.entity.EntityTypeTest<net.minecraft.world.entity.Entity, U> test,
+                    net.minecraft.world.phys.AABB box, net.minecraft.util.AbortableIterationConsumer<U> consumer) {
+                all.get(test, box, e -> other.test(e) ? consumer.accept(e) : net.minecraft.util.Continuation.CONTINUE);
+            }
+        };
+    }
+
+    /**
+     * Runs {@code run} as the player's client in a world: as(), and Minecraft.level their
+     * dimension's client level, their client player standing in it, Minecraft.hitResult what
+     * they look at (Minecraft.pick: a block, or a mod's entity nearer).
+     */
+    static void inWorld(net.minecraft.server.level.ServerPlayer player, ThrowingRunnable run) throws Throwable {
+        as(player, () -> {
+            var local = minecraft.player;
+            var levelBefore = minecraft.level;
+            var localLevel = local.level();
+            var hitBefore = minecraft.hitResult;
+            var pickedBefore = minecraft.crosshairPickEntity;
+            var level = clientLevel(player.level());
+            minecraft.level = level;
+            set(net.minecraft.world.entity.Entity.class, local, "level", level);
+            minecraft.hitResult = pick(player);
+            minecraft.crosshairPickEntity = minecraft.hitResult instanceof net.minecraft.world.phys.EntityHitResult e ? e.getEntity() : null;
+            try {
+                run.run();
+            } finally {
+                minecraft.level = levelBefore;
+                set(net.minecraft.world.entity.Entity.class, local, "level", localLevel);
+                minecraft.hitResult = hitBefore;
+                minecraft.crosshairPickEntity = pickedBefore;
+            }
+        });
+    }
+
+    /** What the player looks at (GameRenderer.pick): their block, or a nearer entity of the mirror. */
+    static net.minecraft.world.phys.HitResult pick(net.minecraft.server.level.ServerPlayer player) {
+        double blockRange = player.blockInteractionRange(), entityRange = player.entityInteractionRange();
+        var block = player.pick(blockRange, 1f, false);
+        var eye = player.getEyePosition();
+        var view = player.getViewVector(1f);
+        double range = Math.max(blockRange, entityRange);
+        double reach = block.getType() != net.minecraft.world.phys.HitResult.Type.MISS
+                ? block.getLocation().distanceToSqr(eye) : range * range;
+        var box = player.getBoundingBox().expandTowards(view.scale(range)).inflate(1);
+        var entity = net.minecraft.world.entity.projectile.ProjectileUtil.getEntityHitResult(player, eye, eye.add(view.scale(range)), box,
+                e -> e != player && !e.isSpectator() && e.isPickable(), Math.min(reach, entityRange * entityRange));
+        return entity != null ? entity : block;
+    }
+
+    /** HORIZON_JAVA_DEBUG=hud: each HUD frame's size is logged. */
+    private static final boolean DEBUG_HUD = String.valueOf(System.getenv("HORIZON_JAVA_DEBUG")).contains("hud");
+    private static final java.util.Map<String, Integer> HUD_FAILURES = new java.util.concurrent.ConcurrentHashMap<>();
+    /** The last HUD sent to each player. */
+    private static final java.util.Map<java.util.UUID, String> HUD_SENT = new java.util.concurrent.ConcurrentHashMap<>();
+    /** Hud's parts under extractPlayerHealth (the hearts, food, armour, air: AppleSkin's). */
+    private static final java.util.Set<String> HEALTH_PARTS = java.util.Set.of(
+            "extractPlayerHealth", "extractHearts", "extractHeart", "extractFood", "extractArmor", "extractAirBubbles");
+
+    /** The player's HUD as their client's mods draw it, to them when it changed. */
+    private static void sendHud(net.minecraft.server.level.ServerPlayer player) {
+        String frame = hud(player).toString();
+        if (frame.equals(HUD_SENT.get(player.getUUID()))) return;
+        HUD_SENT.put(player.getUUID(), frame);
+        Natives.hudFrame(player.getUUID().toString(), frame);
+    }
+
+    /**
+     * What mods draw on the HUD (Gui's HUD extraction, with vanilla's own parts left out: they are
+     * Horizon's): Fabric's HUD elements of mods (Jade's tooltip), then the vanilla parts mods
+     * inject into, run with only the mods' drawing kept (AppleSkin's food overlay over the food
+     * bar), then mods' handlers at the head and end of the whole HUD.
+     */
+    static com.google.gson.JsonArray hud(net.minecraft.server.level.ServerPlayer player) {
+        HorizonGraphics graphics = new HorizonGraphics(width, height);
+        graphics.modsOnly = true;
+        var delta = net.minecraft.client.DeltaTracker.ONE;
+        fabricHudElements(graphics, delta);
+        Object hud;
+        try {
+            hud = field(net.minecraft.client.gui.Gui.class, minecraft.gui, "hud");
+        } catch (ReflectiveOperationException e) {
+            return graphics.ops();
+        }
+        var hooked = HorizonHooks.hudMethods();
+        // Hearts and food show where the player can be hurt (Hud.extractHotbarAndDecorations).
+        boolean hurtable = player.gameMode().isSurvival();
+        if (hurtable && !java.util.Collections.disjoint(hooked, HEALTH_PARTS)) {
+            hudPart("extractPlayerHealth", () -> call(hud, "extractPlayerHealth", graphics));
+        }
+        for (String method : hooked) {
+            if (HEALTH_PARTS.contains(method) || method.equals("extractRenderState")) continue;
+            hudPart(method, () -> {
+                for (var m : net.minecraft.client.gui.Hud.class.getDeclaredMethods()) {
+                    if (!m.getName().equals(method) || m.isSynthetic()) continue;
+                    Class<?>[] params = m.getParameterTypes();
+                    if (params.length == 1 && params[0] == net.minecraft.client.gui.GuiGraphicsExtractor.class) {
+                        m.setAccessible(true);
+                        m.invoke(hud, graphics);
+                    } else if (params.length == 2 && params[0] == net.minecraft.client.gui.GuiGraphicsExtractor.class
+                            && params[1] == net.minecraft.client.DeltaTracker.class) {
+                        m.setAccessible(true);
+                        m.invoke(hud, graphics, delta);
+                    }
+                }
+            });
+        }
+        if (hooked.contains("extractRenderState")) {
+            hudPart("extractRenderState", () -> HorizonHooks.fireHud(hud, "extractRenderState", graphics, delta));
+        }
+        if (DEBUG_HUD) {
+            Natives.log("hud: " + graphics.ops().size() + " ops kept, " + graphics.dropped + " vanilla ones left out; parts "
+                    + hooked + "; looking at " + minecraft.hitResult);
+        }
+        return graphics.ops();
+    }
+
+    private static void call(Object target, String name, Object... args) throws Throwable {
+        for (var m : target.getClass().getDeclaredMethods()) {
+            if (m.getName().equals(name) && m.getParameterCount() == args.length) {
+                m.setAccessible(true);
+                m.invoke(target, args);
+                return;
+            }
+        }
+    }
+
+    /** One part of the HUD; one failing (each frame) is told a few times and the rest still draw. */
+    private static void hudPart(String part, ThrowingRunnable run) {
+        try {
+            run.run();
+        } catch (Throwable t) {
+            Throwable root = t;
+            while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+            if (HUD_FAILURES.merge(part, 1, Integer::sum) <= 3) {
+                Natives.log("Horizon's client: the HUD's " + part + " failed: " + root);
+                StackTraceElement[] frames = root.getStackTrace();
+                for (int f = 0; f < Math.min(frames.length, 10); f++) Natives.log("    at " + frames[f]);
+            }
+        }
+    }
+
+    /**
+     * Fabric's HUD elements that mods added (HudElementRegistry: addFirst, attachElement*,
+     * addLast, replaceElement), in the HUD's order; vanilla's own elements are left out.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static void fabricHudElements(HorizonGraphics graphics, net.minecraft.client.DeltaTracker delta) {
+        java.util.List<Object> roots = new java.util.ArrayList<>();
+        Class<?> impl;
+        try {
+            impl = Class.forName("net.fabricmc.fabric.impl.client.rendering.hud.HudElementRegistryImpl");
+            Object first = field(impl, null, "FIRST");
+            var vanilla = (java.util.List<Object>) field(impl, null, "VANILLA_ELEMENT_IDS");
+            var byId = (java.util.Map<Object, Object>) field(impl, null, "ROOT_ELEMENTS");
+            Object last = field(impl, null, "LAST");
+            roots.add(first);
+            for (Object id : vanilla) if (byId.get(id) != null) roots.add(byId.get(id));
+            for (Object root : byId.values()) if (!roots.contains(root)) roots.add(root);
+            if (!roots.contains(last)) roots.add(last);
+        } catch (Throwable t) {
+            if (HUD_FAILURES.merge("fabric", 1, Integer::sum) == 1) Natives.log("Horizon's client: no Fabric HUD elements: " + t);
+            return;
+        }
+        net.fabricmc.fabric.api.client.rendering.v1.hud.HudElement none = (g, d) -> {};
+        for (Object root : roots) {
+            if (root == null) continue;
+            java.util.List<Object> layers;
+            try {
+                var accessor = root.getClass().getDeclaredMethod("layers");
+                accessor.setAccessible(true);
+                layers = (java.util.List<Object>) accessor.invoke(root);
+            } catch (ReflectiveOperationException e) {
+                continue;
+            }
+            for (Object o : new java.util.ArrayList<>(layers)) {
+                var layer = (net.fabricmc.fabric.impl.client.rendering.hud.HudLayer) o;
+                if (layer.isRemoved()) continue;
+                var element = layer.element(none);
+                if (element == none) continue;
+                int before = graphics.ops().size();
+                hudPart(String.valueOf(layer.id()), () -> element.extractRenderState(graphics, delta));
+                if (DEBUG_HUD) Natives.log("hud element " + layer.id() + ": " + (graphics.ops().size() - before) + " ops");
             }
         }
     }
@@ -945,6 +1342,15 @@ public final class HorizonClient {
         String kind = in.get("kind").getAsString();
         if (kind.equals("bind")) {
             bind(id, in.get("key").getAsInt(), in.get("down").getAsBoolean());
+            return;
+        }
+        // The window's HUD size (window -2: no screen), which the HUD lays out in.
+        if (in.has("window") && in.get("window").getAsInt() == -2) {
+            if ("size".equals(in.get("kind").getAsString())) {
+                width = in.get("width").getAsInt();
+                height = in.get("height").getAsInt();
+                windowSize();
+            }
             return;
         }
         var screen = SCREENS.get(id);
