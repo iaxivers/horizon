@@ -1797,6 +1797,8 @@ struct Game<'a> {
     java_binds: java_screen::JavaBinds,
     /// What Java mods last drew on the HUD (game/java_screen.rs).
     java_hud: Option<java_screen::JavaHud>,
+    /// Java mods' dynamic textures in the atlas (game/java_screen.rs).
+    java_images: java_screen::JavaImages,
     /// Java mods' entities the server last sent (game/java_entities.rs).
     java_entities: java_entities::JavaEntities,
     /// The horse inventory (game/mount_menu.rs).
@@ -14170,6 +14172,7 @@ impl<'a> Game<'a> {
             java_screen: None,
             java_binds: Default::default(),
             java_hud: None,
+            java_images: Default::default(),
             java_entities: Default::default(),
             mount_menu: Default::default(),
             hook: None,

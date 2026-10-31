@@ -40,42 +40,75 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
 
         @Override
         public void addGuiElement(net.minecraft.client.renderer.state.gui.GuiElementRenderState element) {
+            capture(element);
+        }
+
+        /** Vanilla's blits of atlas sprites (blitSprite with a TextureAtlasSprite, nine-slices). */
+        @Override
+        public void addBlitToCurrentLayer(net.minecraft.client.renderer.state.gui.BlitRenderState element) {
+            capture(element);
+        }
+
+        private void capture(net.minecraft.client.renderer.state.gui.GuiElementRenderState element) {
             if (owner == null) return;
-            java.util.List<float[]> vertices = new java.util.ArrayList<>();
+            Vertices vertices = new Vertices(new java.util.ArrayList<>(), new java.util.ArrayList<>());
             try {
-                element.buildVertices(new Vertices(vertices));
+                element.buildVertices(vertices);
             } catch (RuntimeException e) {
                 return;
             }
             var texture = element.textureSetup();
             boolean textured = texture != null && texture.texure0() != null;
-            for (int i = 0; i + 3 < vertices.size(); i += 4) {
+            for (int i = 0; i + 3 < vertices.points().size(); i += 4) {
                 float x0 = Float.MAX_VALUE, y0 = Float.MAX_VALUE, x1 = -Float.MAX_VALUE, y1 = -Float.MAX_VALUE;
+                float u0 = Float.MAX_VALUE, v0 = Float.MAX_VALUE, u1 = -Float.MAX_VALUE, v1 = -Float.MAX_VALUE;
                 int top = 0, bottom = 0;
                 for (int k = 0; k < 4; k++) {
-                    float[] v = vertices.get(i + k);
+                    float[] v = vertices.points().get(i + k);
+                    int color = vertices.colors().get(i + k);
                     x0 = Math.min(x0, v[0]);
                     x1 = Math.max(x1, v[0]);
+                    u0 = Math.min(u0, v[2]);
+                    u1 = Math.max(u1, v[2]);
+                    v0 = Math.min(v0, v[3]);
+                    v1 = Math.max(v1, v[3]);
                     if (v[1] < y0) {
                         y0 = v[1];
-                        top = (int) v[2];
+                        top = color;
                     }
                     if (v[1] >= y1) {
                         y1 = v[1];
-                        bottom = (int) v[2];
+                        bottom = color;
                     }
                 }
-                if (textured) continue;
-                owner.quad(x0, y0, x1, y1, top, bottom);
+                if (textured && texture.texure0() instanceof HorizonTextures.View view
+                        && !view.name().contains("textures/atlas/")) {
+                    // A named texture's quad (TextureManager.getTexture, a dynamic texture): its
+                    // UVs are the texture's.
+                    owner.spriteQuad(view.name(), x0, y0, x1, y1, u0, u1, v0, v1, top);
+                    continue;
+                }
+                // A headless atlas sprite's quad (its UVs in the sprite's own square: HorizonSprites).
+                // (Within one sprite's square: a quad spanning several is no sprite of ours.)
+                var sprite = u1 > u0 && Math.floor(u0 + 1e-4) == Math.floor(u1 - 1e-4)
+                        ? HorizonSprites.at(u0 + (u1 - u0) / 2) : null;
+                if (sprite != null) {
+                    float k = (float) Math.floor(u0 + (u1 - u0) / 2);
+                    owner.spriteQuad(sprite.texture(), x0, y0, x1, y1, u0 - k, u1 - k, v0, v1, top);
+                } else if (!textured) {
+                    owner.quad(x0, y0, x1, y1, top, bottom);
+                }
             }
         }
     }
 
-    /** Collects a GUI element's vertices: x, y (posed) and colour. */
-    private record Vertices(java.util.List<float[]> out) implements com.mojang.blaze3d.vertex.VertexConsumer {
+    /** Collects a GUI element's vertices: x, y (posed), u, v, and their colours. */
+    private record Vertices(java.util.List<float[]> points, java.util.List<Integer> colors)
+            implements com.mojang.blaze3d.vertex.VertexConsumer {
         @Override
         public com.mojang.blaze3d.vertex.VertexConsumer addVertex(float x, float y, float z) {
-            out.add(new float[] {x, y, -1});
+            points.add(new float[] {x, y, 0, 0});
+            colors.add(-1);
             return this;
         }
 
@@ -86,12 +119,16 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
 
         @Override
         public com.mojang.blaze3d.vertex.VertexConsumer setColor(int argb) {
-            if (!out.isEmpty()) out.get(out.size() - 1)[2] = argb;
+            if (!colors.isEmpty()) colors.set(colors.size() - 1, argb);
             return this;
         }
 
         @Override
         public com.mojang.blaze3d.vertex.VertexConsumer setUv(float u, float v) {
+            if (!points.isEmpty()) {
+                points.get(points.size() - 1)[2] = u;
+                points.get(points.size() - 1)[3] = v;
+            }
             return this;
         }
 
@@ -118,6 +155,33 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
         @Override
         public com.mojang.blaze3d.vertex.VertexConsumer setLineWidth(float width) {
             return this;
+        }
+    }
+
+    /** A captured piece of a sprite (already posed): a blit of its texture's part, tinted. */
+    private void spriteQuad(String texture, float x0, float y0, float x1, float y1,
+                            float u0, float u1, float v0, float v1, int color) {
+        // A dynamic texture's pixels go first, where the receiver lacks them.
+        if (texture.startsWith(HorizonTextures.DYNAMIC_PREFIX) && (!modsOnly || drawnByModNow())) {
+            var image = HorizonTextures.imageOp(texture, imagesSent);
+            if (image != null) ops.add(image);
+        }
+        pose().pushMatrix();
+        pose().identity();
+        try {
+            JsonObject o = op("blit");
+            o.addProperty("texture", texture);
+            o.addProperty("x0", x0);
+            o.addProperty("y0", y0);
+            o.addProperty("x1", x1);
+            o.addProperty("y1", y1);
+            o.addProperty("u0", u0);
+            o.addProperty("u1", u1);
+            o.addProperty("v0", v0);
+            o.addProperty("v1", v1);
+            if (color != -1) o.addProperty("color", color);
+        } finally {
+            pose().popMatrix();
         }
     }
 
@@ -165,6 +229,12 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
      * vanilla class (Fabric's own are vanilla's here: its HUD wrapper draws vanilla parts).
      */
     boolean modsOnly;
+    /** What the frame's receiver has of dynamic textures (name to version): HorizonTextures.imageOp. */
+    java.util.Map<String, Integer> imagesSent;
+
+    private static boolean drawnByModNow() {
+        return drawnByMod();
+    }
     /** Operations left out as vanilla's (modsOnly). */
     int dropped;
 
@@ -290,22 +360,49 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
     private JsonObject sprite(Identifier sprite, int x, int y, int w, int h) {
         JsonObject o = op("sprite");
         o.addProperty("sprite", sprite.toString());
+        o.addProperty("texture", HorizonSprites.guiTexture(sprite));
         rect(o, x, y, x + w, y + h);
         return o;
     }
 
+    /**
+     * Whether a sprite outside textures/gui/sprites/ (a mod's atlas source) is nine-sliced or
+     * tiled: Horizon knows only its own sprites' metadata, so vanilla's drawing splits it here
+     * (into pieces of the headless sprite: Capture).
+     */
+    private static boolean slicedHere(Identifier sprite) {
+        if (HorizonSprites.guiTexture(sprite).contains("/gui/sprites/")) return false;
+        var made = HorizonSprites.get(null, sprite);
+        if (made == null) return false;
+        return made.contents().getAdditionalMetadata(net.minecraft.client.resources.metadata.gui.GuiMetadataSection.TYPE)
+                .map(m -> !(m.scaling() instanceof net.minecraft.client.resources.metadata.gui.GuiSpriteScaling.Stretch))
+                .orElse(false);
+    }
+
     @Override
     public void blitSprite(RenderPipeline pipeline, Identifier sprite, int x, int y, int w, int h) {
+        if (slicedHere(sprite)) {
+            super.blitSprite(pipeline, sprite, x, y, w, h);
+            return;
+        }
         sprite(sprite, x, y, w, h);
     }
 
     @Override
     public void blitSprite(RenderPipeline pipeline, Identifier sprite, int x, int y, int w, int h, float alpha) {
+        if (slicedHere(sprite)) {
+            super.blitSprite(pipeline, sprite, x, y, w, h, alpha);
+            return;
+        }
         sprite(sprite, x, y, w, h).addProperty("alpha", alpha);
     }
 
     @Override
     public void blitSprite(RenderPipeline pipeline, Identifier sprite, int x, int y, int w, int h, int color) {
+        if (slicedHere(sprite)) {
+            super.blitSprite(pipeline, sprite, x, y, w, h, color);
+            return;
+        }
         sprite(sprite, x, y, w, h).addProperty("color", color);
     }
 
@@ -398,13 +495,30 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
     @Override
     public void text(Font font, FormattedCharSequence text, int x, int y, int color, boolean shadow) {
         if (text == null) return;
+        // Its runs of one style each (Jade's blue italic mod name): a component when any run is
+        // styled, else plain text.
         StringBuilder plain = new StringBuilder();
+        java.util.List<net.minecraft.network.chat.Style> styles = new java.util.ArrayList<>();
+        java.util.List<StringBuilder> runs = new java.util.ArrayList<>();
         text.accept((index, style, codePoint) -> {
             plain.appendCodePoint(codePoint);
+            if (styles.isEmpty() || !styles.get(styles.size() - 1).equals(style)) {
+                styles.add(style);
+                runs.add(new StringBuilder());
+            }
+            runs.get(runs.size() - 1).appendCodePoint(codePoint);
             return true;
         });
         JsonObject o = op("text");
-        o.addProperty("text", plain.toString());
+        if (styles.stream().allMatch(net.minecraft.network.chat.Style::isEmpty)) {
+            o.addProperty("text", plain.toString());
+        } else {
+            var root = Component.empty();
+            for (int i = 0; i < runs.size(); i++) {
+                root.append(Component.literal(runs.get(i).toString()).withStyle(styles.get(i)));
+            }
+            o.addProperty("json", HorizonServer.json(root));
+        }
         text(o, x, y, color, shadow);
     }
 

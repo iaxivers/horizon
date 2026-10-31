@@ -81,6 +81,41 @@ saying something works.
   boolean, from client mixin configs too), then `ClientTickEvents` START and END. The client
   has no level and no player of its own (like a client at its title screen).
 
+## The client's world, textures, styled text
+
+- Every `as(player, …)` stands the player's client in their dimension's client level
+  (`minecraft.level`, `LocalPlayer.level`), screens and messages included (Chunk Loaders'
+  grid reads `ClientUtils.getWorld()`). Client levels run the mods' constructor injections
+  (`HorizonHooks.constructed`), get chunks as copies of Horizon's (`LevelMixin` on
+  `Level.getChunk`, `HorizonChunks`; an `EmptyLevelChunk` where Horizon has none), the server
+  level's `palettedContainerFactory`, and answer `enabledFeatures`, `recipeAccess`,
+  `getScoreboard` from the server level (`ClientLevelMixin`); `sendPacketToServer` drops.
+- The `LocalPlayer` carries the server player's id, UUID, profile, eye height and size (Jade's
+  ray started at the feet before), and its old positions.
+- The headless client has services (the mirrored server's: profiles), a skin manager giving
+  each profile's default skin (`SkinManagerMixin`), a texture manager of named views
+  (`TextureManagerMixin`, `HorizonTextures`: `getTexture(id)` knows the PNG; `register`
+  keeps mods' textures by name), and atlas sprites (`TextureAtlasMixin`, `HorizonSprites`):
+  each sprite is made from its PNG and `.mcmeta` (nine-slice), its texture found through the
+  atlas's sources (`assets/*/atlases/gui.json`: "single", "directory"), and owns UV square
+  k..k+1 so drawn quads name it.
+- `HorizonGraphics.Capture` turns textured quads into blits: a named view's texture (with its
+  UVs), else an atlas sprite by UV square; `addBlitToCurrentLayer` too (vanilla's nine-slices
+  of headless sprites). `blitSprite(Identifier)` of a mod sprite outside gui/sprites with
+  nine-slice/tile metadata goes through vanilla's drawing (Horizon has no metadata for it).
+  Sprite ops carry their resolved `texture`.
+- Dynamic textures (`DynamicTextureMixin`: Chunk Loaders' chunk maps): a named view
+  `horizon:dynamic/N`; its pixels go once per version per player as an `{"op":"image"}` before
+  the first blit that draws it (`HorizonTextures.imageOp`, `imagesSent`, cleared on join).
+  The game stores images as frames arrive (`take_java_images`; a frame can be replaced before
+  it's drawn) in 128 atlas slots of 64x64 (`horizon/java{i}`, bigger images shrunk).
+- Text runs keep their styles: a `FormattedCharSequence` with any styled run becomes a
+  component (`json`), drawn styled by Horizon (Jade's blue italic mod name).
+- A click where the mouse wasn't at the last frame draws a frame there first (widgets that
+  keep their hover from drawing).
+- `HORIZON_JAVA_DEBUG=loop` logs messages between the halves; `=screens` also logs each sent
+  screen frame (first 4000 chars); `=hud` logs the block looked at and its state.
+
 ## Client HUD mods
 
 - Once players exist, `HorizonClient.clientTick` runs each player's client in turn inside
@@ -190,6 +225,10 @@ saying something works.
   `@ModifyArg` on `Minecraft.runTick`'s `renderFrame` call; without a client frame before
   SERVER_STARTING it failed with "Registry is not frozen yet!".
 - `horizon-ctl key <name>` needs an action: `key escape tap`.
+- Looking at blocks: the headless client reads Horizon's server world (`Natives.blockState`,
+  the same for client and server mirrored levels). Jade naming a block other than the one
+  Horizon's window draws means the server and the window disagree: the worldgen lost-block
+  case (a Java-generated chunk landing over a block already set), not the HUD.
 - Jade catches its own exceptions (its tick, its overlay) and logs them to its own logger,
   not ours: when it draws nothing, call `WailaTickHandler.tickClient` and
   `OverlayRenderer.renderOverlay*` by reflection to see the throw.
@@ -336,11 +375,10 @@ Next (top failure of the pack, in order):
    Java): the stove placed by the scene was gone a few seconds later, its outline left. A
    chunk generated on the Java side landing after a block was set in it would do that: check
    that a finished proto never replaces a chunk Horizon already has.
-2. No client level: `Minecraft.level` is null. Chunk Loaders' screen opens (sneak-place or
-   place, then use) but its grid reads the client's level for the loaders it shows
-   (`ChunkLoadingCapability.get(ClientUtils.getWorld())`); mods' key handlers that check the
-   level (Xaero's keys) do nothing. Needs a mirrored `ClientLevel` per dimension (blocks from
-   Horizon, its constructor injections run: `HorizonHooks.constructed`) as `Minecraft.level`.
+2. Chunk Loaders' grid shows (client level, chunk maps), but clicking a cell doesn't toggle
+   it yet: the screen takes the press, no cell's `onPress` runs and nothing is sent (the
+   cell's owner is the player; look at corelib's `BaseWidget.mousePressed` order and
+   `isClickable`). The owner's name next to the head is empty (profile lookup).
    No list of Java mods' settings in Horizon's own menus yet (`/modconfig` is the way in).
 Then: NeoForge later.
 
@@ -402,8 +440,8 @@ Known gaps: extended (Fabric) menus share the server's menu with the screen (no 
 the recipe book lists every recipe (not the player's unlocked ones); sounds from Java's client
 side are silent; HUD mods that render with the GPU (Xaero's Minimap: framebuffers,
 `RenderSystem.getDevice()`) draw nothing, nor do textured GUI elements mods add directly or
-sprites from the GUI atlas by `TextureAtlasSprite`; HUD text loses its colours and styles
-(plain text from `FormattedCharSequence`); HUD frames go to every player but each player's
+textured quads with a GPU texture of their own (neither a named view nor a headless sprite);
+HUD frames go to every player but each player's
 client tick shares the mods' static state;
 saved data is written every 10 s, not on quit.
 

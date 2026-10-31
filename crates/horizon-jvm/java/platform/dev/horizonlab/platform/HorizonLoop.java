@@ -82,8 +82,12 @@ public final class HorizonLoop {
 
     /** Server to client: whether a mod's client code receives it (it is then delivered at flush). */
     @SuppressWarnings({"unchecked", "rawtypes"})
+    /** HORIZON_JAVA_DEBUG=loop: each message between the two halves is logged. */
+    private static final boolean DEBUG = String.valueOf(System.getenv("HORIZON_JAVA_DEBUG")).contains("loop");
+
     public static boolean toClient(ServerPlayer player, CustomPacketPayload payload) {
         if (!on()) return false;
+        if (DEBUG) Natives.log("loop: server to client " + payload.type().id() + " for " + player.getName().getString());
         var handler = (ClientPlayNetworking.PlayPayloadHandler) ClientNetworkingImpl.PLAY.getHandler(payload.type().id());
         if (handler == null) return false;
         Runnable delivery = () -> {
@@ -101,6 +105,7 @@ public final class HorizonLoop {
     @SuppressWarnings({"unchecked", "rawtypes"})
     public static void toServer(CustomPacketPayload payload) {
         ServerPlayer player = HorizonClient.serverPlayer(Minecraft.getInstance().player);
+        if (DEBUG) Natives.log("loop: client to server " + payload.type().id() + " from " + (player == null ? null : player.getName().getString()));
         if (player == null) {
             Natives.log("Java mods: " + payload.type().id() + " was sent with no player's client running; dropped");
             return;

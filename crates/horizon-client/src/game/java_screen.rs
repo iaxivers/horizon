@@ -39,6 +39,13 @@ pub(super) const HUD_CHANNEL: &str = "horizon:java_hud";
 /// The HUD's "window" for [`INPUT`]: its GUI size, which the mods' HUD lays out in.
 pub(super) const HUD_WINDOW: i32 = -2;
 
+/// Java mods' dynamic textures this game holds (`{"op":"image"}`): by name, their atlas slot
+/// and size, least recently stored first.
+#[derive(Default)]
+pub(super) struct JavaImages {
+    slots: Vec<(String, usize, u32, u32)>,
+}
+
 /// What Java mods last drew on the window's HUD.
 #[derive(Default)]
 pub(super) struct JavaHud {
@@ -154,7 +161,7 @@ impl Game<'_> {
             return;
         }
         let ops = match frame.get("ops") {
-            Some(Value::Array(ops)) => ops.clone(),
+            Some(Value::Array(ops)) => self.take_java_images(ops),
             _ => return,
         };
         let typing = ops
@@ -186,6 +193,7 @@ impl Game<'_> {
         let Ok(Value::Array(ops)) = serde_json::from_slice::<Value>(data) else {
             return;
         };
+        let ops = self.take_java_images(&ops);
         self.java_hud.get_or_insert_with(Default::default).ops = ops;
     }
 
@@ -327,11 +335,52 @@ impl Game<'_> {
                     let bottom = argb(o.get("bottom").and_then(Value::as_i64).unwrap_or(0));
                     batch.fill_gradient(atlas, rect(), top, bottom);
                 }
+                "blit"
+                    if o.get("texture")
+                        .and_then(Value::as_str)
+                        .is_some_and(|t| t.starts_with("horizon:dynamic/")) =>
+                {
+                    // A mod's dynamic texture: its slot, the part of it the image fills.
+                    let name = o.get("texture").and_then(Value::as_str).unwrap_or_default();
+                    let Some(&(_, slot, w, h)) =
+                        self.java_images.slots.iter().find(|s| s.0 == name)
+                    else {
+                        continue;
+                    };
+                    let atlas = &self.gui.atlas;
+                    let Some(sprite) = atlas.sprites.get(&format!("horizon/java{slot}")).copied()
+                    else {
+                        continue;
+                    };
+                    let side = horizon_client::hud::JAVA_IMAGE_SIZE as f32;
+                    let (fw, fh) = (
+                        w.min(horizon_client::hud::JAVA_IMAGE_SIZE) as f32 / side,
+                        h.min(horizon_client::hud::JAVA_IMAGE_SIZE) as f32 / side,
+                    );
+                    let (u, v) = ((sprite.u1 - sprite.u0) * fw, (sprite.v1 - sprite.v0) * fh);
+                    let mut r = sprite;
+                    r.u0 = sprite.u0 + int(o, "u0").clamp(0.0, 1.0) * u;
+                    r.u1 =
+                        sprite.u0 + o.get("u1").map_or(1.0, |_| int(o, "u1")).clamp(0.0, 1.0) * u;
+                    r.v0 = sprite.v0 + int(o, "v0").clamp(0.0, 1.0) * v;
+                    r.v1 =
+                        sprite.v0 + o.get("v1").map_or(1.0, |_| int(o, "v1")).clamp(0.0, 1.0) * v;
+                    let color = o
+                        .get("color")
+                        .and_then(Value::as_i64)
+                        .map_or(u32::MAX, argb);
+                    let (x, y, w, h) = rect();
+                    batch.rect_uv(x, y, w, h, r, color);
+                }
                 kind @ ("blit" | "sprite") => {
-                    let key = if kind == "blit" {
-                        texture_key(o.get("texture").and_then(Value::as_str).unwrap_or_default())
-                    } else {
-                        sprite_key(o.get("sprite").and_then(Value::as_str).unwrap_or_default())
+                    // A sprite's texture as its atlas's sources lay it out, when the frame says
+                    // (a mod's "single" source: textures/gui/x.png); else gui/sprites/.
+                    let key = match o.get("texture").and_then(Value::as_str) {
+                        Some(texture) => texture_key(texture),
+                        None if kind == "blit" => String::new(),
+                        None => {
+                            sprite_key(o.get("sprite").and_then(Value::as_str).unwrap_or_default())
+                        }
                     };
                     let Some(sprite) = atlas.sprites.get(&key).copied() else {
                         continue;
@@ -437,6 +486,74 @@ impl Game<'_> {
             }
         }
         (tooltip, lines_tooltip)
+    }
+
+    /// A frame's operations with its images stored as they arrive (a frame may be replaced
+    /// by the next before it is drawn; its images are sent once).
+    fn take_java_images(&mut self, ops: &[Value]) -> Vec<Value> {
+        let mut kept = Vec::with_capacity(ops.len());
+        for o in ops {
+            if o.get("op").and_then(Value::as_str) == Some("image") {
+                self.store_java_image(o);
+            } else {
+                kept.push(o.clone());
+            }
+        }
+        kept
+    }
+
+    /// A mod's dynamic texture's pixels (`{"op":"image","name","width","height","rgba"}`):
+    /// into an atlas slot (its own again, else a free one, else the least recently stored),
+    /// shrunk to fit.
+    fn store_java_image(&mut self, o: &Value) {
+        let (Some(name), Some(rgba)) = (
+            o.get("name").and_then(Value::as_str),
+            o.get("rgba")
+                .and_then(Value::as_str)
+                .and_then(horizon_client::skins::base64_decode),
+        ) else {
+            return;
+        };
+        let (w, h) = (int(o, "width") as u32, int(o, "height") as u32);
+        if w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
+            return;
+        }
+        let images = &mut self.java_images.slots;
+        let slot = match images.iter().position(|s| s.0 == name) {
+            Some(i) => images.remove(i).1,
+            None if images.len() < horizon_client::hud::JAVA_IMAGE_SLOTS => images.len(),
+            None => images.remove(0).1,
+        };
+        images.push((name.to_owned(), slot, w, h));
+        let Some(rect) = self
+            .gui
+            .atlas
+            .sprites
+            .get(&format!("horizon/java{slot}"))
+            .copied()
+        else {
+            return;
+        };
+        // Nearest-neighbour into the slot's square (the part the image fills).
+        let side = horizon_client::hud::JAVA_IMAGE_SIZE;
+        let (sw, sh) = (w.min(side), h.min(side));
+        let mut out = vec![0u8; (side * side * 4) as usize];
+        for y in 0..sh {
+            for x in 0..sw {
+                let (sx, sy) = (x * w / sw, y * h / sh);
+                let from = ((sy * w + sx) * 4) as usize;
+                let to = ((y * side + x) * 4) as usize;
+                out[to..to + 4].copy_from_slice(&rgba[from..from + 4]);
+            }
+        }
+        let (aw, ah) = (self.gui.atlas.width as f32, self.gui.atlas.height as f32);
+        self.map_patches.push(horizon_client::font::Patch {
+            x: (rect.u0 * aw).round() as u32,
+            y: (rect.v0 * ah).round() as u32,
+            width: side,
+            height: side,
+            rgba: out,
+        });
     }
 
     /// A component as the screen shows it: its translations resolved in the game's language.

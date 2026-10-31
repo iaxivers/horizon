@@ -87,6 +87,10 @@ pub const MAX_ATLAS_SIZE: u32 = 16384;
 /// framed maps, so the pool holds a wall; too few slots re-upload every map
 /// every frame. 26.3's `MapTextureManager` keeps a texture per map instead.
 pub const MAP_SLOTS: usize = 256;
+/// Atlas slots for Java mods' dynamic textures (images they draw in memory: Chunk Loaders'
+/// chunk maps; game/java_screen.rs), each [`JAVA_IMAGE_SIZE`] square; bigger images are shrunk.
+pub const JAVA_IMAGE_SLOTS: usize = 128;
+pub const JAVA_IMAGE_SIZE: u32 = 64;
 /// The atlas slot the minimap extra draws into.
 pub const MINIMAP_SPRITE: &str = "horizon/minimap";
 /// Atlas slots for downloaded player skins (`skins/<sha1>`), 64x64 each.
@@ -292,6 +296,15 @@ impl HudAtlas {
     fn slots(images: &mut Vec<PackedImage>, trim: (u32, u32)) {
         for i in 0..MAP_SLOTS {
             images.push((format!("horizon/map{i}"), 128, 128, vec![0; 128 * 128 * 4]));
+        }
+        for i in 0..JAVA_IMAGE_SLOTS {
+            let side = JAVA_IMAGE_SIZE;
+            images.push((
+                format!("horizon/java{i}"),
+                side,
+                side,
+                vec![0; (side * side * 4) as usize],
+            ));
         }
         // The minimap extra's image (game/extras.rs).
         images.push((

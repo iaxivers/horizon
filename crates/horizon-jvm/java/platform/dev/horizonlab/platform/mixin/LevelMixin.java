@@ -34,12 +34,12 @@ public abstract class LevelMixin {
 
     @Inject(method = "getBlockState", at = @At("HEAD"), cancellable = true)
     private void horizon$blockState(BlockPos pos, CallbackInfoReturnable<BlockState> cir) {
-        if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.blockState((Level) (Object) this, pos));
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.blockState(HorizonServer.serverSide((Level) (Object) this), pos));
     }
 
     @Inject(method = "getFluidState", at = @At("HEAD"), cancellable = true)
     private void horizon$fluidState(BlockPos pos, CallbackInfoReturnable<FluidState> cir) {
-        if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.blockState((Level) (Object) this, pos).getFluidState());
+        if (HorizonServer.isMirror(this)) cir.setReturnValue(HorizonServer.blockState(HorizonServer.serverSide((Level) (Object) this), pos).getFluidState());
     }
 
     /** Vanilla blocks' block entities are Horizon's (none here); mod blocks' are Java's. */
@@ -105,6 +105,30 @@ public abstract class LevelMixin {
     @Inject(method = "isClientSide", at = @At("HEAD"), cancellable = true)
     private void horizon$clientSide(CallbackInfoReturnable<Boolean> cir) {
         if (HorizonServer.clientHalf == Thread.currentThread()) cir.setReturnValue(true);
+    }
+
+    /**
+     * A headless client's level (HorizonClient.clientLevel) has no chunk source of its own: its
+     * chunks are copies of Horizon's, as its server level's are (HorizonChunks: Chunk Loaders'
+     * grid draws them, heightmaps and blocks).
+     */
+    @Inject(method = "getChunk(IILnet/minecraft/world/level/chunk/status/ChunkStatus;Z)Lnet/minecraft/world/level/chunk/ChunkAccess;",
+            at = @At("HEAD"), cancellable = true)
+    private void horizon$clientChunk(int x, int z, net.minecraft.world.level.chunk.status.ChunkStatus status, boolean load,
+                                     CallbackInfoReturnable<net.minecraft.world.level.chunk.ChunkAccess> cir) {
+        if (!HorizonServer.isMirror(this) || (Object) this instanceof net.minecraft.server.level.ServerLevel) return;
+        var server = HorizonServer.serverSide((Level) (Object) this);
+        if (server instanceof net.minecraft.server.level.ServerLevel level) {
+            net.minecraft.world.level.chunk.ChunkAccess chunk = dev.horizonlab.platform.HorizonChunks.chunk(level, x, z);
+            // Where Horizon has none loaded, an empty chunk (a client's view beyond its chunks).
+            if (chunk == null && load) {
+                Level self = (Level) (Object) this;
+                chunk = new net.minecraft.world.level.chunk.EmptyLevelChunk(self, new net.minecraft.world.level.ChunkPos(x, z),
+                        self.registryAccess().lookupOrThrow(net.minecraft.core.registries.Registries.BIOME)
+                                .getOrThrow(net.minecraft.world.level.biome.Biomes.PLAINS));
+            }
+            cir.setReturnValue(chunk);
+        }
     }
 
     /** Entities collide with Horizon's blocks: the level is its own chunk for collisions. */

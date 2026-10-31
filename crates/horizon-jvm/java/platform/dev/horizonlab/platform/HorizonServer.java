@@ -951,6 +951,8 @@ public final class HorizonServer {
                     fireEach("ServerPlayConnectionEvents.INIT", ServerPlayConnectionEvents.INIT, l -> l.onPlayInit(connection, server));
                     fireEach("ServerEntityEvents.ENTITY_LOAD", ServerEntityEvents.ENTITY_LOAD, l -> l.onLoad(player, level));
                     fireEach("ServerPlayConnectionEvents.JOIN", ServerPlayConnectionEvents.JOIN, l -> l.onPlayReady(connection, NO_PACKETS, server));
+                    // A game joining has none of the mods' dynamic textures yet.
+                    if (client) HorizonClient.imagesSent(player.getUUID()).clear();
                     hook(server.getPlayerList(), net.minecraft.server.players.PlayerList.class, "placeNewPlayer", PLACE_NEW_PLAYER, "RETURN", joining);
                     hook(server.getPlayerList(), net.minecraft.server.players.PlayerList.class, "placeNewPlayer", PLACE_NEW_PLAYER, "TAIL", joining);
                 }

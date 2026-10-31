@@ -56,6 +56,10 @@ public final class HorizonClient {
         set(net.minecraft.client.GameNarrator.class, narrator, "narrator", com.mojang.text2speech.Narrator.EMPTY);
         set(Minecraft.class, mc, "narrator", narrator);
         set(Minecraft.class, mc, "atlasManager", atlases());
+        // Its textures: named, never uploaded (TextureManagerMixin, HorizonTextures).
+        set(Minecraft.class, mc, "textureManager", Natives.allocate(net.minecraft.client.renderer.texture.TextureManager.class));
+        // Its skins: each profile's default (SkinManagerMixin).
+        set(Minecraft.class, mc, "skinManager", Natives.allocate(net.minecraft.client.resources.SkinManager.class));
         // The in-game GUI's object (screens reach its HUD), made without its constructor.
         var gui = (net.minecraft.client.gui.Gui) Natives.allocate(net.minecraft.client.gui.Gui.class);
         var hud = (net.minecraft.client.gui.Hud) Natives.allocate(net.minecraft.client.gui.Hud.class);
@@ -256,6 +260,9 @@ public final class HorizonClient {
         for (var id : new net.minecraft.resources.Identifier[] {net.minecraft.data.AtlasIds.GUI}) {
             var atlas = (net.minecraft.client.renderer.texture.TextureAtlas)
                     Natives.allocate(net.minecraft.client.renderer.texture.TextureAtlas.class);
+            // Its texture's name (sprites of the GUI atlas are textures/gui/sprites/: HorizonSprites).
+            set(net.minecraft.client.renderer.texture.TextureAtlas.class, atlas, "location",
+                    net.minecraft.resources.Identifier.withDefaultNamespace("textures/atlas/gui.png"));
             byId.put(id, make.newInstance(atlas, null));
         }
         Class<?> owner = net.minecraft.client.resources.model.sprite.AtlasManager.class;
@@ -384,6 +391,12 @@ public final class HorizonClient {
             local = (net.minecraft.client.player.LocalPlayer) Natives.allocate(net.minecraft.client.player.LocalPlayer.class);
             set(net.minecraft.client.player.LocalPlayer.class, local, "recipeBook", recipeBook(player));
             set(net.minecraft.client.player.LocalPlayer.class, local, "minecraft", minecraft);
+            // Who it is (a screen checks a chunk's owner against it: Chunk Loaders): the
+            // server player's id, UUID and profile.
+            set(net.minecraft.world.entity.Entity.class, local, "uuid", player.getUUID());
+            set(net.minecraft.world.entity.Entity.class, local, "stringUUID", player.getStringUUID());
+            set(net.minecraft.world.entity.Entity.class, local, "id", player.getId());
+            set(net.minecraft.world.entity.player.Player.class, local, "gameProfile", player.getGameProfile());
             // Its keys (isShiftKeyDown: a collision context's descending): none pressed.
             set(net.minecraft.client.player.LocalPlayer.class, local, "input", new net.minecraft.client.player.ClientInput());
             set(net.minecraft.world.entity.player.Player.class, local, "inventory", player.getInventory());
@@ -429,6 +442,13 @@ public final class HorizonClient {
         set(entity, local, "blockPosition", player.blockPosition());
         set(entity, local, "chunkPosition", player.chunkPosition());
         set(entity, local, "bb", player.getBoundingBox());
+        // Its eyes' height and size (getEyePosition: the camera, Jade's ray; at 0 the ray
+        // starts at the feet, inside the block stood on, and reads the one under it).
+        set(entity, local, "eyeHeight", player.getEyeHeight());
+        set(entity, local, "dimensions", field(entity, player, "dimensions"));
+        local.xo = local.xOld = player.getX();
+        local.yo = local.yOld = player.getY();
+        local.zo = local.zOld = player.getZ();
         set(entity, local, "yRot", player.getYRot());
         set(entity, local, "xRot", player.getXRot());
         local.yRotO = player.getYRot();
@@ -485,7 +505,19 @@ public final class HorizonClient {
     static void as(net.minecraft.server.level.ServerPlayer player, ThrowingRunnable run) throws Throwable {
         var before = minecraft.player;
         var screenBefore = minecraft.gui.screen();
-        set(Minecraft.class, minecraft, "player", localPlayer(player));
+        var local = localPlayer(player);
+        set(Minecraft.class, minecraft, "player", local);
+        // The services (profiles by id: Chunk Loaders' owner names): the mirrored server's.
+        if (minecraft.services() == null && player.level().getServer() != null) {
+            set(Minecraft.class, minecraft, "services", player.level().getServer().services());
+        }
+        // Their client stands in their dimension's client level (Minecraft.level: what their
+        // screens and client code read, Chunk Loaders' grid its loaders), as a client in a world.
+        var levelBefore = minecraft.level;
+        var localLevel = local.level();
+        var level = clientLevel(player.level());
+        minecraft.level = level;
+        set(net.minecraft.world.entity.Entity.class, local, "level", level);
         // Their open screen is the GUI's (Minecraft.gui.screen()), which mods' client code looks at (a message
         // for the screen that is open: Tom's Storage's terminal's item list).
         var screen = SCREENS.get(player.getUUID());
@@ -495,6 +527,8 @@ public final class HorizonClient {
         } finally {
             set(Minecraft.class, minecraft, "player", before);
             set(net.minecraft.client.gui.Gui.class, minecraft.gui, "screen", screenBefore);
+            minecraft.level = levelBefore;
+            set(net.minecraft.world.entity.Entity.class, local, "level", localLevel);
         }
     }
 
@@ -957,6 +991,8 @@ public final class HorizonClient {
             Class<?> owner = net.minecraft.client.multiplayer.ClientLevel.class;
             try {
                 set(owner, level, "minecraft", minecraft);
+                // Its chunks' storage (an empty chunk beyond Horizon's): the server level's.
+                set(net.minecraft.world.level.Level.class, level, "palettedContainerFactory", server.palettedContainerFactory());
                 set(owner, level, "clientLevelData", clientData);
                 set(owner, level, "players", new java.util.ArrayList<>());
                 set(owner, level, "dragonParts", new java.util.ArrayList<>());
@@ -967,6 +1003,13 @@ public final class HorizonClient {
                 Natives.log("Horizon's client: a client level is missing a part: " + e);
             }
             HorizonServer.emptyCollections(level, owner);
+            // What mods' injections at the end of its constructors give a level (Chunk
+            // Loaders' per-level loaders, the client's copy its screen's grid reads).
+            try {
+                HorizonHooks.constructed(level);
+            } catch (Throwable t) {
+                Natives.log("Horizon's client: a client level's constructor injections failed: " + t);
+            }
             return level;
         });
     }
@@ -1022,27 +1065,18 @@ public final class HorizonClient {
     }
 
     /**
-     * Runs {@code run} as the player's client in a world: as(), and Minecraft.level their
-     * dimension's client level, their client player standing in it, Minecraft.hitResult what
-     * they look at (Minecraft.pick: a block, or a mod's entity nearer).
+     * Runs {@code run} as the player's client in a world (as(): their client level), with
+     * Minecraft.hitResult what they look at (Minecraft.pick: a block, or a mod's entity nearer).
      */
     static void inWorld(net.minecraft.server.level.ServerPlayer player, ThrowingRunnable run) throws Throwable {
         as(player, () -> {
-            var local = minecraft.player;
-            var levelBefore = minecraft.level;
-            var localLevel = local.level();
             var hitBefore = minecraft.hitResult;
             var pickedBefore = minecraft.crosshairPickEntity;
-            var level = clientLevel(player.level());
-            minecraft.level = level;
-            set(net.minecraft.world.entity.Entity.class, local, "level", level);
             minecraft.hitResult = pick(player);
             minecraft.crosshairPickEntity = minecraft.hitResult instanceof net.minecraft.world.phys.EntityHitResult e ? e.getEntity() : null;
             try {
                 run.run();
             } finally {
-                minecraft.level = levelBefore;
-                set(net.minecraft.world.entity.Entity.class, local, "level", localLevel);
                 minecraft.hitResult = hitBefore;
                 minecraft.crosshairPickEntity = pickedBefore;
             }
@@ -1090,6 +1124,7 @@ public final class HorizonClient {
     static com.google.gson.JsonArray hud(net.minecraft.server.level.ServerPlayer player) {
         HorizonGraphics graphics = new HorizonGraphics(width, height);
         graphics.modsOnly = true;
+        graphics.imagesSent = imagesSent(player.getUUID());
         var delta = net.minecraft.client.DeltaTracker.ONE;
         fabricHudElements(graphics, delta);
         Object hud;
@@ -1126,7 +1161,9 @@ public final class HorizonClient {
         }
         if (DEBUG_HUD) {
             Natives.log("hud: " + graphics.ops().size() + " ops kept, " + graphics.dropped + " vanilla ones left out; parts "
-                    + hooked + "; looking at " + minecraft.hitResult);
+                    + hooked + "; looking at " + (minecraft.hitResult instanceof net.minecraft.world.phys.BlockHitResult b
+                    ? b.getBlockPos().toShortString() + " " + minecraft.level.getBlockState(b.getBlockPos())
+                    : String.valueOf(minecraft.hitResult)));
         }
         return graphics.ops();
     }
@@ -1201,11 +1238,20 @@ public final class HorizonClient {
         }
     }
 
+    /** What each player's game has of mods' dynamic textures (name to version). */
+    private static final java.util.Map<java.util.UUID, java.util.Map<String, Integer>> IMAGES_SENT =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    static java.util.Map<String, Integer> imagesSent(java.util.UUID player) {
+        return IMAGES_SENT.computeIfAbsent(player, p -> new java.util.concurrent.ConcurrentHashMap<>());
+    }
+
     /** One frame of a player's mod screen, as Horizon draws it (HorizonGraphics' operations). */
     public static String frame(java.util.UUID player, int mouseX, int mouseY) {
         var screen = SCREENS.get(player);
         if (screen == null) return null;
         HorizonGraphics graphics = new HorizonGraphics(width, height);
+        graphics.imagesSent = imagesSent(player);
         try {
             as(OWNERS.get(player), () -> screen.extractRenderStateWithTooltipAndSubtitles(graphics, mouseX, mouseY, 0));
         } catch (Throwable t) {
@@ -1327,6 +1373,7 @@ public final class HorizonClient {
         String frame = frame(id, (int) mouse[0], (int) mouse[1]);
         if (frame == null || frame.equals(SENT.get(id))) return;
         SENT.put(id, frame);
+        if (DEBUG_INPUT) Natives.log("screen frame " + (frame.length() > 4000 ? frame.substring(0, 4000) + "..." : frame));
         Natives.screenFrame(id.toString(), frame);
     }
 
@@ -1361,7 +1408,15 @@ public final class HorizonClient {
         double y = in.has("y") ? in.get("y").getAsDouble() : MOUSE.getOrDefault(id, new double[2])[1];
         int button = in.has("button") ? in.get("button").getAsInt() : 0;
         int mods = in.has("mods") ? in.get("mods").getAsInt() : 0;
+        double[] last = MOUSE.get(id);
         MOUSE.put(id, new double[] {x, y});
+        // A click where the mouse wasn't at the last frame: a frame there first, as the window
+        // draws before it clicks (widgets that keep their hover from drawing, SuperMartijn's,
+        // take the click only over what they drew as hovered).
+        boolean moved = last == null || last[0] != x || last[1] != y;
+        if (moved && (kind.equals("press") || kind.equals("release") || kind.equals("scroll"))) {
+            frame(id, (int) x, (int) y);
+        }
         var event = new net.minecraft.client.input.MouseButtonEvent(x, y, new net.minecraft.client.input.MouseButtonInfo(button, mods));
         try {
             acting = player;
