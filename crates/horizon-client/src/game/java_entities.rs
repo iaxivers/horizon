@@ -79,6 +79,8 @@ fn mesh(v: &Value) -> Option<Mesh> {
 #[derive(Clone)]
 struct Shown {
     id: i32,
+    /// Its type (`ns:name`): an entity's, or a block entity's for `block`.
+    kind: String,
     position: [f64; 3],
     width: f64,
     height: f64,
@@ -193,6 +195,11 @@ fn shown(v: &Value) -> Option<Shown> {
         shadow: f("shadow").unwrap_or(0.0) as f32,
         block: v.get("block").and_then(Value::as_bool).unwrap_or(false),
         id: v.get("id")?.as_i64()? as i32,
+        kind: v
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         position: [f("x")?, f("y")?, f("z")?],
         width: f("w").unwrap_or(0.6),
         height: f("h").unwrap_or(1.8),
@@ -438,6 +445,17 @@ impl Game<'_> {
     }
 
     /// The Java entity the crosshair is on, nearer than `reach`: its id and distance.
+    /// The Java mods' entities shown now (not block entities): id, type, position, for
+    /// horizon-ctl's `entities`.
+    pub(super) fn java_entity_list(&self) -> Vec<(i32, &str, [f64; 3])> {
+        self.java_entities
+            .now
+            .iter()
+            .filter(|e| !e.block)
+            .map(|e| (e.id, e.kind.as_str(), e.position))
+            .collect()
+    }
+
     pub(super) fn java_entity_hit(&self) -> Option<(i32, f64)> {
         let eye = self.eye_position()?;
         let dir = super::view_vector(self.yaw, self.pitch);

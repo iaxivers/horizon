@@ -522,6 +522,24 @@ an error each tick per level (`ServerChunkCache.chunkMap` is null on the mirror)
 client tick wants `LevelExtractor`; Xaero's HUD wants a GPU device; Traveler's Backpack's model
 reload listener fails.
 
+### The regression run
+
+Before merging into `java-bridge`, play every scene that once worked:
+
+```sh
+python3 tools/java_bridge/regress.py --jars ~/hz-test/jars             # all (~10 min)
+python3 tools/java_bridge/regress.py --jars ~/hz-test/jars pot rei     # some
+python3 tools/java_bridge/regress.py --java-only --jars …             # after a Java-only change
+python3 tools/java_bridge/regress.py --list
+```
+
+`--jars` is one folder of Modrinth jars (Farmer's Delight, Tom's Storage, Jade, AppleSkin, REI
+with Architectury and Cloth Config, Biomes O' Plenty with TerraBlender and GlitchCore, Fabric
+API); a case missing one is skipped, the fixture mods are built. Each case checks what
+horizon-ctl reports and the log, and prints `pass`/`FAIL`; screenshots and logs are in
+`/tmp/hz-regress/<case>/` (a `look` line names what to see on one). A new scene that works gets
+a case in `CASES`.
+
 ### Play a Prism instance
 
 `tools/java_bridge/prism.sh` lets Prism Launcher install and update the mods while Horizon plays

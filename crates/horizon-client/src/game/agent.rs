@@ -665,6 +665,11 @@ impl Game<'_> {
                 json!({ "kind": "orb", "value": orb.value }),
             );
         }
+        // Java mods' entities (game/java_entities.rs), as the server last sent them.
+        #[cfg(feature = "java-mods")]
+        for (id, ty, pos) in self.java_entity_list() {
+            push(pos, ty, json!({ "id": id, "kind": "java" }));
+        }
         list.sort_by(|a, b| a.0.total_cmp(&b.0));
         json!({ "entities": list.into_iter().map(|(_, v)| v).collect::<Vec<_>>() })
     }

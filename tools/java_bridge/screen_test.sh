@@ -7,6 +7,7 @@
 #   MODS=~/critters SCENE=entity tools/java_bridge/screen_test.sh '$C mouse left click'
 #   MODS=~/nat SCENE=entity ENTITY=naturalist:bear tools/java_bridge/screen_test.sh
 #   JAVA_ONLY=1 ... : after a Java-only change (no game rebuild; see java.sh)
+# Steps see S (the scratch folder) too: '$C state > $S/state.json' keeps what a check reads.
 R=$(cd "$(dirname "$0")/../.." && pwd)
 : "${SCENE:=pot}" "${OUT:=/tmp}"
 # Java 25 (26.3's classes are version 69): JAVA_HOME if it is one, else the first installed.
@@ -18,7 +19,10 @@ export JAVA_HOME HORIZON_JAVA_HOME=$JAVA_HOME PATH=$JAVA_HOME/bin:$PATH
 old=$(cat /tmp/hz-bridge-scratch 2>/dev/null)
 [ -n "$old" ] && "$R/target/fast/horizon-ctl" --socket "$old/ctl.sock" quit >/dev/null 2>&1 && rm -rf "$old"
 # JAVA_ONLY=1: a Java-only change; just the jars are rebuilt (seconds) and run from disk.
-if [ -n "$JAVA_ONLY" ]; then
+# NO_BUILD=1: the caller built already (regress.py: once for every scene).
+if [ -n "$NO_BUILD" ]; then
+  :
+elif [ -n "$JAVA_ONLY" ]; then
   export HORIZON_JAVA_JARS=$("$R/tools/java_bridge/java.sh") || exit 1
 else
   cd "$R" && cargo build -q --profile fast -p horizon-client --features horizon-client/java-mods 2>&1 \
