@@ -66,6 +66,8 @@ MODS=~/my-mods SCENE=none tools/java_bridge/screen_test.sh
 
 Add `HORIZON_JAVA_PROFILE=1` to see what the mods cost each tick.
 
+Or let **Prism Launcher** install the mods: make a 26.3 Fabric instance, install a modpack, and set its *Wrapper command* to `tools/java_bridge/prism.sh` ([how](docs/java-bridge.md#play-a-prism-instance)).
+
 ## Download
 
 Horizon is installed through **the Horizon launcher**. Get it from [playhorizon.dev](https://playhorizon.dev) (the Download button picks your system) or from [the launcher releases](https://github.com/horizon-rust/horizon/releases?q=launcher-v&expanded=true), for Linux x86-64, macOS on Apple Silicon or Windows x64. The launcher installs and updates the game, prepares its files from your copy of Minecraft (your own install, or downloaded from Mojang for your account), and updates itself.

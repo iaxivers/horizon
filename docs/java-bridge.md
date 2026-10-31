@@ -522,6 +522,18 @@ an error each tick per level (`ServerChunkCache.chunkMap` is null on the mirror)
 client tick wants `LevelExtractor`; Xaero's HUD wants a GPU device; Traveler's Backpack's model
 reload listener fails.
 
+### Play a Prism instance
+
+`tools/java_bridge/prism.sh` lets Prism Launcher install and update the mods while Horizon plays
+them: make a Minecraft 26.3 + Fabric instance in Prism, install mods or a modpack as usual, set
+the instance's *Settings > Custom commands > Wrapper command* to the script's full path, press
+Play. The instance gets a `horizon/` folder (options, worlds, and `mods-java/` linking the
+instance's jars, Fabric API left out: the bridge has its own); the mods' `config/` is the
+instance's; Prism's signed-in account goes to the game as a session file (read once, deleted).
+It runs this checkout's `target/fast` build with `.local/` prepared. `HORIZON_PRISM_DRY=1` sets
+up and prints the command; `HORIZON_PRISM_ARGS` adds game arguments. (Idea from the NeuHorizon
+fork's NeoForge wrapper.)
+
 ### Profiling
 
 `HORIZON_JAVA_PROFILE=1` logs every 200 server ticks where the time goes: the game's calls into
