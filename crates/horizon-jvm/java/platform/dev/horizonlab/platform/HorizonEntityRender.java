@@ -527,7 +527,7 @@ public final class HorizonEntityRender {
         InvocationHandler handler = new InvocationHandler() {
             @Override
             public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
-                if (method.isDefault()) return InvocationHandler.invokeDefault(proxy, method, args);
+                if (method.isDefault() && !method.getName().equals("submitBlockModel")) return InvocationHandler.invokeDefault(proxy, method, args);
                 switch (method.getName()) {
                     case "order" -> {
                         return proxy;
@@ -538,6 +538,13 @@ public final class HorizonEntityRender {
                     }
                     case "submitCustomGeometry" -> mesh(out, (PoseStack) args[0], (RenderType) args[1],
                             (SubmitNodeCollector.CustomGeometryRenderer) args[2]);
+                    // Vanilla's (pose, render type, parts, tints, ...) and Fabric's (pose, render
+                    // types, translucent, parts, mesh, tints, ...), whose default drops the mesh.
+                    case "submitBlockModel" -> {
+                        if (args.length == 9) blockModel(out, (PoseStack) args[0], (List<?>) args[3], args[4], (int[]) args[5]);
+                        else blockModel(out, (PoseStack) args[0], (List<?>) args[2], null, (int[]) args[3]);
+                        return null;
+                    }
                     case "hashCode" -> {
                         return System.identityHashCode(proxy);
                     }
@@ -620,6 +627,130 @@ public final class HorizonEntityRender {
         }
         o.add("v", v);
         out.add(o);
+    }
+
+    /**
+     * A block model a renderer submits (BlockModelRenderState: Chunk Loaders' floating core,
+     * through Fabric's mesh): its parts' baked quads, posed, kept as custom geometry, one mesh
+     * per sprite with the sprite's own UVs (the client's block atlas isn't Horizon's): the
+     * sprite's texture, `ns:textures/<path>.png`, which Horizon's GUI atlas packs.
+     */
+    private static void blockModel(JsonArray out, PoseStack pose, List<?> parts, Object mesh, int[] tints) {
+        var matrix = pose.last().pose();
+        Map<String, JsonArray> bySprite = new java.util.LinkedHashMap<>();
+        var directions = new java.util.ArrayList<net.minecraft.core.Direction>(java.util.Arrays.asList(net.minecraft.core.Direction.values()));
+        directions.add(null);
+        org.joml.Vector3f p = new org.joml.Vector3f();
+        org.joml.Vector3f n = new org.joml.Vector3f();
+        float[][] xyz = new float[4][3];
+        float[][] uv = new float[4][2];
+        for (Object o : parts) {
+            if (!(o instanceof net.minecraft.client.renderer.block.dispatch.BlockStateModelPart part)) continue;
+            for (var side : directions) {
+                for (var quad : part.getQuads(side)) {
+                    var info = quad.materialInfo();
+                    for (int i = 0; i < 4; i++) {
+                        var at = quad.position(i);
+                        xyz[i][0] = at.x();
+                        xyz[i][1] = at.y();
+                        xyz[i][2] = at.z();
+                        long packed = quad.packedUV(i);
+                        uv[i][0] = net.minecraft.client.model.geom.builders.UVPair.unpackU(packed);
+                        uv[i][1] = net.minecraft.client.model.geom.builders.UVPair.unpackV(packed);
+                    }
+                    var dir = quad.direction();
+                    n.set(dir.getStepX(), dir.getStepY(), dir.getStepZ());
+                    int tint = info.isTinted() ? tint(tints, info.tintIndex()) : -1;
+                    quad(bySprite, pose, matrix, info.sprite(), xyz, uv, null, n, tint, p);
+                }
+            }
+        }
+        // A Fabric mesh (QuadEmitter quads: atlas UVs, no sprite): the sprite holding each
+        // quad's UVs, in its atlas.
+        if (mesh instanceof net.fabricmc.fabric.api.client.renderer.v1.mesh.MeshView view) {
+            int[] colors = new int[4];
+            view.forEach(q -> {
+                for (int i = 0; i < 4; i++) {
+                    xyz[i][0] = q.x(i);
+                    xyz[i][1] = q.y(i);
+                    xyz[i][2] = q.z(i);
+                    uv[i][0] = q.u(i);
+                    uv[i][1] = q.v(i);
+                    colors[i] = q.color(i);
+                }
+                var face = q.faceNormal();
+                n.set(face.x(), face.y(), face.z());
+                float mu = (uv[0][0] + uv[2][0]) / 2, mv = (uv[0][1] + uv[2][1]) / 2;
+                var sprite = spriteAt(q.atlas() == net.fabricmc.fabric.api.client.renderer.v1.mesh.QuadAtlas.ITEM
+                        ? net.minecraft.data.AtlasIds.ITEMS : net.minecraft.data.AtlasIds.BLOCKS, mu, mv);
+                int tint = q.tintIndex() >= 0 ? tint(tints, q.tintIndex()) : -1;
+                quad(bySprite, pose, matrix, sprite, xyz, uv, colors, n, tint, p);
+            });
+        }
+        bySprite.forEach((texture, v) -> {
+            JsonObject o = new JsonObject();
+            o.addProperty("tex", texture);
+            o.addProperty("overlay", net.minecraft.client.renderer.texture.OverlayTexture.NO_OVERLAY);
+            o.add("v", v);
+            out.add(o);
+        });
+    }
+
+    /** A sprite's texture file: the headless sprite's (HorizonSprites), else by its name. */
+    private static String textureOf(net.minecraft.client.renderer.texture.TextureAtlasSprite sprite) {
+        var headless = HorizonSprites.at(sprite.getU0() + 1e-4F);
+        if (headless != null && headless.atlasSprite() == sprite) return headless.texture();
+        var name = sprite.contents().name();
+        return name.getNamespace() + ":textures/" + name.getPath() + ".png";
+    }
+
+    private static int tint(int[] tints, int index) {
+        return tints != null && index >= 0 && index < tints.length ? 0xFF000000 | tints[index] : -1;
+    }
+
+    /** One quad of a block model, posed, its UVs made the sprite's own, into its sprite's mesh. */
+    private static void quad(Map<String, JsonArray> bySprite, PoseStack pose,
+                             org.joml.Matrix4f matrix, net.minecraft.client.renderer.texture.TextureAtlasSprite sprite,
+                             float[][] xyz, float[][] uv, int[] colors, org.joml.Vector3f normal, int tint, org.joml.Vector3f p) {
+        if (sprite == null) return;
+        org.joml.Vector3f n = pose.last().normal().transform(new org.joml.Vector3f(normal)).normalize();
+        JsonArray v = bySprite.computeIfAbsent(textureOf(sprite), k -> new JsonArray());
+        float du = sprite.getU1() - sprite.getU0(), dv = sprite.getV1() - sprite.getV0();
+        for (int i = 0; i < 4; i++) {
+            matrix.transformPosition(p.set(xyz[i][0], xyz[i][1], xyz[i][2]));
+            float u = du == 0 ? 0 : (uv[i][0] - sprite.getU0()) / du;
+            float w = dv == 0 ? 0 : (uv[i][1] - sprite.getV0()) / dv;
+            for (float f : new float[] {p.x, p.y, p.z, u, w, n.x, n.y, n.z}) v.add(Math.round(f * 10000.0F) / 10000.0F);
+            int color = colors == null ? -1 : colors[i];
+            if (tint != -1) color = net.minecraft.util.ARGB.multiply(color, tint);
+            v.add((long) color & 0xFFFFFFFFL);
+        }
+    }
+
+    /** Per atlas: its sprites, to find the one holding a UV (Fabric's mesh quads). */
+    private static final Map<Object, java.util.Collection<net.minecraft.client.renderer.texture.TextureAtlasSprite>> ATLAS_SPRITES =
+            new ConcurrentHashMap<>();
+
+    @SuppressWarnings("unchecked")
+    private static net.minecraft.client.renderer.texture.TextureAtlasSprite spriteAt(net.minecraft.resources.Identifier atlasId, float u, float v) {
+        var sprites = ATLAS_SPRITES.get(atlasId);
+        if (sprites == null) {
+            try {
+                var atlas = net.minecraft.client.Minecraft.getInstance().getAtlasManager().getAtlasOrThrow(atlasId);
+                Field field = net.minecraft.client.renderer.texture.TextureAtlas.class.getDeclaredField("texturesByName");
+                field.setAccessible(true);
+                sprites = java.util.List.copyOf(((Map<?, net.minecraft.client.renderer.texture.TextureAtlasSprite>) field.get(atlas)).values());
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                return null;
+            }
+            // (Not kept while the atlas is still empty: the models load after the first frames.)
+            if (sprites.isEmpty()) return null;
+            ATLAS_SPRITES.put(atlasId, sprites);
+        }
+        for (var sprite : sprites) {
+            if (u >= sprite.getU0() && u <= sprite.getU1() && v >= sprite.getV0() && v <= sprite.getV1()) return sprite;
+        }
+        return null;
     }
 
     /**

@@ -163,7 +163,7 @@ public final class HorizonGraphics extends GuiGraphicsExtractor {
                         bottom = color;
                     }
                 }
-                if (textured && texture.texure0() instanceof HorizonGpu.View gpu && HorizonGpu.drawnInto(gpu)) {
+                if (textured && texture.texure0() instanceof HorizonGpu.View gpu && HorizonGpu.drawnInto(gpu) && !HorizonGpu.atlas(gpu)) {
                     // A texture of the headless client's GPU (a picture in picture): its pixels
                     // as an image, the UVs' direction kept (renderpearl's rows are bottom up).
                     float[] first = vertices.points().get(i);

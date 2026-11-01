@@ -685,6 +685,28 @@ fn without_comments(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
+/// A blockstate's models replaced with empty children of them (`<ns>:block/horizon_invisible/...`,
+/// recorded in `made` with their parent): the block's model draws nothing.
+fn empty_models(v: &mut Value, ns: &str, made: &mut BTreeMap<String, String>) {
+    match v {
+        Value::Object(o) => {
+            if let Some(Value::String(model)) = o.get("model").cloned() {
+                let name = format!(
+                    "{ns}:block/horizon_invisible/{}",
+                    model.replace([':', '/'], "_")
+                );
+                made.insert(name.clone(), model);
+                o.insert("model".into(), Value::String(name));
+            }
+            for (_, child) in o.iter_mut() {
+                empty_models(child, ns, made);
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(|c| empty_models(c, ns, made)),
+        _ => {}
+    }
+}
+
 /// Carries `jar` over into `out/carry/`. With the oracle's `facts`, blocks
 /// and items are the ones the mod registers, with the templates and numbers
 /// the facts give; `allowed` says which vanilla blocks the game has;
@@ -894,7 +916,27 @@ pub fn carry(
                 .and_then(|b| b.strip_suffix(".json"))
                 .filter(|_| own)
             {
-                if let Ok(v) = serde_json::from_slice(&bytes) {
+                if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
+                    // A block only its block entity's renderer draws (RenderShape.INVISIBLE:
+                    // Chunk Loaders' floating core): its models carried empty (their particle
+                    // kept), or Horizon drew them still under the moving one.
+                    let invisible = facts
+                        .and_then(|f| f.blocks.get(&format!("{ns}:{b}")))
+                        .is_some_and(|block| {
+                            !block.states.is_empty() && block.states.values().all(|s| s.invisible)
+                        });
+                    if invisible {
+                        let mut hidden = v.clone();
+                        let mut made = BTreeMap::new();
+                        empty_models(&mut hidden, ns, &mut made);
+                        for (model, parent) in &made {
+                            let path = model.split_once(':').map_or(model.as_str(), |(_, p)| p);
+                            let out = inside.join(format!("assets/{ns}/models/{path}.json"));
+                            let json = json!({"parent": parent, "elements": []});
+                            write(&out, &serde_json::to_vec_pretty(&json).unwrap_or_default())?;
+                        }
+                        bytes = serde_json::to_vec_pretty(&hidden).unwrap_or(bytes);
+                    }
                     blockstates.insert(b.to_owned(), v);
                 }
             } else if let Some(m) = rel

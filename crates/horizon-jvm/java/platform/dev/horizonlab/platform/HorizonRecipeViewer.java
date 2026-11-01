@@ -106,12 +106,20 @@ public final class HorizonRecipeViewer {
         try {
             ClassLoader loader = HorizonRecipeViewer.class.getClassLoader();
             Class<?> overlay = Class.forName("me.shedaniel.rei.impl.client.gui.ScreenOverlayImpl", true, loader);
+            // No overlay yet (a recipe view opened before any container screen): REI searches
+            // as it makes one.
+            Class<?> runtime = Class.forName("me.shedaniel.rei.api.client.REIRuntime", true, loader);
+            Object made = runtime.getMethod("getOverlay").invoke(runtime.getMethod("getInstance").invoke(null));
+            if (made instanceof java.util.Optional<?> optional && optional.isEmpty()) return;
             Object list = overlay.getMethod("getEntryListWidget").invoke(null);
             if (list != null) list.getClass().getMethod("updateSearch", String.class, boolean.class).invoke(list, searchText(loader), true);
         } catch (ClassNotFoundException e) {
             // No REI.
         } catch (Throwable t) {
-            Natives.log("Horizon's recipe viewer: REI's item list could not search: " + t);
+            Throwable root = t;
+            while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+            Natives.log("Horizon's recipe viewer: REI's item list could not search: " + root);
+            for (StackTraceElement frame : root.getStackTrace()) Natives.log("    at " + frame);
         }
     }
 

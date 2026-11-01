@@ -129,6 +129,8 @@ public final class HorizonGpu implements GpuDeviceBackend {
 
     static final class Texture extends BaseGpuTexture {
         final long id;
+        /** A texture atlas's (atlas). */
+        boolean atlas;
         private boolean closed;
 
         Texture(long id, int usage, String label, GpuFormat format, int width, int height, int layers, int mips) {
@@ -252,7 +254,21 @@ public final class HorizonGpu implements GpuDeviceBackend {
     public GpuTexture createTexture(String label, int usage, GpuFormat format, int width, int height, int layers, int mips) {
         long id = Gpu.texture(format.ordinal(), width, height, layers, mips);
         if (DEBUG) Natives.log("gpu: texture " + id + " " + label + " " + format + " " + width + "x" + height);
-        return new Texture(id, usage, label, format, width, height, layers, mips);
+        var texture = new Texture(id, usage, label, format, width, height, layers, mips);
+        texture.atlas = ATLAS_CALLER.walk(frames -> frames.limit(8)
+                .anyMatch(f -> f.getDeclaringClass() == net.minecraft.client.renderer.texture.TextureAtlas.class));
+        return texture;
+    }
+
+    private static final StackWalker ATLAS_CALLER = StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE);
+
+    /**
+     * Whether a view is of a texture atlas's texture (made by TextureAtlas.createTexture): its
+     * pixels are the missing texture's, the sprites being headless (HorizonSprites), so its
+     * quads are sprites by UV square, never images.
+     */
+    static boolean atlas(GpuTextureView view) {
+        return view.texture() instanceof Texture t && t.atlas;
     }
 
     @Override
