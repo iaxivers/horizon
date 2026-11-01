@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "horizon_join",
+  "version": "1.0.0",
+  "name": "Horizon Join",
+  "description": "Client join hooks as Puzzles Lib has them (an injection into ClientPacketListener.handleLogin reading Minecraft.getConnection(), Fabric's ClientPlayConnectionEvents.JOIN): each logs the player whose client joined. A check of the Java mod bridge's client joins.",
+  "environment": "*",
+  "entrypoints": {
+    "client": ["dev.horizonlab.joinmod.JoinClient"]
+  },
+  "mixins": ["horizon_join.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.20",
+    "minecraft": "26.3",
+    "fabric-api": "*"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "required": true,
+  "package": "dev.horizonlab.joinmod.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "client": ["ClientPacketListenerMixin"],
+  "injectors": {"defaultRequire": 1}
+}

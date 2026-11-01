@@ -16,7 +16,8 @@ export JAVA_HOME HORIZON_JAVA_HOME=$JAVA_HOME PATH=$JAVA_HOME/bin:$PATH
 old=$(cat /tmp/hz-bridge-scratch 2>/dev/null)
 if [ -n "$old" ] && [ -d "$old" ]; then
   "$R/target/fast/horizon-ctl" --socket "$old/ctl.sock" quit >/dev/null 2>&1 || true
-  rm -rf "$old"
+  # (The game may still be writing as it quits: a second try.)
+  rm -rf "$old" 2>/dev/null || { sleep 5; rm -rf "$old"; }
 fi
 S=$(mktemp -d /tmp/hz-bridge.XXXX)
 mkdir -p "$S/mods-java" "$S/home" "$S/lh" "$S/data" "$S/conf"

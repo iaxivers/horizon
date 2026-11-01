@@ -872,6 +872,8 @@ enum Act {
     /// The installed mod's own settings page (capability `ui`), shown as a
     /// screen: `Event::ModSettings` has the game open it.
     ModSettings(usize),
+    /// A Java mod's settings screen (`s.mods.java[i]`), which the server opens.
+    JavaModSettings(usize),
     OpenModFolder,
     /// Credits & Attribution's Credits button (WinScreen without the poem).
     Credits,
@@ -931,6 +933,8 @@ pub enum Event {
     /// Open the mod's own settings page (capability `ui`): the installed
     /// mod's index in `mods.installed`.
     ModSettings(usize),
+    /// Open a Java mod's settings screen: its index in `mods.java`.
+    JavaModSettings(usize),
     /// Roll the credits (`CreditsAndAttributionScreen.openCreditsScreen`).
     Credits,
     /// Copy how an agent connects (the AI Agent page).
@@ -1486,12 +1490,36 @@ impl OptionsUi {
             }
             Page::Font => pairs(&[Opt::ForceUnicode, Opt::JapaneseGlyphs]),
             Page::Mods => {
+                // The world's Java mods with a settings screen (the server opens them).
+                let java = s.mods.java.iter().enumerate().map(|(i, (_, name))| {
+                    Row::Buttons(
+                        button(
+                            0.0,
+                            0.0,
+                            310.0,
+                            Text::literal(format!("{name}: Settings")),
+                            Act::JavaModSettings(i),
+                        ),
+                        None,
+                    )
+                });
+                let java: Vec<Row> = if s.mods.java.is_empty() {
+                    Vec::new()
+                } else {
+                    std::iter::once(Row::Header("Java mods"))
+                        .chain(java)
+                        .collect()
+                };
                 if s.mods.installed.is_empty() {
+                    if !java.is_empty() {
+                        return java;
+                    }
                     return vec![Row::Header(
                         "No mods: put .hmod files in the horizon-mods folder",
                     )];
                 }
-                s.mods
+                let mut rows: Vec<Row> = s
+                    .mods
                     .installed
                     .iter()
                     .enumerate()
@@ -1524,7 +1552,9 @@ impl OptionsUi {
                             Row::Buttons(if dead { inactive(widget) } else { widget }, None)
                         }
                     })
-                    .collect()
+                    .collect();
+                rows.extend(java);
+                rows
             }
             Page::ShaderPacks => {
                 if s.shader_packs.is_empty() {
@@ -2557,6 +2587,10 @@ impl OptionsUi {
                         Act::ModSettings(i) => {
                             events.push(Event::ButtonClick);
                             events.push(Event::ModSettings(i));
+                        }
+                        Act::JavaModSettings(i) => {
+                            events.push(Event::ButtonClick);
+                            events.push(Event::JavaModSettings(i));
                         }
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
                         Act::PickShaderPack(i) => {

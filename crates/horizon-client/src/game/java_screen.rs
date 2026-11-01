@@ -23,6 +23,11 @@ pub(super) const INPUT: &str = "horizon:java_screen_input";
 /// clicks a `KeyMapping` with no screen open.
 pub(super) const KEYS: &str = "horizon:java_keys";
 
+/// Server to game: the Java mods with a settings screen (`[[id, name], ...]`), sent once as a
+/// player joins; the game lists them on its Mods page, and asks for one on [`INPUT`]
+/// (`{"kind": "modconfig", "mod": id}`): the server opens it as a client-only screen.
+pub(super) const CONFIG_MODS: &str = "horizon:java_config_mods";
+
 /// The keys a server's Java mods bind, and which of them this game told it are down.
 #[derive(Default)]
 pub(super) struct JavaBinds {
@@ -135,6 +140,31 @@ impl Game<'_> {
         if let Ok(keys) = serde_json::from_slice::<Vec<i32>>(data) {
             self.java_binds.keys = keys.into_iter().collect();
         }
+    }
+
+    /// The server's Java mods with a settings screen ([`CONFIG_MODS`]): the Mods page's list.
+    pub(super) fn remote_java_config_mods(&mut self, data: &[u8]) {
+        if let Ok(mods) = serde_json::from_slice::<Vec<(String, String)>>(data) {
+            self.settings.mods.java = mods;
+        }
+    }
+
+    /// A Java mod's settings screen, from the Mods page: the server opens it.
+    pub(super) fn open_java_mod_settings(&mut self, i: usize) {
+        let Some((id, _)) = self.settings.mods.java.get(i).cloned() else {
+            return;
+        };
+        // The options close first (saved, as Done does): a single-player world is paused while
+        // they're open, and the server would make the screen's frames only after.
+        self.settings.save(&Self::options_path());
+        self.screen = Screen::Playing;
+        let data = json!({"kind": "modconfig", "mod": id})
+            .to_string()
+            .into_bytes();
+        self.send(S::CustomPayload(CustomPayload {
+            channel: INPUT.into(),
+            data,
+        }));
     }
 
     /// A key of the window, for Java mods' key bindings: pressed while playing (no screen), or

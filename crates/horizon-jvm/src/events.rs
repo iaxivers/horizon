@@ -970,6 +970,29 @@ pub fn bound_keys() -> Result<Vec<i32>, String> {
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
+/// The Java mods with a settings screen (HorizonClient.configMods): `[id, name]` pairs, for
+/// players' Mods pages.
+pub fn config_mods() -> Result<Vec<(String, String)>, String> {
+    let Some(class) = client_class() else {
+        return Ok(Vec::new());
+    };
+    let bridge = crate::get().ok_or("Java isn't running")?;
+    let mut env = bridge
+        .vm()
+        .attach_current_thread_permanently()
+        .map_err(|e| e.to_string())?;
+    let json = env
+        .with_local_frame(8, |env| -> jni::errors::Result<String> {
+            let class = <&JClass>::from(class.as_obj());
+            let value = env
+                .call_static_method(class, "configMods", "()Ljava/lang/String;", &[])?
+                .l()?;
+            Ok(env.get_string(&JString::from(value))?.into())
+        })
+        .map_err(|e| crate::describe(&mut env, e))?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
 pub fn screen_input(uuid: &str, input: &str) -> Result<(), String> {
     let class = client_class().ok_or("no headless client")?;
     let bridge = crate::get().ok_or("Java isn't running")?;

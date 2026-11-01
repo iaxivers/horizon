@@ -246,6 +246,7 @@ impl Game<'_> {
                     super::packs::open_folder(&dir);
                 }
                 Event::ModSettings(i) => self.open_mod_screen(i, true),
+                Event::JavaModSettings(i) => self.open_java_mod_settings(i),
                 Event::Credits => self.open_win_screen(false, super::win::Finish::Options),
             }
         }

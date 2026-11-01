@@ -1140,6 +1140,7 @@ public final class HorizonServer {
                     hook(server.getPlayerList(), net.minecraft.server.players.PlayerList.class, "remove", REMOVE, "TAIL", leaving);
                     PLAYERS.remove(player);
                     BY_UUID.remove(uuid);
+                    if (client) HorizonClient.left(uuid);
                 }
                 case 2 -> {
                     PlayerChatMessage message = PlayerChatMessage.unsigned(uuid, texts[e]);

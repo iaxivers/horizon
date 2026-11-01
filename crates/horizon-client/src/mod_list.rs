@@ -20,6 +20,9 @@ pub struct ModList {
     pub keys: BTreeMap<String, BTreeMap<String, String>>,
     /// What the Mods page shows, filled by the game from the mods it found.
     pub installed: Vec<Installed>,
+    /// The Java mods of the world's server with a settings screen, `(id, name)`: the Mods
+    /// page lists them, and the server opens one's screen (game/java_screen.rs).
+    pub java: Vec<(String, String)>,
 }
 
 /// One installed mod as the Mods page shows it.
@@ -68,6 +71,7 @@ impl ModList {
             enabled,
             keys,
             installed: Vec::new(),
+            java: Vec::new(),
         }
     }
     pub fn serialize(&self) -> String {

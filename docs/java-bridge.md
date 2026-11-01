@@ -156,6 +156,38 @@ saying something works.
   screen frame (first 4000 chars) and the inventory overlay's input; `=hud` logs the block
   looked at and its state.
 
+## Players, joins and settings (multiplayer)
+
+- `tools/java_bridge/lan_test.sh`: a host with MODS opened to LAN and a guest joining it (its
+  own scratch folder), steps with `$H`/`$G`, screenshots of both. Guests get mod screens, HUD
+  mods (Jade shows what each player looks at) and REI over their inventory.
+- One headless client runs every player's client in turn (`as`), so a mod's static state was
+  shared: the host typed in REI's search box and the guest's showed it. `HorizonClientState`
+  swaps listed fields per player as `as` changes player (REI's search field, overlay, entry
+  list, favourites, remembered screens); a player new to the client starts from the field's
+  empty value, which these mods fill lazily. Add a mod's fields there when its client state
+  leaks between players. A player leaving drops theirs (`HorizonClient.left`: state, overlay,
+  screen, join).
+- Client joins run per player (`joined(uuid)`, the first tick each player's client is in the
+  world): the mods' injections into `ClientPacketListener.handleLogin` (only Horizon's own
+  platform mixins and Fabric's are skipped: a mod under `dev.horizonlab.` was skipped before),
+  then Fabric's `ClientPlayConnectionEvents.INIT` and `JOIN` (their injection is Fabric
+  networking's, which the headless client lacks). Puzzles Lib's join reads
+  `minecraft.getConnection().getConnection()`: each `LocalPlayer` has the client connection,
+  which has a `Connection` with no channel; raw packets sent on it go to the mods' server code
+  when they are custom payloads (`ClientCommonPacketListenerMixin`), else are dropped.
+  Fixture: `fixture_mod.sh joinmod` (says in chat which hooks ran, per player).
+- Mods' settings in Horizon's menus: the server sends each player's game the Java mods with a
+  settings screen (`horizon:java_config_mods`, `HorizonClient.configMods`, read once); Options
+  → Mods lists them under "Java mods"; a click closes the options (a single-player world is
+  paused under them, and frames come from the server's tick) and asks the server
+  (`{"kind":"modconfig"}`), which opens it as a client-only screen. The screens come from
+  mods' "modmenu" entrypoints: without Mod Menu, `HorizonModMenuApi` makes its API's
+  interfaces (ModMenuApi, ConfigScreenFactory, UpdateChecker, default methods answering
+  "none") with ASM and puts them on the class path first, so those entrypoints load (tested:
+  Jade, AppleSkin, Farmer's Delight, Cloth Config, REI via Architectury). Settings are one
+  set of config files for the whole client: a guest changing Jade's changes the host's too.
+
 ## Mods' overlay on Horizon's inventory (REI)
 
 - Mod container screens open in vanilla's order (`openScreen`: REI prepared, the GUI's screen
@@ -672,7 +704,8 @@ Next (top failure of the pack, in order):
    that a finished proto never replaces a chunk Horizon already has.
 2. Chunk Loaders: cells toggle (`SCENE=loader`), owner name and panel show, its floating
    core turns and bobs (its block entity renderer's block model).
-   No list of Java mods' settings in Horizon's own menus yet (`/modconfig` is the way in).
+   Mods' settings: Options → Mods lists the Java mods with a settings screen (see "Players,
+   joins and settings").
 3. Vanilla patches Horizon still does in Rust (the `Mixin table: Rust does …` lines): biome
    weather and snow (Serene Seasons' seasons in the sky), entity riding, the inventory's slot
    picking; in-frame single player's pickups aren't routed. Next actions to route by the
@@ -765,8 +798,9 @@ Known gaps: extended (Fabric) menus share the server's menu with the screen (no 
 the recipe book lists every recipe (not the player's unlocked ones); sounds from Java's client
 side are silent; textured GUI elements mods add directly with a GPU texture of their own
 are drawn only when the texture is the headless GPU's (pictures in picture);
-HUD frames go to every player but each player's
-client tick shares the mods' static state;
+HUD frames go to each player (LAN guests too: `tools/java_bridge/lan_test.sh`, tested with
+REI, Jade, AppleSkin, Tech Reborn); each player's client tick runs in turn, and the mods' state
+listed in `HorizonClientState` is kept per player;
 saved data is written every 10 s and when the world saves.
 
 Mods that draw with the GPU (tested 2026-10-31 headless, Xaero's Minimap 26.6.2 alone,
