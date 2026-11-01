@@ -70,6 +70,9 @@ pub struct State {
     /// `BlockState.isRandomlyTicking` (exporters that write it).
     #[serde(default)]
     pub random_ticks: bool,
+    /// `RenderShape.INVISIBLE`: its block entity's renderer draws it, not its model.
+    #[serde(default)]
+    pub invisible: bool,
     pub map_color_id: u8,
     pub sound: Value,
     pub outline: Value,

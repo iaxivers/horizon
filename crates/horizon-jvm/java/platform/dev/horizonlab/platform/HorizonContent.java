@@ -245,6 +245,9 @@ public final class HorizonContent {
                     json.name("requires_tool").value(state.requiresCorrectToolForDrops());
                     json.name("random_ticks").value(state.isRandomlyTicking());
                     json.name("can_occlude").value(state.canOcclude());
+                    // Drawn only by its block entity's renderer (Chunk Loaders' floating core):
+                    // Horizon draws no model for it.
+                    if (state.getRenderShape() == net.minecraft.world.level.block.RenderShape.INVISIBLE) json.name("invisible").value(true);
                     json.name("replaceable").value(state.canBeReplaced());
                     var color = state.getMapColor(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
                     json.name("map_color").value(color.col);

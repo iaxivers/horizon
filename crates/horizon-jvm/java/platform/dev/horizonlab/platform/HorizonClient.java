@@ -663,6 +663,9 @@ public final class HorizonClient {
                     server != null ? server.registryAccess() : level.registryAccess());
             set(net.minecraft.client.multiplayer.ClientPacketListener.class, connection, "enabledFeatures",
                     level.enabledFeatures());
+            // Its Minecraft (ClientCommonPacketListenerImpl.minecraft): mods' injections into its
+            // handlers read the client through it (Architectury's join event: minecraft.player).
+            set(net.minecraft.client.multiplayer.ClientCommonPacketListenerImpl.class, connection, "minecraft", minecraft);
             // Its world clocks (a client level's clockManager(): mods' environment attributes,
             // Xaero's sun brightness).
             set(net.minecraft.client.multiplayer.ClientPacketListener.class, connection, "clockManager",
@@ -777,7 +780,16 @@ public final class HorizonClient {
             if (made[0] != null) CLIENT_MENUS.put(player.getUUID(), made[0]);
             else CLIENT_MENUS.remove(player.getUUID());
             var screen = (net.minecraft.client.gui.screens.Screen) create.invoke(constructor, shown, player.getInventory(), title);
-            as(player, () -> screen.init(width, height));
+            // Vanilla's order (Minecraft.setScreen): the GUI's screen is the new one, added, then
+            // laid out; REI makes its overlay for the screen being opened there, once its
+            // displays are in (prepare: its first reload), and searches its list again.
+            as(player, () -> {
+                HorizonRecipeViewer.prepare();
+                set(net.minecraft.client.gui.Gui.class, minecraft.gui, "screen", screen);
+                screen.added();
+                screen.init(width, height);
+                HorizonRecipeViewer.refreshSearch();
+            });
             SCREENS.put(player.getUUID(), screen);
             OWNERS.put(player.getUUID(), player);
             return true;
@@ -1059,15 +1071,34 @@ public final class HorizonClient {
      */
     private static void models() {
         long started = System.nanoTime();
+        // The client's codecs' types (ClientBootstrap, Minecraft's main runs it): without
+        // SpriteSources' an atlas's sources parse to nothing and every atlas held only the
+        // missing texture (every model drew it); item models' and tints' too. Its last step
+        // (Vulkan's feature sets) may fail here: the ones before it are in by then.
+        try {
+            net.minecraft.client.ClientBootstrap.bootstrap();
+        } catch (Throwable t) {
+            Natives.log("Horizon's client: the client's bootstrap stopped at " + t);
+        }
         try {
             var colors = net.minecraft.client.color.block.BlockColors.createDefault();
             set(Minecraft.class, minecraft, "blockColors", colors);
             var atlases = new net.minecraft.client.resources.model.sprite.AtlasManager(minecraft.getTextureManager(), 0);
             var skins = (net.minecraft.client.renderer.PlayerSkinRenderCache) Natives.allocate(net.minecraft.client.renderer.PlayerSkinRenderCache.class);
             var models = new net.minecraft.client.resources.model.ModelManager(colors, atlases, skins);
+            // The reload's main-thread steps (the atlases' uploads, which assert the render
+            // thread) run on this thread: queued, and run here until the reload is done. A
+            // preparation finishing on a pool thread ran them there ("Rendersystem called from
+            // wrong thread", now and then: no models, and a broken GUI atlas).
             java.util.concurrent.Executor here = Runnable::run;
-            net.minecraft.server.packs.resources.SimpleReloadInstance.of(minecraft.getResourceManager(), java.util.List.of(atlases, models),
-                    here, here, java.util.concurrent.CompletableFuture.completedFuture(net.minecraft.util.Unit.INSTANCE)).done().join();
+            var queue = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+            var reload = net.minecraft.server.packs.resources.SimpleReloadInstance.of(minecraft.getResourceManager(), java.util.List.of(atlases, models),
+                    here, queue::add, java.util.concurrent.CompletableFuture.completedFuture(net.minecraft.util.Unit.INSTANCE));
+            while (!reload.isDone() || !queue.isEmpty()) {
+                Runnable task = queue.poll(20, java.util.concurrent.TimeUnit.MILLISECONDS);
+                if (task != null) task.run();
+            }
+            reload.done().join();
             set(Minecraft.class, minecraft, "modelManager", models);
             // The real atlases beside the headless GUI one.
             Class<?> owner = net.minecraft.client.resources.model.sprite.AtlasManager.class;
