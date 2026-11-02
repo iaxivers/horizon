@@ -303,8 +303,29 @@ pub fn start(config: &Config) -> Result<&'static Bridge, String> {
     }))
 }
 
+/// Windows: `bin\server\jvm.dll` needs DLLs that sit in the Java home's `bin` (the C runtime
+/// Temurin ships, `vcruntime140.dll`), which Windows looks for in the program's folder, the
+/// system's and the PATH, not beside the DLL (java.exe finds them as its own folder's). The
+/// Java home's `bin` goes first on the PATH before the JVM loads.
+#[cfg(windows)]
+fn dll_search_path(home: &Path) {
+    let bin = home.join("bin");
+    let old = std::env::var_os("PATH").unwrap_or_default();
+    if std::env::split_paths(&old).any(|p| p == bin) {
+        return;
+    }
+    let paths = std::iter::once(bin).chain(std::env::split_paths(&old));
+    if let Ok(joined) = std::env::join_paths(paths) {
+        // SAFETY: std takes its environment lock on Windows; the JVM, which reads it, isn't
+        // loaded yet.
+        unsafe { std::env::set_var("PATH", joined) };
+    }
+}
+
 fn create_vm(home: &Path, class_path: &[PathBuf]) -> Result<JavaVM, String> {
     let path = libjvm(home)?;
+    #[cfg(windows)]
+    dll_search_path(home);
     // SAFETY: loading libjvm runs its initialisers, which only set up the library itself.
     let library = unsafe { libloading::Library::new(&path) }
         .map_err(|e| format!("could not load {}: {e}", path.display()))?;

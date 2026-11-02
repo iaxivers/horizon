@@ -20,6 +20,31 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// A javac run with its arguments in an argument file (`@file`): the class path (the game's
+/// libraries, Fabric API's modules) and the sources pass Windows' 32,767-character command
+/// line. Each argument quoted, with forward slashes (javac's argument files read `\` as an
+/// escape inside quotes; Windows takes `/` in paths).
+fn javac_run(
+    javac: &Path,
+    args: &[std::ffi::OsString],
+    argfile: &Path,
+) -> std::io::Result<std::process::ExitStatus> {
+    let mut text = String::new();
+    for arg in args {
+        let arg = arg
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace('"', "\\\"");
+        text.push('"');
+        text.push_str(&arg);
+        text.push_str("\"\n");
+    }
+    std::fs::write(argfile, text)?;
+    let mut at = std::ffi::OsString::from("@");
+    at.push(argfile);
+    Command::new(javac).arg(at).status()
+}
+
 fn javac() -> PathBuf {
     let name = if cfg!(windows) { "javac.exe" } else { "javac" };
     if let Some(home) = std::env::var_os("JAVA_HOME").filter(|h| !h.is_empty()) {
@@ -71,29 +96,29 @@ fn main() {
     files.sort();
     let class_path = std::env::join_paths(&libs).expect("class path");
     let javac = javac();
-    let status = Command::new(&javac)
-        // Class files Java 21 and newer load; Horizon's players run Java 25.
-        .args([
-            "--release",
-            "21",
-            "-encoding",
-            "UTF-8",
-            "-nowarn",
-            "-proc:none",
-            "-cp",
-        ])
-        .arg(&class_path)
-        .arg("-d")
-        .arg(&classes)
-        .args(&files)
-        .status()
-        .unwrap_or_else(|e| {
-            panic!(
-                "horizon-jvm needs a JDK to build (feature java-mods): could not run {}: {e}. \
+    // Class files Java 21 and newer load; Horizon's players run Java 25.
+    let mut args: Vec<std::ffi::OsString> = [
+        "--release",
+        "21",
+        "-encoding",
+        "UTF-8",
+        "-nowarn",
+        "-proc:none",
+        "-cp",
+    ]
+    .map(Into::into)
+    .into();
+    args.push(class_path);
+    args.push("-d".into());
+    args.push(classes.clone().into());
+    args.extend(files.iter().map(|f| f.clone().into_os_string()));
+    let status = javac_run(&javac, &args, &out.join("javac-bridge.args")).unwrap_or_else(|e| {
+        panic!(
+            "horizon-jvm needs a JDK to build (feature java-mods): could not run {}: {e}. \
                  Install JDK 25 or set JAVA_HOME.",
-                javac.display()
-            )
-        });
+            javac.display()
+        )
+    });
     assert!(
         status.success(),
         "javac failed on horizon-jvm's Java sources"
@@ -199,22 +224,22 @@ fn platform(manifest: &Path, out: &Path, libs: &[PathBuf], bridge_classes: &Path
     class_path.extend(game_libraries);
     class_path.extend(modules);
     class_path.push(bridge_classes.to_path_buf());
-    let status = Command::new(javac)
-        .args([
-            "--release",
-            "21",
-            "-encoding",
-            "UTF-8",
-            "-nowarn",
-            "-proc:none",
-            "-cp",
-        ])
-        .arg(std::env::join_paths(&class_path).unwrap())
-        .arg("-d")
-        .arg(&classes)
-        .args(&files)
-        .status()
-        .expect("javac");
+    let mut args: Vec<std::ffi::OsString> = [
+        "--release",
+        "21",
+        "-encoding",
+        "UTF-8",
+        "-nowarn",
+        "-proc:none",
+        "-cp",
+    ]
+    .map(Into::into)
+    .into();
+    args.push(std::env::join_paths(&class_path).unwrap());
+    args.push("-d".into());
+    args.push(classes.clone().into());
+    args.extend(files.iter().map(|f| f.clone().into_os_string()));
+    let status = javac_run(&javac, &args, &out.join("javac-platform.args")).expect("javac");
     assert!(
         status.success(),
         "javac failed on horizon-jvm's platform mod (java/platform/)"

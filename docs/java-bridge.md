@@ -1416,6 +1416,35 @@ It runs this checkout's `target/fast` build with `.local/` prepared. `HORIZON_PR
 up and prints the command; `HORIZON_PRISM_ARGS` adds game arguments. (Idea from the NeuHorizon
 fork's NeoForge wrapper.)
 
+### Windows
+
+The bridge builds for Windows (`cargo check --target x86_64-pc-windows-gnu`, horizon-client and
+horizon-client-lib with `java-mods`: clean), and the JVM part runs there: `horizon-jvm`'s `boot`
+test (a Windows JDK 25's `jvm.dll`, natives both ways) passes under Wine. Two Windows fixes:
+- `jvm.dll` needs `vcruntime140.dll`, which sits in the Java home's `bin`, not beside the DLL:
+  `create_vm` puts that `bin` first on the PATH before loading (`dll_search_path`).
+- build.rs runs javac with an argument file (`@javac-*.args`): the platform mod's class path and
+  sources are ~28,000 characters on Linux with short paths, past Windows' 32,767-character command
+  line with `C:\Users\…` ones.
+
+Not tested: Fabric past Mixin's start under Wine (Wine lacks a network call
+`NetworkInterface.getAll` makes; real Windows has it), the game window, the launcher. To try it on
+Windows (MSVC Rust, a JDK 25 as `JAVA_HOME`, Git for Windows):
+
+```powershell
+git checkout bridge-windows-1   # or java-bridge once merged
+cargo run --release -p horizon-prepare -- --prepare --server-jar <server-26.3.jar>
+cargo build --profile fast -p horizon-client -p horizon-client-lib --features horizon-client/java-mods
+$env:HORIZON_JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-25…"   # if JAVA_HOME isn't 25
+$env:HORIZON_ROOT = (Get-Location).Path      # where .local\bridge and .local\minecraft are
+# mods-java\ goes beside options.txt (the game's folder: HORIZON_HOME, else the default)
+target\fast\horizon-client.exe --resources .local\horizon-client\26.3 --world W
+```
+
+The `tools/java_bridge/*.sh` scripts are Linux-only (Xvfb, mktemp). A class path with
+non-ASCII characters (a user name like `Ivér`) may not reach the JVM right: JNI option
+strings are read in the system code page, not UTF-8.
+
 ### Profiling
 
 `HORIZON_JAVA_PROFILE=1` logs every 200 server ticks where the time goes: the game's calls into
