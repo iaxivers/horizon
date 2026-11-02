@@ -27,7 +27,15 @@ fn zombie_kind(s: Species) -> bool {
 impl Game<'_> {
     /// `Entity.startRiding` for two mobs.
     pub(super) fn mount_mob(&mut self, rider: u32, vehicle: u32) {
+        self.try_mount_mob(rider, vehicle);
+    }
+    /// `Entity.startRiding` for two mobs: false when a mod canceled it.
+    pub(super) fn try_mount_mob(&mut self, rider: u32, vehicle: u32) -> bool {
+        if !self.native_mob_may_ride(rider, vehicle, true) {
+            return false;
+        }
         riders::link(&mut self.mobs, rider, vehicle);
+        true
     }
     /// Riders sit on their vehicles (`Entity.positionRider`), mobs or boats,
     /// and let go when the vehicle dies or is gone.
@@ -123,7 +131,22 @@ impl Game<'_> {
                     continue;
                 };
                 let vehicle = &self.mobs[j];
-                let attach = riders::passenger_attachment(vehicle);
+                let mut attach = riders::passenger_attachment(vehicle);
+                if horizon_client::mobs::camel::is_camel(vehicle.species()) {
+                    // Camel.getPassengerAttachmentPoint: the seat follows the
+                    // rider's place in `getPassengers` (load order).
+                    let aboard: Vec<usize> = (0..self.mobs.len())
+                        .filter(|&k| self.mobs[k].extra.mount == Some(v))
+                        .collect();
+                    let seat = aboard.iter().position(|&k| k == i).unwrap_or(0);
+                    let animal = horizon_client::mobs::drops::is_animal(self.mobs[i].species());
+                    attach = horizon_client::mobs::camel::passenger_attachment_at(
+                        vehicle,
+                        seat,
+                        aboard.len(),
+                        animal,
+                    );
+                }
                 let (pos, prev) = (vehicle.position, vehicle.previous);
                 let (yaw, prev_yaw) = (vehicle.yaw, vehicle.previous_yaw);
                 let (body, prev_body) = (vehicle.body_yaw, vehicle.previous_body_yaw);

@@ -15,7 +15,7 @@ export JAVA_HOME HORIZON_JAVA_HOME=$JAVA_HOME PATH=$JAVA_HOME/bin:$PATH
 if [ -n "$JAVA_ONLY" ]; then
   export HORIZON_JAVA_JARS=$("$R/tools/java_bridge/java.sh") || exit 1
 else
-  cd "$R" && cargo build -q --profile fast -p horizon-client --features horizon-client/java-mods 2>&1 \
+  cd "$R" && cargo build -q --profile fast -p horizon-client -p horizon-client-lib --features horizon-client/java-mods 2>&1 \
     | grep -vE "Picked up JAVA_TOOL" | grep -E "^error|error:|\.java:[0-9]+" -A6 | head -30
 fi
 CTL="$R/target/fast/horizon-ctl"; mkdir -p "$OUT"

@@ -59,6 +59,10 @@ pub(crate) struct TestLevel {
     /// `analog_states` (`adjust_has_analog_output`).
     pub analog: HashMap<BlockPos, i32>,
     pub analog_states: HashSet<BlockStateId>,
+    /// What `before_fire_odds` answers for a state.
+    pub fire_odds: HashMap<BlockStateId, (i32, i32)>,
+    /// What `before_smoke_source` answers for a state.
+    pub smoke_sources: HashMap<BlockStateId, bool>,
 }
 impl TestLevel {
     fn new(b: &Behaviours) -> Self {
@@ -75,6 +79,8 @@ impl TestLevel {
             block_light: HashMap::new(),
             client_side: false,
             guarded: HashSet::new(),
+            fire_odds: HashMap::new(),
+            smoke_sources: HashMap::new(),
         }
     }
 }
@@ -153,6 +159,16 @@ impl LevelAccess for TestLevel {
             .flat_map(|&p| [p, update::rel(p, direction)])
             .chain(destroy.iter().copied())
             .any(|p| self.guarded.contains(&p))
+    }
+    fn before_fire_odds(&self, state: BlockStateId, odds: &mut Option<(i32, i32)>) {
+        if let Some(&answer) = self.fire_odds.get(&state) {
+            *odds = Some(answer);
+        }
+    }
+    fn before_smoke_source(&self, state: BlockStateId, smoke: &mut Option<bool>) {
+        if let Some(&answer) = self.smoke_sources.get(&state) {
+            *smoke = Some(answer);
+        }
     }
 }
 
@@ -864,15 +880,20 @@ fn bucket_source_removal_drains_spread_water() {
     let mut w = world!();
     w.floor(0, 10, "stone");
     let at = BlockPos::new(0, 1, 0);
-    assert!(w.b().bucket_empty(
-        &mut w.level,
-        &mut w.ticks,
-        at,
-        BucketContent::Fluid(crate::fluid::FluidKind::Water),
-        "minecraft:item.bucket.empty",
-        false,
-        false
-    ));
+    assert!(
+        w.b()
+            .bucket_empty(
+                &mut w.level,
+                &mut w.ticks,
+                at,
+                None,
+                BucketContent::Fluid(crate::fluid::FluidKind::Water),
+                "minecraft:item.bucket.empty",
+                false,
+                false
+            )
+            .is_some()
+    );
     for _ in 0..60 {
         w.tick();
     }
@@ -2198,6 +2219,21 @@ fn placing_and_breaking_report_the_affected_state() {
 fn dispenser_buckets_pick_up_and_empty() {
     let mut w = world!();
     let at = BlockPos::new(0, 10, 0);
+    // A dispenser has no hit result: nothing beside to try.
+    let empty = |w: &mut World, content, sound: &str, creative| {
+        w.f.behaviours
+            .bucket_empty(
+                &mut w.level,
+                &mut w.ticks,
+                at,
+                None,
+                content,
+                sound,
+                false,
+                creative,
+            )
+            .is_some()
+    };
     let water = w.id("water", &[("level", "0")]);
     w.put(at, water);
     let picked = w.b().bucket_pickup(&mut w.level, &mut w.ticks, at, false);
@@ -2230,15 +2266,9 @@ fn dispenser_buckets_pick_up_and_empty() {
     w.put(at, barrier);
     let sound = "minecraft:item.bucket.empty";
     let content = BucketContent::Fluid(crate::fluid::FluidKind::Water);
-    assert!(
-        !w.b()
-            .bucket_empty(&mut w.level, &mut w.ticks, at, content, sound, false, false)
-    );
+    assert!(!empty(&mut w, content, sound, false));
     assert_eq!(w.prop(at, "waterlogged"), "false");
-    assert!(
-        w.b()
-            .bucket_empty(&mut w.level, &mut w.ticks, at, content, sound, false, true)
-    );
+    assert!(empty(&mut w, content, sound, true));
     assert_eq!(w.prop(at, "waterlogged"), "true");
     assert_eq!(
         w.b().bucket_pickup(&mut w.level, &mut w.ticks, at, false),
@@ -2252,46 +2282,67 @@ fn dispenser_buckets_pick_up_and_empty() {
     // Emptying water into air makes a source; stone refuses.
     let air = w.b().air();
     w.put(at, air);
-    assert!(
-        w.b()
-            .bucket_empty(&mut w.level, &mut w.ticks, at, content, sound, false, false)
-    );
+    assert!(empty(&mut w, content, sound, false));
     assert_eq!(w.name(at), "water[level=0]");
     let stone = w.id("stone", &[]);
     w.put(at, stone);
-    assert!(
-        !w.b()
-            .bucket_empty(&mut w.level, &mut w.ticks, at, content, sound, false, false)
-    );
+    assert!(!empty(&mut w, content, sound, false));
     // Water fills a waterloggable slab instead of replacing it.
     let dry = w.id("oak_slab", &[]);
     w.put(at, dry);
-    assert!(
-        w.b()
-            .bucket_empty(&mut w.level, &mut w.ticks, at, content, sound, false, false)
-    );
+    assert!(empty(&mut w, content, sound, false));
     assert_eq!(w.prop(at, "waterlogged"), "true");
-    // Sneak-clicking the slab refuses: only air takes a fluid under Shift.
-    let dry = w.id("oak_slab", &[]);
-    w.put(at, dry);
-    assert!(
-        !w.b()
-            .bucket_empty(&mut w.level, &mut w.ticks, at, content, sound, true, false)
-    );
-    assert_eq!(w.prop(at, "waterlogged"), "false");
     // Powder snow only goes into empty space.
     let air = w.b().air();
     w.put(at, air);
-    assert!(w.b().bucket_empty(
-        &mut w.level,
-        &mut w.ticks,
-        at,
+    assert!(empty(
+        &mut w,
         BucketContent::Powder,
         "minecraft:item.bucket.empty_powder_snow",
-        false,
         false
     ));
     assert_eq!(w.name(at), "powder_snow[]");
+}
+
+#[test]
+fn clicked_bucket_pours_beside_a_refusing_block() {
+    let mut w = world!();
+    let at = BlockPos::new(0, 10, 0);
+    let above = BlockPos::new(0, 11, 0);
+    let sound = "minecraft:item.bucket.empty";
+    let content = BucketContent::Fluid(crate::fluid::FluidKind::Water);
+    let air = w.b().air();
+    let click = |w: &mut World, sneaking: bool| {
+        w.f.behaviours.bucket_empty(
+            &mut w.level,
+            &mut w.ticks,
+            at,
+            Some(above),
+            content,
+            sound,
+            sneaking,
+            false,
+        )
+    };
+    // Sneak-clicking a slab pours beside it, where Shift no longer counts.
+    let slab = w.id("oak_slab", &[]);
+    w.put(at, slab);
+    assert_eq!(click(&mut w, true), Some(above));
+    assert_eq!(w.prop(at, "waterlogged"), "false");
+    assert_eq!(w.name(above), "water[level=0]");
+    // A double slab holds no water: the click fills the block beside it.
+    w.put(above, air);
+    let double = w.id("oak_slab", &[("type", "double")]);
+    w.put(at, double);
+    assert_eq!(click(&mut w, false), Some(above));
+    assert_eq!(w.prop(at, "type"), "double");
+    assert_eq!(w.name(above), "water[level=0]");
+    // Both refusing empties nothing.
+    let stone = w.id("stone", &[]);
+    w.put(above, stone);
+    assert_eq!(click(&mut w, false), None);
+    assert_eq!(w.prop(at, "type"), "double");
+    assert_eq!(w.get(above), stone);
 }
 
 #[test]
@@ -2758,16 +2809,19 @@ fn flowers_and_saplings_can_be_placed_in_flower_pots() {
         assert_eq!(w.get(pos), empty_pot);
     }
 
-    // Right-clicking an empty flower pot with an empty hand does nothing (CONSUME).
+    // Right-clicking an empty flower pot with an empty hand does nothing (CONSUME, no swing).
     w.put(pos, empty_pot);
-    assert_eq!(w.use_block(pos), InteractionResult::Consume);
+    let empty_click = w.use_block(pos);
+    assert_eq!(empty_click, InteractionResult::Consume);
+    assert!(empty_click.consumes_action());
+    assert!(!empty_click.should_swing());
     assert_eq!(w.get(pos), empty_pot);
 
-    // Right-clicking an empty flower pot with a non-plant item does nothing (CONSUME).
-    assert_eq!(
-        w.use_item(pos, "minecraft:stone"),
-        InteractionResult::Consume
-    );
+    // Right-clicking an empty flower pot with a non-plant item does nothing (CONSUME, no swing).
+    let non_plant_click = w.use_item(pos, "minecraft:stone");
+    assert_eq!(non_plant_click, InteractionResult::Consume);
+    assert!(non_plant_click.consumes_action());
+    assert!(!non_plant_click.should_swing());
     assert_eq!(w.get(pos), empty_pot);
 }
 
@@ -3286,4 +3340,109 @@ fn survive_hooks_answer_for_the_block() {
         PlaceOutcome::Placed { .. }
     ));
     assert!(level.asked.get() > asked);
+}
+
+#[test]
+fn a_level_can_answer_how_a_block_burns() {
+    let mut w = world!();
+    w.floor(0, 10, "stone");
+    let glass = w.id("glass", &[]);
+    let planks = w.id("oak_planks", &[]);
+    let burn = |w: &mut World, fire: BlockPos| {
+        w.set(fire.offset(0, -1, 0), w.id("netherrack", &[]));
+        w.set(fire.offset(1, 0, 0), glass);
+        w.set(fire.offset(-1, 0, 0), planks);
+        w.set(fire, w.id("fire", &[]));
+        for _ in 0..4000 {
+            w.tick();
+        }
+    };
+    // Vanilla's table: glass never burns, planks do.
+    let fire = BlockPos::new(0, 1, 0);
+    burn(&mut w, fire);
+    assert_eq!(w.get(fire.offset(1, 0, 0)), glass, "glass doesn't burn");
+    assert_ne!(w.get(fire.offset(-1, 0, 0)), planks, "planks burn");
+
+    // The level's answer wins over the table, either way.
+    w.level.fire_odds.insert(glass, (30, 60));
+    w.level.fire_odds.insert(planks, (0, 0));
+    let fire = BlockPos::new(0, 1, 6);
+    burn(&mut w, fire);
+    assert_ne!(w.get(fire.offset(1, 0, 0)), glass, "flammable glass burns");
+    assert_eq!(
+        w.get(fire.offset(-1, 0, 0)),
+        planks,
+        "fireproof planks don't"
+    );
+
+    // Fire in the air beside a block stays only while the block's ignite
+    // odds are above zero, and burn odds of zero never destroy the block.
+    let lit_beside = |w: &mut World, at: BlockPos, ticks: usize| {
+        w.set(at.offset(1, 0, 0), glass);
+        w.set(at, w.id("fire", &[]));
+        for _ in 0..ticks {
+            w.tick();
+        }
+        w.get(at)
+    };
+    let fire = w.id("fire", &[]);
+    w.level.fire_odds.clear();
+    let at = BlockPos::new(-6, 5, 0);
+    assert_ne!(
+        w.b().block(lit_beside(&mut w, at, 45)),
+        w.b().block(fire),
+        "fire beside plain glass goes out"
+    );
+    w.level.fire_odds.insert(glass, (5, 0));
+    let at = BlockPos::new(-6, 5, 6);
+    assert_eq!(
+        w.b().block(lit_beside(&mut w, at, 45)),
+        w.b().block(fire),
+        "fire stands beside glass that ignites"
+    );
+    for _ in 0..4000 {
+        w.tick();
+    }
+    assert_eq!(w.get(at.offset(1, 0, 0)), glass, "and never burns it away");
+}
+
+#[test]
+fn a_level_can_answer_what_makes_a_campfire_signal() {
+    let mut w = world!();
+    let (stone, hay) = (w.id("stone", &[]), w.id("hay_block", &[]));
+    let ground = BlockPos::new(0, 0, 0);
+    let campfire = ground.offset(0, 1, 0);
+    let place = |w: &mut World| {
+        w.level.blocks.remove(&campfire);
+        let ctx = PlaceContext {
+            clicked_pos: ground,
+            face: Direction::Up,
+            hit: horizon_core::geometry::Vec3::new(0.5, 1.0, 0.5),
+            inside: false,
+            yaw: 0.0,
+            pitch: 0.0,
+            sneaking: false,
+            item: "minecraft:campfire".into(),
+            can_use_game_master_blocks: false,
+        };
+        let b = w.b();
+        assert!(matches!(
+            b.place_block(&mut w.level, &mut w.ticks, &ctx),
+            PlaceOutcome::Placed { .. }
+        ));
+        w.prop(campfire, "signal_fire")
+    };
+    w.put(ground, stone);
+    assert_eq!(place(&mut w), "false");
+    w.put(ground, hay);
+    assert_eq!(place(&mut w), "true", "vanilla's hay bale");
+
+    // The level makes stone a smoke source and hay not: placed, and as the ground changes.
+    w.level.smoke_sources.insert(stone, true);
+    w.level.smoke_sources.insert(hay, false);
+    assert_eq!(place(&mut w), "false");
+    w.set(ground, stone);
+    assert_eq!(w.prop(campfire, "signal_fire"), "true");
+    w.set(ground, hay);
+    assert_eq!(w.prop(campfire, "signal_fire"), "false");
 }

@@ -1,7 +1,7 @@
 # Horizon extras
 
 Optional conveniences built into the client: fullbright, dynamic lights, your own name tag, hiding block-break particles, auto-reconnect,
-Mouse Tweaks-style inventory controls and inventory sorting. **Every one is off by default**: a fresh
+Mouse Tweaks-style inventory controls, inventory sorting and a smooth chat. **Every one is off by default**: a fresh
 install looks and behaves exactly like vanilla 26.3, and turning an extra off
 again restores vanilla's behaviour completely.
 
@@ -165,10 +165,22 @@ and the container screen tests are unchanged).
   server accepts it; a unit test replays the planned clicks through the menu
   engine on random chests.
 
+### Smooth chat (`chatAnimation`, default off; `chatIndicator`, default on)
+- A new chat line slides in from the left while it fades in over a quarter of
+  a second (5 ticks, `INTRO_TICKS`/`INTRO_WIDTH` in `Chat::layout`), instead of
+  appearing whole on the tick it arrives. Its background and its indicator bar
+  move with it, and the fractional tick from `Game::clock` drives the motion, so
+  it moves every frame and not 20 times a second.
+- Only the unfocused chat (the HUD's) animates: with the chat screen open the
+  history is drawn as vanilla draws it, so clicking a line lands on its text.
+- `chatIndicator` off removes the coloured bar at the left of a line. It hides
+  the bar only, never the message.
+
 ### Splitscreen (`splitscreen`, default off)
 
 **Options → Horizon Settings... → Splitscreen...** turns local joining on or off at once.
-In P1's single-player world, another controller can press a button, then A to join. Each
+In P1's single-player world, a controller P1 isn't using can press a button, then A to join
+(or Y to play as P1, while P1 has no controller). Each
 player picks an instance-local profile with its own options and saved progress. LB/RB on
 the profile page move the view between shared positions, a new window or another monitor.
 A joined player's **Splitscreen Settings** in the pause menu switches profiles in place;
@@ -177,7 +189,20 @@ P1 is alone, turning it off restores the normal controller reader. Leaving it on
 alone keeps watching for joins without a compositor.
 
 `HORIZON_SPLIT=N` remains a testing shortcut to enable it and add N-1 players.
-The Setup map and joining P1 on an external server are separate follow-ups.
+The Setup map previews the monitors, windows and player views. Click a player (its name turns
+yellow) and choose a window or monitor, or drag its tile onto a window, a place among another
+window's players, or a monitor; then **Apply** to move the actual views. **Revert** and
+**Done** discard unapplied moves. An emptied window closes only on Apply. A player joining or
+leaving resets the draft so it cannot apply a move to the wrong seat. P1's pause-menu shortcut
+opens Setup; another player's shortcut opens their profiles.
+
+While a window has two or three players, a square at the bottom picks how they share it
+(two: Auto, side by side, top and bottom; three: one wide on top, one tall on the left, side
+by side); Apply saves it (`splitscreenTwo`, `splitscreenThree`). **Names** (top left,
+`splitscreenNames`, on by default) keeps each player's name in the corner of their view; off,
+it shows only for a moment when something changes. **Identify** makes every view say which
+window it is in. Controller pick-up in Setup and joining P1 on an external server follow
+separately.
 
 ## Shared rules
 

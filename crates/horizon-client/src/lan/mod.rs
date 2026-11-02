@@ -21,11 +21,12 @@ pub mod entity;
 pub mod far;
 pub mod forwarding;
 pub mod guest;
+pub mod handoff;
 pub mod hub;
 pub mod menu;
 pub mod playerdata;
 pub mod prediction;
-mod recipes;
+pub mod recipes;
 pub mod scoreboard;
 pub mod tracking;
 pub mod waypoints;
@@ -409,6 +410,9 @@ impl Shared {
     }
     pub fn motd(&self) -> String {
         self.motd.lock().unwrap().clone()
+    }
+    pub fn set_motd(&self, motd: String) {
+        *self.motd.lock().unwrap() = motd;
     }
     pub fn max_players(&self) -> usize {
         self.max_players.load(Ordering::Relaxed)

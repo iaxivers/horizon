@@ -111,15 +111,30 @@ pub struct Extras {
     pub sort: bool,
     /// A vanilla key name: sorts the part under the cursor.
     pub sort_key: String,
+    /// A new chat line slides in from the left while it fades in (`Chat::layout`).
+    pub chat_animation: bool,
+    /// The indicator bar at the left of a chat line (on by default, as vanilla).
+    pub chat_indicator: bool,
     /// No AI: every AI feature hidden and off (`horizon_core::no_ai`; the launcher writes it too).
     pub no_ai: bool,
     /// Agents may control the game the player starts: it opens its control socket for
     /// horizon-ctl and MCP clients (off by default; an agent's own launch always opens it).
     pub agent_control: bool,
+    /// F3+R and F3+E start/stop a repro recording and write its bundle (off by
+    /// default: a recording copies the world).
+    pub repro_keys: bool,
     /// "Playing Horizon" on the player's Discord profile (`discord_presence`; on by default).
     pub discord_presence: bool,
     /// Another controller can join P1's world (`splitscreen`, off by default).
     pub splitscreen: bool,
+    /// Two players in one window: 0 auto (side by side when wider than tall), 1 side by side,
+    /// 2 top and bottom (`splitscreenTwo`).
+    pub splitscreen_two: u8,
+    /// Three players on a screen: 0 one wide on top, 1 one tall on the left, 2 side by side
+    /// (`splitscreenThree`).
+    pub splitscreen_three: u8,
+    /// Splitscreen: each player's name in the corner of their view (`splitscreenNames`).
+    pub splitscreen_names: bool,
 }
 impl Default for Extras {
     fn default() -> Self {
@@ -152,10 +167,16 @@ impl Default for Extras {
             mouse_tweaks_wheel: true,
             sort: false,
             sort_key: "key.keyboard.unknown".into(),
+            chat_animation: false,
+            chat_indicator: true,
             no_ai: false,
             agent_control: false,
+            repro_keys: false,
             discord_presence: true,
             splitscreen: false,
+            splitscreen_two: 0,
+            splitscreen_three: 0,
+            splitscreen_names: true,
         }
     }
 }
@@ -230,10 +251,16 @@ impl Extras {
                 "mouseTweaksWheel" => e.mouse_tweaks_wheel = flag(e.mouse_tweaks_wheel),
                 "sort" => e.sort = flag(e.sort),
                 "sortKey" if value.starts_with("key.") => e.sort_key = value.to_owned(),
+                "chatAnimation" => e.chat_animation = flag(e.chat_animation),
+                "chatIndicator" => e.chat_indicator = flag(e.chat_indicator),
                 horizon_core::no_ai::KEY => e.no_ai = flag(e.no_ai),
                 "agentControl" => e.agent_control = flag(e.agent_control),
+                "reproKeys" => e.repro_keys = flag(e.repro_keys),
                 "discordPresence" => e.discord_presence = flag(e.discord_presence),
                 "splitscreen" => e.splitscreen = flag(e.splitscreen),
+                "splitscreenTwo" => e.splitscreen_two = value.parse().unwrap_or(0).min(2),
+                "splitscreenThree" => e.splitscreen_three = value.parse().unwrap_or(0).min(2),
+                "splitscreenNames" => e.splitscreen_names = flag(e.splitscreen_names),
                 _ => {}
             }
         }
@@ -241,7 +268,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\nsplitscreen:{}\n",
+            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\n",
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
             bool_text(self.zoom),
@@ -274,11 +301,17 @@ impl Extras {
             bool_text(self.mouse_tweaks_wheel),
             bool_text(self.sort),
             self.sort_key,
+            bool_text(self.chat_animation),
+            bool_text(self.chat_indicator),
             horizon_core::no_ai::KEY,
             bool_text(self.no_ai),
             bool_text(self.agent_control),
+            bool_text(self.repro_keys),
             bool_text(self.discord_presence),
             bool_text(self.splitscreen),
+            self.splitscreen_two,
+            self.splitscreen_three,
+            bool_text(self.splitscreen_names),
         )
     }
     /// Binds the extra key `name` (`SORT_KEY`); false for
@@ -392,6 +425,10 @@ impl Cps {
         self.clicks.len()
     }
 }
+/// Two players sharing a window (`splitscreen_two`): halves this way.
+pub const SPLIT_TWO: [&str; 3] = ["Auto", "Side by side", "Top and bottom"];
+/// Three players sharing a window (`splitscreen_three`).
+pub const SPLIT_THREE: [&str; 3] = ["One wide on top", "One tall on the left", "Side by side"];
 
 /// The settings the Extras page shows, one per row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -406,37 +443,100 @@ pub enum Item {
     MouseTweaksWheel,
     Sort,
     SortKey,
+    /// A new chat line slides in and fades in (`Chat::layout`).
+    ChatAnimation,
+    /// The coloured bar at the left of a chat line.
+    ChatIndicator,
     /// Not on the Extras page: Horizon Settings shows No AI, its AI Agent page Agent Control.
     NoAi,
     AgentControl,
     /// On the Horizon Settings page.
     DiscordPresence,
+    /// On the AI Agent page, next to Agent Control: the F3 recording shortcuts.
+    ReproKeys,
     /// On the Splitscreen settings page.
     Splitscreen,
 }
-/// The Extras page: headers and items.
+/// The Extras page: headers (language keys) and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
     use Item::*;
     vec![
-        Err("Lighting"),
+        Err("horizon.extras.header.lighting"),
         Ok(Fullbright),
         Ok(DynamicLights),
-        Err("Third person"),
+        Err("horizon.extras.header.third_person"),
         Ok(OwnNameTag),
-        Err("Particles"),
+        Err("horizon.extras.header.particles"),
         Ok(HideBlockParticles),
-        Err("Inventory"),
+        Err("horizon.extras.header.inventory"),
         Ok(MouseTweaks),
         Ok(MouseTweaksWheel),
         Ok(Sort),
         Ok(SortKey),
-        Err("Multiplayer"),
+        Err("horizon.extras.header.chat"),
+        Ok(ChatAnimation),
+        Ok(ChatIndicator),
+        Err("horizon.extras.header.multiplayer"),
         Ok(AutoReconnect),
-        Err("Sound"),
+        Err("horizon.extras.header.sound"),
         Ok(UiSoundReserve),
     ]
 }
 impl Item {
+    /// The language key of the caption (`horizon.*`, assets/horizon/lang).
+    pub fn caption_key(self) -> &'static str {
+        match self {
+            Item::Fullbright => "horizon.extras.fullbright",
+            Item::DynamicLights => "horizon.extras.dynamic_lights",
+            Item::OwnNameTag => "horizon.extras.own_name_tag",
+            Item::HideBlockParticles => "horizon.extras.hide_block_particles",
+            Item::AutoReconnect => "horizon.extras.auto_reconnect",
+            Item::UiSoundReserve => "horizon.extras.ui_sound_reserve",
+            Item::MouseTweaks => "horizon.extras.mouse_tweaks",
+            Item::MouseTweaksWheel => "horizon.extras.mouse_tweaks_wheel",
+            Item::Sort => "horizon.extras.sort",
+            Item::SortKey => "horizon.extras.sort_key",
+            Item::NoAi => "horizon.extras.no_ai",
+            Item::AgentControl => "horizon.extras.agent_control",
+            Item::ReproKeys => "horizon.extras.repro_keys",
+            Item::DiscordPresence => "horizon.extras.discord_presence",
+            Item::Splitscreen => "horizon.extras.splitscreen",
+            Item::ChatAnimation => "horizon.extras.chat_animation",
+            Item::ChatIndicator => "horizon.extras.chat_indicator",
+        }
+    }
+    /// The language key of the description shown as the row's tooltip.
+    pub fn description_key(self) -> &'static str {
+        match self {
+            Item::Fullbright => "horizon.extras.fullbright.tooltip",
+            Item::DynamicLights => "horizon.extras.dynamic_lights.tooltip",
+            Item::OwnNameTag => "horizon.extras.own_name_tag.tooltip",
+            Item::HideBlockParticles => "horizon.extras.hide_block_particles.tooltip",
+            Item::AutoReconnect => "horizon.extras.auto_reconnect.tooltip",
+            Item::UiSoundReserve => "horizon.extras.ui_sound_reserve.tooltip",
+            Item::MouseTweaks => "horizon.extras.mouse_tweaks.tooltip",
+            Item::MouseTweaksWheel => "horizon.extras.mouse_tweaks_wheel.tooltip",
+            Item::Sort => "horizon.extras.sort.tooltip",
+            Item::SortKey => "horizon.extras.sort_key.tooltip",
+            Item::NoAi => "horizon.extras.no_ai.tooltip",
+            Item::AgentControl => "horizon.extras.agent_control.tooltip",
+            Item::ReproKeys => "horizon.extras.repro_keys.tooltip",
+            Item::DiscordPresence => "horizon.extras.discord_presence.tooltip",
+            Item::Splitscreen => "horizon.extras.splitscreen.tooltip",
+            Item::ChatAnimation => "horizon.extras.chat_animation.tooltip",
+            Item::ChatIndicator => "horizon.extras.chat_indicator.tooltip",
+        }
+    }
+    /// The caption in the current language (English when the key is missing).
+    pub fn caption_text(self) -> String {
+        crate::lang::get_or(self.caption_key(), self.caption())
+    }
+    /// The description in the current language (English when the key is missing).
+    pub fn description_text(self) -> String {
+        crate::lang::get_or(self.description_key(), self.description())
+    }
+    /// The English caption: the fallback of [`Item::caption_text`], and the text of
+    /// `horizon.extras.*` in en_us.json.
     pub fn caption(self) -> &'static str {
         match self {
             Item::Fullbright => "Fullbright",
@@ -449,8 +549,11 @@ impl Item {
             Item::MouseTweaksWheel => "Scroll wheel moves items",
             Item::Sort => "Sort buttons",
             Item::SortKey => "Sort key",
+            Item::ChatAnimation => "Smooth chat",
+            Item::ChatIndicator => "Message indicator",
             Item::NoAi => "No AI",
             Item::AgentControl => "Agent Control",
+            Item::ReproKeys => "Recording shortcuts",
             Item::DiscordPresence => "Discord Rich Presence",
             Item::Splitscreen => "Splitscreen",
         }
@@ -462,13 +565,15 @@ impl Item {
             UiSoundReserve => return None,
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
+            ChatIndicator => ChatAnimation,
             Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks | Sort
-            | AutoReconnect | NoAi | AgentControl | DiscordPresence | Splitscreen => {
+            | AutoReconnect | NoAi | AgentControl | ReproKeys | DiscordPresence | Splitscreen
+            | ChatAnimation => {
                 return None;
             }
         })
     }
-    /// What the row says under its caption.
+    /// The English description: the fallback of [`Item::description_text`].
     pub fn description(self) -> &'static str {
         match self {
             Item::Fullbright => "Show blocks and entities at full light, even in dark areas.",
@@ -499,6 +604,10 @@ impl Item {
             Item::SortKey => {
                 "Sorts the part under the cursor. Click, then press a key; Escape unbinds it."
             }
+            Item::ChatAnimation => {
+                "A new chat line slides in from the left while it fades in, instead of appearing whole."
+            }
+            Item::ChatIndicator => "The coloured bar at the left of a chat line.",
             Item::NoAi => {
                 "Hides and turns off every AI feature: agent control, horizon-ctl and the MCP servers. The launcher's switch too."
             }
@@ -511,6 +620,9 @@ impl Item {
             Item::AgentControl => {
                 "Your own AI agent can play this game through horizon-ctl or an MCP client, on this computer only."
             }
+            Item::ReproKeys => {
+                "F3+R starts or stops a repro recording and F3+E writes its bundle. Off by default: a recording copies the world."
+            }
         }
     }
     /// The frame-time cost the main switch of an extra shows.
@@ -520,6 +632,7 @@ impl Item {
             Item::Fullbright => Some(Cost::None),
             Item::UiSoundReserve => Some(Cost::None),
             Item::DynamicLights => Some(Cost::Low),
+            Item::ChatAnimation => Some(Cost::None),
             Item::OwnNameTag
             | Item::HideBlockParticles
             | Item::AutoReconnect
@@ -541,8 +654,11 @@ impl Item {
             Item::MouseTweaks => e.mouse_tweaks,
             Item::MouseTweaksWheel => e.mouse_tweaks_wheel,
             Item::Sort => e.sort,
+            Item::ChatAnimation => e.chat_animation,
+            Item::ChatIndicator => e.chat_indicator,
             Item::NoAi => e.no_ai,
             Item::AgentControl => e.agent_control,
+            Item::ReproKeys => e.repro_keys,
             Item::DiscordPresence => e.discord_presence,
             Item::Splitscreen => e.splitscreen,
             _ => return None,
@@ -553,8 +669,8 @@ impl Item {
         match self {
             Item::SortKey => crate::keybinds::display_name(&e.sort_key).plain(),
             other => match other.switch(e) {
-                Some(true) => "On".into(),
-                _ => "Off".into(),
+                Some(true) => crate::lang::get_or("On", "On"),
+                _ => crate::lang::get_or("Off", "Off"),
             },
         }
     }
@@ -571,8 +687,11 @@ impl Item {
             Item::MouseTweaks => e.mouse_tweaks = !e.mouse_tweaks,
             Item::MouseTweaksWheel => e.mouse_tweaks_wheel = !e.mouse_tweaks_wheel,
             Item::Sort => e.sort = !e.sort,
+            Item::ChatAnimation => e.chat_animation = !e.chat_animation,
+            Item::ChatIndicator => e.chat_indicator = !e.chat_indicator,
             Item::NoAi => e.no_ai = !e.no_ai,
             Item::AgentControl => e.agent_control = !e.agent_control,
+            Item::ReproKeys => e.repro_keys = !e.repro_keys,
             Item::DiscordPresence => e.discord_presence = !e.discord_presence,
             Item::Splitscreen => e.splitscreen = !e.splitscreen,
             Item::SortKey => {}
@@ -633,6 +752,8 @@ mod tests {
         e.mouse_tweaks_wheel = false;
         e.sort = true;
         e.sort_key = "key.keyboard.r".into();
+        e.chat_animation = true;
+        e.chat_indicator = false;
         e.discord_presence = false;
         assert!(!e.splitscreen);
         Item::Splitscreen.cycle(&mut e, false);

@@ -926,6 +926,8 @@ impl PostEffects {
         let mut decoder = png::Decoder::new(std::io::BufReader::new(
             std::fs::File::open(&file).map_err(|e| format!("{}: {e}", file.display()))?,
         ));
+        // As the other resource-pack images: stb_image never checks chunk CRCs.
+        decoder.ignore_checksums(true);
         decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
         let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
         let mut data = vec![0; reader.output_buffer_size().ok_or("a huge image")?];
@@ -1657,7 +1659,7 @@ mod tests {
     }
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = crate::gfx::test_gpu::instance();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
         pollster::block_on(adapter.request_device(&Default::default())).ok()
     }

@@ -346,3 +346,27 @@ tests pass; fmt and clippy `-D warnings` clean (horizon-client, horizon-jvm).
   per player, unlike client 1 said): its copied config stopped the overlay. Test:
   `MODS=<REI+TR+Jade...> tools/java_bridge/server_test.sh '$G key e tap; sleep 6'` (new);
   regress `reiscreen` (new), `rei hud join modsettings failmsg` pass.
+
+### Upstream sync 2 (2026-11-02, branch `bridge-upstream-sync-2`)
+
+`origin/java-bridge` (739071c25) with upstream main 769a7f368 (2,153 commits) merged. 14 files
+conflicted, all small. What upstream changed under us:
+- **The client lib is its own crate**: `horizon-client-lib` (its root
+  `crates/horizon-client/src/client_lib.rs`, same folder); `horizon-client`'s lib is now
+  `game`, `entry`, `mod_api`. `horizon-ctl` is `horizon-client-lib`'s binary: build with
+  `-p horizon-client -p horizon-client-lib --features horizon-client/java-mods` (the scripts
+  and java-bridge.md do now), or `horizon-ctl` stays stale. `mem_log` re-exported in
+  `client_lib.rs`.
+- `Mob::knockback` takes the damage source; `write_world_gen_settings_with` takes the
+  single-biome preset's biome (our `_preset` too); content blocks lay their states out in
+  vanilla's property order (`NewBlock::order`, `Rename::row`), which own-state blocks keep
+  (one row); menus report `item_crafted` (native) beside our `crafted_takes`; orb pickup and
+  slot changes have native hooks, ours run first; container clicks: Java's menus, then
+  native quick moves; the HUD draws through `gui_layer`s (Java's HUD before them).
+
+Tests: `regress.py --jars` (same jars as sync 1): **35 pass** (pot, terminal, ber, hud, rei,
+reiscreen, join, modsettings, failmsg, keys, entity, hostile, worldgen, veinminer, harvest,
+carry, seasons, orbs, preset, skyblock, oneblock, attack, bettercombat, ride, dismount, sweep,
+fall, effects, slot, snow, mixins1, mixins2, lost, prism), **mount** flaky (fails a different
+check each run: the sloped floor, entities task 4). Skipped (no jars here): gecko, maps,
+journeymap, voxelmap, diorama, maps-lan, bigpack, tech, gridlod. Clippy `-D warnings` clean.

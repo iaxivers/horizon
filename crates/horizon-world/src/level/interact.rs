@@ -20,6 +20,14 @@ impl InteractionResult {
     pub fn consumes_action(self) -> bool {
         !matches!(self, Self::Pass)
     }
+
+    /// Whether the interaction swings the player's arm.
+    ///
+    /// In vanilla, InteractionResult.SUCCESS swings (swing source CLIENT),
+    /// while CONSUME consumes the action without swinging (swing source SERVER).
+    pub fn should_swing(self) -> bool {
+        matches!(self, Self::Success)
+    }
 }
 /// Which part of `BlockState` answered a use on a block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -227,8 +235,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 }
                 Class::Note => {
                     let next = table.cycle(state, p.note);
+                    if !self.note_play_allowed(pos, next) {
+                        return Success;
+                    }
                     self.set_block_and_update(pos, next);
-                    self.note_play(pos, next);
+                    self.note_play_unchecked(pos, next);
                     Success
                 }
                 Class::RedstoneWire => self.wire_use(pos, state, player),

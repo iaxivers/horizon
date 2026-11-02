@@ -8,6 +8,7 @@ members = [
     "crates/horizon-hdr",
     "crates/horizon-world",
     "crates/horizon-client",
+    "crates/horizon-client-lib",
     "crates/horizon-client-core",
     "crates/horizon-client-input",
     "crates/horizon-client-render",
@@ -16,6 +17,8 @@ members = [
     "crates/horizon-server-files",
     "crates/horizon-anticheat",
     "crates/horizon-chat-filter",
+    # The Model Context Protocol, shared by horizon-ctl, horizon-server and the launcher.
+    "crates/horizon-mcp",
     "crates/horizon-server",
     "crates/horizon-bots",
     "crates/horizon-assets",

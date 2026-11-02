@@ -21,6 +21,14 @@ pub(super) fn assign_entity_id(next: &mut u32, id: &mut u32) -> u32 {
     *id
 }
 
+impl Game<'_> {
+    /// `Entity.nextEntityId`: the id a new entity takes from the one counter.
+    pub(super) fn take_entity_id(&mut self) -> u32 {
+        self.next_entity += 1;
+        self.next_entity
+    }
+}
+
 fn state(id: u32, kind: &str, position: [f64; 3], yaw: f32, on_ground: bool) -> EntityState {
     EntityState {
         id: id as i32,
@@ -38,6 +46,8 @@ fn state(id: u32, kind: &str, position: [f64; 3], yaw: f32, on_ground: bool) -> 
         equipment: Vec::new(),
         attributes: Vec::new(),
         precise: false,
+        vertical_collision: false,
+        horizontal_collision: false,
         needs_sync: false,
         leash: None,
         spectator: false,
@@ -83,6 +93,42 @@ fn stand_poses(a: &horizon_client::entities::ArmorStand) -> Vec<(u8, i32, Value)
 }
 
 impl Game<'_> {
+    /// The entities players started and stopped tracking since the last
+    /// tick, told to the mods in order with the hub back in `self.lan` and
+    /// no player's state swapped in (`ServerEntity.addPairing` and
+    /// `removePairing`).
+    pub(super) fn run_native_tracking(&mut self) {
+        let batches = match self.lan.as_mut() {
+            Some(host) => std::mem::take(&mut host.hub.native_tracking),
+            None => return,
+        };
+        if self.remote.is_some() || self.options.execution_role.is_client() {
+            return;
+        }
+        for batch in batches {
+            for e in batch.events {
+                let (id, kind) = (e.entity as u32, &*e.tracked.kind);
+                if e.start {
+                    self.native_player_start_tracking(
+                        batch.player,
+                        &batch.name,
+                        id,
+                        e.tracked.uuid,
+                        kind,
+                    );
+                } else {
+                    self.native_player_stop_tracking(
+                        batch.player,
+                        &batch.name,
+                        id,
+                        e.tracked.uuid,
+                        kind,
+                    );
+                }
+            }
+        }
+    }
+
     /// Who rides what (`Entity.getPassengers`): mobs on mobs, and the
     /// host in its boat or minecart.
     pub(super) fn lan_riding(
@@ -344,7 +390,9 @@ impl Game<'_> {
             e.meta.push((
                 8,
                 serializer::ITEM_STACK,
-                Value::Item(hub.stack(&Some(o.item.clone()))),
+                Value::Item(
+                    hub.stack(&Some(o.item.clone()).filter(|i| &*i.item != "minecraft:air")),
+                ),
             ));
             out.push(e);
         }
@@ -576,6 +624,17 @@ impl Game<'_> {
                 // WitherSkull.DATA_DANGEROUS.
                 K::WitherSkull { dangerous: true } => {
                     e.meta.push((8, serializer::BOOLEAN, Value::Bool(true)));
+                }
+                // ThrowableItemProjectile.DATA_ITEM_STACK: the potion's
+                // `potion_contents`, whose effects the guest's splash and
+                // whose colour its drawing need. A plain splash potion is the
+                // client's default and is not sent.
+                K::Potion(stack) if stack.extra.is_some() || stack.count != 1 => {
+                    e.meta.push((
+                        8,
+                        serializer::ITEM_STACK,
+                        Value::Item(hub.stack(&Some((**stack).clone()))),
+                    ));
                 }
                 _ => {}
             }

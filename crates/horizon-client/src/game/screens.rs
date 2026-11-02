@@ -24,6 +24,7 @@ impl Screen {
             | Self::Advancements
             | Self::WorldOptions
             | Self::Friends
+            | Self::Social
             | Self::ServerLinks
             | Self::ConfirmLink
             | Self::DialogWarning
@@ -119,8 +120,7 @@ fn pause_buttons(
 /// The icon row: report bugs, feedback, friends, player reporting.
 /// `FRIENDS_ICON` (vanilla's `CommonButtons.friends`) opens Horizon's
 /// Play with Friends; the first two open their link through
-/// `ConfirmLinkScreen`; player reporting (`SocialInteractionsScreen`, not
-/// ported) stays inactive.
+/// `ConfirmLinkScreen`; player reporting opens `SocialInteractionsScreen`.
 const FRIENDS_ICON: usize = 2;
 /// `CommonLinks.SNAPSHOT_BUGS_FEEDBACK`, behind `PauseScreen.REPORT_BUGS`.
 const BUGS_LINK: &str = "https://aka.ms/snapshotbugs?ref=game";
@@ -144,7 +144,7 @@ const ICON_LABELS: [&str; 4] = [
 /// button always, friends when the friends list is shown.
 fn icon_active(icon: usize, friends: bool) -> bool {
     match icon {
-        0 | 1 => true,
+        0 | 1 | 3 => true,
         FRIENDS_ICON => friends,
         _ => false,
     }
@@ -259,7 +259,7 @@ impl Game<'_> {
             self.external_server(),
             links,
             additions.is_some(),
-            self.options.split_guest,
+            self.options.split_guest || self.split_hud.menu,
         ) {
             let is_focused = self.pause_focus == Some(id);
             let hover = active && (ui::hovered(self.cursor, x, y, bw, 20.0) || is_focused);
@@ -273,10 +273,15 @@ impl Game<'_> {
                 tooltip = Some(Text::translate("menu.custom_options.tooltip", &[]));
             }
         }
-        for (i, (x, y, sprite)) in
-            pause_icons(w, h, links, additions.is_some(), self.options.split_guest)
-                .into_iter()
-                .enumerate()
+        for (i, (x, y, sprite)) in pause_icons(
+            w,
+            h,
+            links,
+            additions.is_some(),
+            self.options.split_guest || self.split_hud.menu,
+        )
+        .into_iter()
+        .enumerate()
         {
             let active = icon_active(i, friends);
             let is_focused = (self.pause_focus == Some(10) && i == FRIENDS_ICON)
@@ -326,7 +331,7 @@ impl Game<'_> {
             batch.sprite_scaled(atlas, sprite, x + 3.0, y + 3.0, 15.0, 15.0, u32::MAX);
             if hover {
                 tooltip = Some(if i == FRIENDS_ICON {
-                    Text::literal(horizon_client::friends_screen::TITLE)
+                    Text::literal(horizon_client::friends_screen::title())
                 } else {
                     Text::translate(ICON_LABELS[i], &[])
                 });
@@ -363,6 +368,8 @@ impl Game<'_> {
             // ConfirmLinkScreen.confirmLink(this, CommonLinks...) on the pause screen.
             12 => self.confirm_trusted_link(BUGS_LINK, Screen::Paused),
             13 => self.confirm_trusted_link(feedback_link(), Screen::Paused),
+            // PauseScreen: `new SocialInteractionsScreen(this)`.
+            15 => self.open_social(true),
             30 => self.open_split_settings(),
             // addCustomDialogButtons: DialogConnectionAccess.openDialog of the
             // additions dialog, from the pause menu.
@@ -390,7 +397,13 @@ impl Game<'_> {
         };
         let links = !self.server_links().is_empty();
         let additions = self.pause_screen_additions();
-        let icons = pause_icons(w, h, links, additions.is_some(), self.options.split_guest);
+        let icons = pause_icons(
+            w,
+            h,
+            links,
+            additions.is_some(),
+            self.options.split_guest || self.split_hud.menu,
+        );
         let friends = icons[FRIENDS_ICON];
         let hit = pause_buttons(
             w,
@@ -398,14 +411,15 @@ impl Game<'_> {
             self.external_server(),
             links,
             additions.is_some(),
-            self.options.split_guest,
+            self.options.split_guest || self.split_hud.menu,
         )
         .into_iter()
         .find(|b| b.5 && ui::hovered(self.cursor, b.0, b.1, b.2, 20.0))
         .map(|b| b.4)
         .or_else(|| {
-            // The report bugs and feedback icons (ids 12 and 13).
-            (0..2)
+            // The report bugs, feedback and player reporting icons (ids 12, 13 and 15).
+            [0, 1, 3]
+                .into_iter()
                 .find(|&i| ui::hovered(self.cursor, icons[i].0, icons[i].1, 20.0, 20.0))
                 .map(|i| 12 + i as u8)
         })
@@ -437,7 +451,7 @@ impl Game<'_> {
             self.external_server(),
             links,
             self.pause_screen_additions().is_some(),
-            self.options.split_guest,
+            self.options.split_guest || self.split_hud.menu,
         );
         let mut active_ids: Vec<u8> = buttons.into_iter().filter(|b| b.5).map(|b| b.4).collect();
         let friends = self.friends_view().shown;
@@ -485,7 +499,7 @@ impl Game<'_> {
                     self.external_server(),
                     links,
                     self.pause_screen_additions().is_some(),
-                    self.options.split_guest,
+                    self.options.split_guest || self.split_hud.menu,
                 );
                 let mut rects: Vec<(u8, f32, f32, f32)> = buttons
                     .into_iter()
@@ -498,7 +512,7 @@ impl Game<'_> {
                     h,
                     links,
                     self.pause_screen_additions().is_some(),
-                    self.options.split_guest,
+                    self.options.split_guest || self.split_hud.menu,
                 )
                 .into_iter()
                 .enumerate()
@@ -917,16 +931,15 @@ mod tests {
     fn pause_icons_report_bugs_and_feedback_are_active_like_vanilla() {
         use super::{FRIENDS_ICON, icon_active};
         // PauseScreen.createPauseMenu: the bug and feedback buttons are live,
-        // friends follows its list, player reporting waits for its screen.
-        assert!(icon_active(0, false) && icon_active(1, false));
+        // friends follows its list, player reporting opens the social screen.
+        assert!(icon_active(0, false) && icon_active(1, false) && icon_active(3, false));
         assert!(icon_active(FRIENDS_ICON, true) && !icon_active(FRIENDS_ICON, false));
-        assert!(!icon_active(3, true));
     }
 
     #[test]
     fn pause_keyboard_focus_includes_the_active_icon_buttons() {
-        assert_eq!(pause_icon_focus_ids(false), [12, 13]);
-        assert_eq!(pause_icon_focus_ids(true), [12, 13, 10]);
+        assert_eq!(pause_icon_focus_ids(false), [12, 13, 15]);
+        assert_eq!(pause_icon_focus_ids(true), [12, 13, 10, 15]);
     }
 
     #[test]

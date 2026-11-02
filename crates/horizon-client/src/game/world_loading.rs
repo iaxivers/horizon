@@ -49,14 +49,48 @@ impl WorldRequest {
         settings: &Settings,
         upgrade: &horizon_world::datafix::progress::UpgradeProgress,
     ) -> Result<PreparedWorld> {
+        let _prepare_step = startup::step("world.prepare");
         // Before any chunk is read: a loaded container with a loot table is rolled as its chunk
         // is decoded (`save::roll_loaded_loot`), and the spawn chunks are read while the world
         // opens. Every world opens here: in-frame, on the server thread, on a dedicated server.
-        horizon_client::structure_blocks::loot_data(
-            &options.resources,
-            &horizon_world::loot::PackOverlay::NONE,
-        );
-        horizon_client::mem_log::mark("loot data");
+        let loot = || {
+            horizon_client::structure_blocks::loot_data(
+                &options.resources,
+                &horizon_world::loot::PackOverlay::NONE,
+            );
+            horizon_client::mem_log::mark("loot data");
+        };
+        // Bone meal's and saplings' features, over the plain worldgen bundle.
+        let live_features = || growth::install_live_features(res, pack, options);
+        if res.threads() <= 1 {
+            loot();
+            let prepared = self.prepare_world(res, pack, options, settings, upgrade)?;
+            live_features();
+            return Ok(prepared);
+        }
+        // Neither needs the world: they load beside it (the generator's decoration keeps one
+        // core busy) and are done before it opens. A bundle both read loads once.
+        std::thread::scope(|scope| {
+            let loot = scope.spawn(loot);
+            let live_features = scope.spawn(live_features);
+            let prepared = self.prepare_world(res, pack, options, settings, upgrade);
+            for helper in [loot, live_features] {
+                helper
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            }
+            prepared
+        })
+    }
+
+    fn prepare_world(
+        self,
+        res: &Resources,
+        pack: &PackResources,
+        options: &Options,
+        settings: &Settings,
+        upgrade: &horizon_world::datafix::progress::UpgradeProgress,
+    ) -> Result<PreparedWorld> {
         let Self {
             save_root,
             folder,
@@ -147,6 +181,7 @@ impl WorldRequest {
                 level.seed,
                 o.world_gen(),
                 o.flat_settings(),
+                o.single_biome(),
                 preset,
             )?;
             // WorldCreationUiState.getGameRules, written with the level.
@@ -202,6 +237,7 @@ impl WorldRequest {
         let dim = Dim::from_id(&level.dimension);
         let shapes = level_shapes(&save_root, res.biomes());
         let shape = shapes.get(dim.id());
+        let streaming_step = startup::step("world.make_streaming");
         let (mut streaming, save, locator) = make_streaming(
             res,
             pack,
@@ -214,8 +250,10 @@ impl WorldRequest {
             &level.enabled_features,
         )?;
         horizon_client::mem_log::mark("streaming (generator)");
+        drop(streaming_step);
         streaming.radius = settings.render_distance;
         let mut world = World::new(res.facts().air, level.seed);
+        world.attachments = save.load_attachments();
         world.shape = shape;
         world.fast_lava = dim == Dim::Nether;
         world.game_time = level.time;
@@ -234,8 +272,6 @@ impl WorldRequest {
                 thunder_level: if thunder { (1.0, 1.0) } else { (0.0, 0.0) },
             };
         }
-
-        growth::install_live_features(res, pack, options);
 
         // Persist new metadata on the worker too, before publishing the world.
         if !save_root.join("level.dat").exists() {
@@ -354,6 +390,7 @@ pub(super) fn preload_world_data(
                 .name("World data preload".into())
                 .spawn(move || {
                     horizon_threads::behind_server();
+                    let sync = spawn_sync_preload(&resources, true);
                     // Errors are left for the world opening to report.
                     if let Ok(data) = horizon_client::vanillagen::shared_data(
                         &resources.join("worldgen"),
@@ -363,14 +400,17 @@ pub(super) fn preload_world_data(
                         // seed shares: about 140 ms off opening the world.
                         let _ = data.prepare_decoration("minecraft:normal", "minecraft:overworld");
                     }
+                    // The loot data's item tables and the server's data both
+                    // read the recipe folder: held here, it is read once.
+                    let _recipe_files =
+                        horizon_client::json_folder::read(&resources.join("data/minecraft/recipe"));
                     // The preload is the game's own data; the world's packs'
                     // tables are built when it opens (finish_open_world).
                     let _ = horizon_client::structure_blocks::loot_data(
                         &resources,
                         &horizon_world::loot::PackOverlay::NONE,
                     );
-                    let _ =
-                        super::lan::sync_data(&resources, &horizon_world::loot::PackOverlay::NONE);
+                    join_sync_preload(sync, &resources);
                 });
             match spawned {
                 Ok(thread) => *preload = Preload::Started { thread, left: None },
@@ -419,6 +459,7 @@ pub(super) fn preload_launch_world(
         .spawn(move || {
             // Not behind the server: the world's opening waits for it.
             let started = std::time::Instant::now();
+            let sync = spawn_sync_preload(&resources, false);
             // Errors are left for the world opening to report. The world's
             // flags from its level.dat: the feature packs a flag forces on.
             let enabled_features = horizon_client::save::Level::read(&world_root)
@@ -434,11 +475,15 @@ pub(super) fn preload_launch_world(
                 let preset = horizon_client::save::WorldGen::preset(&world_root);
                 let _ = data.prepare_decoration(preset, "minecraft:overworld");
             }
+            // As in `preload_world_data`: the loot data and the server's
+            // data share one read of the recipe folder.
+            let _recipe_files =
+                horizon_client::json_folder::read(&resources.join("data/minecraft/recipe"));
             let _ = horizon_client::structure_blocks::loot_data(
                 &resources,
                 &horizon_world::loot::PackOverlay::NONE,
             );
-            let _ = super::lan::sync_data(&resources, &horizon_world::loot::PackOverlay::NONE);
+            join_sync_preload(sync, &resources);
             log::info!(
                 "Horizon: world data preloaded for the launch's world in {} ms",
                 started.elapsed().as_millis()
@@ -447,6 +492,39 @@ pub(super) fn preload_launch_world(
     match spawned {
         Ok(thread) => *preload = Preload::Started { thread, left: None },
         Err(e) => log::warn!("Horizon: world data preload: {e}"),
+    }
+}
+
+/// The registries, tags, recipes and advancements the server sends
+/// (`lan::sync_data`), read on a thread of their own beside the worldgen and
+/// loot reads: they share nothing, and read after them they came too late
+/// for the server thread, which then read them a second time.
+fn spawn_sync_preload(
+    resources: &std::path::Path,
+    behind_server: bool,
+) -> Option<std::thread::JoinHandle<()>> {
+    let resources = resources.to_owned();
+    std::thread::Builder::new()
+        .name("Sync data preload".into())
+        .spawn(move || {
+            if behind_server {
+                horizon_threads::behind_server();
+            }
+            let _ = super::lan::sync_data(&resources, &horizon_world::loot::PackOverlay::NONE);
+        })
+        .ok()
+}
+
+/// Waits for [`spawn_sync_preload`]'s thread, so the preload is over when
+/// its own thread is; reads the data here if that thread did not start.
+fn join_sync_preload(sync: Option<std::thread::JoinHandle<()>>, resources: &std::path::Path) {
+    match sync {
+        Some(thread) => {
+            let _ = thread.join();
+        }
+        None => {
+            let _ = super::lan::sync_data(resources, &horizon_world::loot::PackOverlay::NONE);
+        }
     }
 }
 
@@ -833,6 +911,9 @@ fn finish_streaming(
     streaming.biome_blend = settings.biome_blend;
     streaming.smooth_lighting = settings.smooth_lighting;
     streaming.cutout_leaves = settings.cutout_leaves;
+    streaming.leaf_culling = settings
+        .horizon
+        .leaf_culling_effective(&settings.resource_packs);
     streaming.biome_zoom = BiomeZoom::new(obfuscate_seed(seed));
     streaming.sky_light = dim != Dim::Nether;
     streaming.nether_shading = dim == Dim::Nether;

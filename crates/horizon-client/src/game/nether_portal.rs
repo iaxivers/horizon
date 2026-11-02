@@ -108,6 +108,40 @@ fn rotate_y(v: Vec3, degrees: f32) -> Vec3 {
     );
     Vec3::new(v.x * cos + v.z * sin, v.y, v.z * cos - v.x * sin)
 }
+/// Whether a projectile is an arrow, which goes through a portal like the
+/// other entities.
+fn is_arrow(p: &horizon_client::projectiles::Projectile) -> bool {
+    matches!(
+        p.kind,
+        horizon_client::projectiles::ProjectileKind::Arrow { .. }
+    )
+}
+/// The projectiles besides arrows that a portal sends on: the thrown items
+/// and fireballs a chunk saves. A pearl has its own rules (it keeps its owner's
+/// dimension) and a wind charge is not saved, so both stay.
+fn is_portal_projectile(p: &horizon_client::projectiles::Projectile) -> bool {
+    use horizon_client::projectiles::ProjectileKind;
+    !is_arrow(p)
+        && !matches!(
+            p.kind,
+            ProjectileKind::EnderPearl
+                | ProjectileKind::WindCharge
+                | ProjectileKind::BreezeWindCharge
+        )
+        && horizon_client::entity_nbt::saved_with_chunk(p)
+}
+/// Width and height of a projectile that goes through a portal.
+fn projectile_box(p: &horizon_client::projectiles::Projectile) -> (f32, f32) {
+    if is_arrow(p) {
+        (
+            horizon_client::arrows::WIDTH,
+            horizon_client::arrows::HEIGHT,
+        )
+    } else {
+        let size = p.kind.size() as f32;
+        (size, size)
+    }
+}
 fn doubles(values: [f64; 3]) -> Tag {
     Tag::List(values.iter().map(|v| Tag::Double(v.to_bits())).collect())
 }
@@ -395,6 +429,13 @@ impl Game<'_> {
         });
         let _ = self.process_level_events();
         if let Some(exit) = created {
+            let dim = if to_nether {
+                "minecraft:the_nether"
+            } else {
+                "minecraft:overworld"
+            };
+            let corner = exit.min_corner;
+            self.native_portal_create(dim, [corner.x, corner.y, corner.z]);
             // A portal built for the entity: the ticket goes on the chunk it
             // arrives in (`TeleportTransition.PLACE_PORTAL_TICKET`).
             let (at, _) = self.arrival(plan, exit);
@@ -657,6 +698,12 @@ impl Game<'_> {
         for c in &self.carts {
             self.portals.before.insert(c.id, c.position);
         }
+        for t in &self.tnts {
+            self.portals.before.insert(t.id, t.position);
+        }
+        for o in &self.orbs {
+            self.portals.before.insert(o.id, o.position);
+        }
         // Only an entity in a portal, or cooling down from one, has a state
         // here: whether the others could use a portal is not worth asking
         // for each of them on every tick.
@@ -673,10 +720,35 @@ impl Game<'_> {
                     ids.push((m.id, self.mob_can_use_portal(m)));
                 }
             }
+            for t in &self.tnts {
+                if tracked.contains_key(&t.id) {
+                    ids.push((t.id, self.tnt_can_use_portal(t.id)));
+                }
+            }
             let vehicles = self.boats.iter().map(|b| b.id);
             for id in vehicles.chain(self.carts.iter().map(|c| c.id)) {
                 if tracked.contains_key(&id) {
                     ids.push((id, self.vehicle_can_use_portal(id)));
+                }
+            }
+            for p in &self.creatures.projectiles {
+                if tracked.contains_key(&p.id) && (is_arrow(p) || is_portal_projectile(p)) {
+                    ids.push((p.id, true));
+                }
+            }
+            for o in &self.orbs {
+                if tracked.contains_key(&o.id) {
+                    ids.push((o.id, true));
+                }
+            }
+            for t in &self.tridents {
+                if tracked.contains_key(&t.id) {
+                    ids.push((t.id, true));
+                }
+            }
+            for r in &self.rockets {
+                if tracked.contains_key(&r.id) && r.attached_to.is_none() && !r.attached {
+                    ids.push((r.id, true));
                 }
             }
         }
@@ -752,6 +824,11 @@ impl Game<'_> {
     }
     /// `canUsePortal(false)` of a boat or minecart: empty, or ridden by
     /// server players only, whom it carries along.
+    /// `Entity.canUsePortal(false)` for a primed TNT: it carries no mob.
+    fn tnt_can_use_portal(&self, id: u32) -> bool {
+        // Id 0: not tracked yet (the in-frame path), nothing to key its portal state by.
+        id != 0 && !self.mobs.iter().any(|m| m.extra.mount == Some(id))
+    }
     fn vehicle_can_use_portal(&self, id: u32) -> bool {
         if !self.vehicle_occupied(id) {
             return true;
@@ -799,8 +876,8 @@ impl Game<'_> {
             || self.mobs.iter().any(|m| m.extra.mount == Some(id))
     }
     /// `NetherPortalBlock.entityInside` and `EndPortalBlock.entityInside`
-    /// for the items, mobs and empty boats and minecarts that moved this
-    /// tick: the portal blocks their box swept through (an End portal's
+    /// for the items, mobs, empty boats and minecarts, and arrows that moved
+    /// this tick: the portal blocks their box swept through (an End portal's
     /// transition time is 0 too).
     pub(super) fn find_entity_portals(&mut self) {
         if self.remote.is_some() {
@@ -811,6 +888,14 @@ impl Game<'_> {
             .dropped
             .iter()
             .map(|e| (e.id, e.position, 0.25, 0.25))
+            .chain(self.orbs.iter().map(|o| (o.id, o.position, 0.5, 0.5)))
+            .collect();
+        // PrimedTnt is 0.98 across; one that carries a mob stays (the rider would be left behind).
+        let tnts: Vec<(u32, Vec3, f32, f32)> = self
+            .tnts
+            .iter()
+            .filter(|t| self.tnt_can_use_portal(t.id))
+            .map(|t| (t.id, t.position, 0.98, 0.98))
             .collect();
         let mobs: Vec<(u32, Vec3, f32, f32)> = self
             .mobs
@@ -834,9 +919,46 @@ impl Game<'_> {
             .map(|(id, at, w, h)| (id, at, w as f32, h as f32))
             .collect();
         let mut portal_sections = std::mem::take(&mut self.portals.sections);
-        for (id, to, width, height) in items.into_iter().chain(mobs).chain(vehicles) {
+        for (id, to, width, height) in items.into_iter().chain(tnts).chain(mobs).chain(vehicles) {
             let from = self.portals.before.get(&id).copied().unwrap_or(to);
             if let Some(pos) = self.swept_portal(from, to, width, height, &mut portal_sections) {
+                inside.push((id, pos));
+            }
+        }
+        // The arrow's `previous` is where it stood at the start of its tick,
+        // which is also where an arrow shot this tick began. A stuck arrow
+        // that did not move this tick enters no block.
+        for p in self.creatures.projectiles.iter().filter(|p| {
+            (is_arrow(p) && (!p.stuck || p.previous != p.position)) || is_portal_projectile(p)
+        }) {
+            let (width, height) = projectile_box(p);
+            if let Some(pos) =
+                self.swept_portal(p.previous, p.position, width, height, &mut portal_sections)
+            {
+                inside.push((p.id, pos));
+            }
+        }
+        // A trident (0.5 across) or rocket (0.25) in flight, or one that moved
+        // this tick; a rocket that carries its owner stays.
+        let mut flyers: Vec<(u32, Vec3, Vec3, f32)> = Vec::new();
+        for t in self
+            .tridents
+            .iter_mut()
+            .filter(|t| !t.in_ground || t.previous != t.position)
+        {
+            let id = super::lan_entities::assign_entity_id(&mut self.next_entity, &mut t.id);
+            flyers.push((id, t.previous, t.position, 0.5));
+        }
+        for r in self
+            .rockets
+            .iter_mut()
+            .filter(|r| r.attached_to.is_none() && !r.attached)
+        {
+            let id = super::lan_entities::assign_entity_id(&mut self.next_entity, &mut r.id);
+            flyers.push((id, r.previous, r.position, 0.25));
+        }
+        for (id, from, to, size) in flyers {
+            if let Some(pos) = self.swept_portal(from, to, size, size, &mut portal_sections) {
                 inside.push((id, pos));
             }
         }
@@ -941,6 +1063,7 @@ impl Game<'_> {
     /// `Entity.teleportCrossDimension` away from the loaded dimension: the
     /// entity is saved and removed, and waits for its dimension to load.
     fn send_through_portal(&mut self, id: u32, entry: BlockPos) {
+        let arrivals = self.portals.arrivals.len();
         if let Some(i) = self.dropped.iter().position(|e| e.id == id) {
             let e = &self.dropped[i];
             let plan = self.entity_plan(entry, e.position, 0.25, 0.25, false);
@@ -954,6 +1077,59 @@ impl Game<'_> {
                 self.persist_raw(id),
             );
             self.remove_dropped(i);
+            self.detach_entity(id);
+            self.portals.arrivals.push(Arrival { plan, tag });
+            self.portals.dirty = true;
+        } else if let Some(i) = self.tnts.iter().position(|t| t.id == id) {
+            let t = &self.tnts[i];
+            let plan = self.entity_plan(entry, t.position, 0.98, 0.98, false);
+            if !self.may_enter(plan.dim) {
+                return;
+            }
+            let uuid = self.uuid_for(id);
+            let t = &self.tnts[i];
+            let tag = horizon_client::entity_nbt::tnt_to_nbt(
+                t.position,
+                t.velocity,
+                t.on_ground,
+                t.fuse,
+                uuid,
+                self.persist_raw(id),
+            );
+            self.tnts.remove(i);
+            self.forget_entity(id);
+            self.portals.arrivals.push(Arrival { plan, tag });
+            self.portals.dirty = true;
+        } else if let Some(i) = self.tridents.iter().position(|t| t.id == id) {
+            let plan = self.entity_plan(entry, self.tridents[i].position, 0.5, 0.5, false);
+            if !self.may_enter(plan.dim) {
+                return;
+            }
+            let uuid = self.uuid_for(id);
+            let tag = self.tridents[i].to_nbt(uuid, self.persist_raw(id));
+            self.tridents.remove(i);
+            self.forget_entity(id);
+            self.portals.arrivals.push(Arrival { plan, tag });
+            self.portals.dirty = true;
+        } else if let Some(i) = self.rockets.iter().position(|r| r.id == id) {
+            let plan = self.entity_plan(entry, self.rockets[i].position, 0.25, 0.25, false);
+            if !self.may_enter(plan.dim) {
+                return;
+            }
+            let uuid = self.uuid_for(id);
+            let tag = self.rockets[i].to_nbt(uuid, self.level.player_uuid, self.persist_raw(id));
+            self.rockets.remove(i);
+            self.forget_entity(id);
+            self.portals.arrivals.push(Arrival { plan, tag });
+            self.portals.dirty = true;
+        } else if let Some(i) = self.orbs.iter().position(|o| o.id == id) {
+            let plan = self.entity_plan(entry, self.orbs[i].position, 0.5, 0.5, false);
+            if !self.may_enter(plan.dim) {
+                return;
+            }
+            let uuid = self.uuid_for(id);
+            let tag = horizon_client::entity_nbt::orb_to_nbt(&self.orbs[i], uuid);
+            self.orbs.remove(i);
             self.forget_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
@@ -982,7 +1158,7 @@ impl Game<'_> {
             }
             self.mobs.retain(|m| !gone.contains(&m.id));
             for g in gone {
-                self.forget_entity(g);
+                self.detach_entity(g);
             }
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
@@ -1006,7 +1182,7 @@ impl Game<'_> {
                 b.chest.then_some(&b.items[..]),
             );
             self.boats.remove(i);
-            self.forget_entity(id);
+            self.detach_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
         } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
@@ -1023,9 +1199,47 @@ impl Game<'_> {
             let uuid = self.uuid_for(id);
             let tag = self.carts[i].to_nbt(uuid, self.persist_raw(id));
             self.carts.remove(i);
+            self.detach_entity(id);
+            self.portals.arrivals.push(Arrival { plan, tag });
+            self.portals.dirty = true;
+        } else if let Some(i) = self
+            .creatures
+            .projectiles
+            .iter()
+            .position(|p| p.id == id && (is_arrow(p) || is_portal_projectile(p)))
+        {
+            let p = &self.creatures.projectiles[i];
+            let (width, height) = projectile_box(p);
+            let plan = self.entity_plan(entry, p.position, width, height, false);
+            if !self.may_enter(plan.dim) {
+                return;
+            }
+            let uuid = self.uuid_for(id);
+            let p = &self.creatures.projectiles[i];
+            let in_block = p
+                .arrow
+                .as_ref()
+                .and_then(|a| a.last_state)
+                .map(|s| self.state_to_nbt(s));
+            let raw = self.persist_raw(id);
+            let Some(tag) =
+                horizon_client::entity_nbt::arrow_to_nbt(p, uuid, p.owner_uuid, in_block, raw)
+                    .or_else(|| {
+                        horizon_client::entity_nbt::fireball_to_nbt(p, uuid, p.owner_uuid, raw)
+                    })
+                    .or_else(|| {
+                        horizon_client::entity_nbt::throwable_to_nbt(p, uuid, p.owner_uuid, raw)
+                    })
+            else {
+                return;
+            };
+            self.creatures.projectiles.remove(i);
             self.forget_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
+        }
+        if self.portals.arrivals.len() > arrivals {
+            self.native_entity_portal(self.dim.id(), id, [entry.x, entry.y, entry.z]);
         }
     }
     /// The chunks of the arrivals still waiting to land in `dim`, for the
@@ -1184,7 +1398,20 @@ impl Game<'_> {
         if !self.portals.dirty || self.remote.is_some() {
             return;
         }
-        let list = self.portals.arrivals.iter().map(arrival_tag).collect();
+        let list = self
+            .portals
+            .arrivals
+            .iter()
+            .map(|arrival| {
+                let mut tag = arrival_tag(arrival);
+                if let Tag::Compound(root) = &mut tag
+                    && let Some(entity) = root.get_mut(&"entity".into())
+                {
+                    super::persist::write_attachments(entity, &self.entity_attachments);
+                }
+                tag
+            })
+            .collect();
         let root = Tag::compound([("arrivals", Tag::List(list))]);
         if horizon_client::save::write_dat(&self.arrivals_path(), root).is_ok() {
             self.portals.dirty = false;

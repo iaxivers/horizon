@@ -422,6 +422,7 @@ impl Game<'_> {
             Screen::Advancements => "advancements",
             Screen::WorldOptions => "world-options",
             Screen::Friends => "friends",
+            Screen::Social => "social",
             Screen::ServerLinks => "server-links",
             Screen::ConfirmLink => "confirm-link",
             Screen::DialogWarning => "dialog-warning",
@@ -471,7 +472,7 @@ impl Game<'_> {
         json!({ "kind": kind, "block": block, "entity": entity })
     }
 
-    fn state_value(&self) -> Value {
+    pub(super) fn state_value(&self) -> Value {
         let player = self.player.as_ref().map(|p| {
             json!({
                 "position": [p.position.x, p.position.y, p.position.z],
@@ -504,10 +505,10 @@ impl Game<'_> {
                 "effects": self.potions.effects.list.iter().map(|e| json!({ "id": e.id, "duration_ticks": e.duration, "amplifier": e.amplifier })).collect::<Vec<_>>(),
             })
         });
-        json!({
+        let mut state = json!({
             "dialog": self.dialog_status(),
             "screen": self.screen_label(),
-            "menu": (self.title.is_some() || self.split_profiles_open()).then(|| self.title_value()),
+            "menu": (self.title.is_some() || self.split_profiles_open() || self.split_setup_open()).then(|| self.title_value()),
             "world": (self.title.is_none()).then(|| match &self.integrated {
                 Some(server) => server.world_name.clone(),
                 None => self.level.name.clone(),
@@ -534,7 +535,13 @@ impl Game<'_> {
             "looking_at": self.looking_at(),
             "busy": self.agent.task.as_ref().map(|t| t.name),
             "ticks": self.ticks,
-        })
+        });
+        // Who caused the input, and whether a repro recording runs.
+        let mut input = self.input_trace.summary();
+        self.repro
+            .fill_summary(&mut input, self.input_trace.events());
+        state["input"] = input;
+        state
     }
 
     /// Splitscreen's profile page, a joining player's (`split_profiles`).
@@ -542,10 +549,17 @@ impl Game<'_> {
         self.screen == Screen::Options
             && self.ui.options.page() == horizon_client::options_ui::Page::SplitProfiles
     }
+    fn split_setup_open(&self) -> bool {
+        self.screen == Screen::Options
+            && self.ui.options.page() == horizon_client::options_ui::Page::SplitSetup
+    }
     fn title_value(&self) -> Value {
         use horizon_client::title::Mode;
         if self.split_profiles_open() {
             return self.ui.options.split_profiles.state();
+        }
+        if self.split_setup_open() {
+            return json!({ "mode": "splitscreen-setup", "status": self.ui.options.split_setup.status() });
         }
         let Some(title) = &self.title else {
             return Value::Null;
@@ -604,6 +618,11 @@ impl Game<'_> {
                     "height": layer.height,
                 })).collect::<Vec<_>>(),
             }),
+            Mode::CreateBuffet { buffet, .. } => json!({
+                "mode": "customize-single-biome",
+                "biome": buffet.biome(),
+                "query": buffet.query(),
+            }),
             Mode::Edit {
                 world,
                 name,
@@ -659,7 +678,7 @@ impl Game<'_> {
         }
     }
 
-    fn entities_value(&self, radius: f64, kind: Option<&str>) -> Value {
+    pub(super) fn entities_value(&self, radius: f64, kind: Option<&str>) -> Value {
         let Some(p) = &self.player else {
             return json!({ "entities": [] });
         };
@@ -706,7 +725,7 @@ impl Game<'_> {
             push(
                 [orb.position.x, orb.position.y, orb.position.z],
                 "minecraft:experience_orb",
-                json!({ "kind": "orb", "value": orb.value }),
+                json!({ "kind": "orb", "value": orb.value, "velocity": [orb.velocity.x, orb.velocity.y, orb.velocity.z] }),
             );
         }
         // Java mods' entities (game/java_entities.rs), as the server last sent them.
@@ -718,7 +737,7 @@ impl Game<'_> {
         json!({ "entities": list.into_iter().map(|(_, v)| v).collect::<Vec<_>>() })
     }
 
-    fn inventory_value(&self) -> Value {
+    pub(super) fn inventory_value(&self) -> Value {
         let armor = ["head", "chest", "legs", "feet"];
         json!({
             "selected": self.selected + 1,
@@ -749,7 +768,7 @@ impl Game<'_> {
             v["chat_input"] = json!(chat.input.value);
             v["chat_suggestions"] = json!(chat.suggestions_visible());
         }
-        if self.title.is_some() || self.split_profiles_open() {
+        if self.title.is_some() || self.split_profiles_open() || self.split_setup_open() {
             v["menu"] = self.title_value();
         }
         if self.screen == Screen::Inventory && self.title.is_none() {
@@ -1009,6 +1028,7 @@ impl Game<'_> {
                     device_id,
                     position,
                 },
+                super::input_trace::InputOrigin::Agent,
             );
             if i == 0 {
                 self.handle_window_event(
@@ -1019,6 +1039,7 @@ impl Game<'_> {
                         state: ElementState::Pressed,
                         button,
                     },
+                    super::input_trace::InputOrigin::Agent,
                 );
             }
         }
@@ -1030,6 +1051,7 @@ impl Game<'_> {
                 state: ElementState::Released,
                 button,
             },
+            super::input_trace::InputOrigin::Agent,
         );
         Ok(())
     }
@@ -1048,6 +1070,11 @@ impl Game<'_> {
             name,
         });
         Ok(Handled::Deferred)
+    }
+
+    /// A deferred agent action (goto, break, wait...) is still running.
+    pub(super) fn agent_busy(&self) -> bool {
+        self.agent.task.is_some()
     }
 
     /// Agent commands; `Handled::No` when `words[0]` is not one of them.
@@ -1589,6 +1616,7 @@ impl Game<'_> {
                         device_id,
                         position,
                     },
+                    super::input_trace::InputOrigin::Agent,
                 );
                 for _ in 0..steps.abs() as u32 {
                     self.handle_window_event(
@@ -1599,6 +1627,7 @@ impl Game<'_> {
                             delta: MouseScrollDelta::LineDelta(0.0, steps.signum()),
                             phase: TouchPhase::Moved,
                         },
+                        super::input_trace::InputOrigin::Agent,
                     );
                 }
                 ok(json!({ "ok": true, "screen": self.screen_label() }))
@@ -1712,7 +1741,7 @@ impl Game<'_> {
                 if let Some(server) = &self.integrated {
                     let chat = server
                         .call(move |g| g.owner_console_command(&command))
-                        .ok_or("the integrated server stopped")?;
+                        .ok_or(super::integrated::NO_ANSWER)?;
                     return ok(json!({ "ok": true, "chat": chat }));
                 }
                 if self.remote.is_some() {

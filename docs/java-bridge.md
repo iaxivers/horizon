@@ -854,7 +854,7 @@ Found in the upstream sync (2026-11-01):
 ```sh
 # Java 25 (JAVA_HOME may point at 21 on these machines; the scripts pick 25)
 export JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 PATH=/usr/lib/jvm/java-25-openjdk-amd64/bin:$PATH
-cargo build --profile fast -p horizon-client --features horizon-client/java-mods   # ~5 min after a Rust change
+cargo build --profile fast -p horizon-client -p horizon-client-lib --features horizon-client/java-mods   # ~5 min; horizon-ctl is horizon-client-lib's
 cargo test -p horizon-jvm                                                           # bridge tests
 cargo clippy --profile fast -p horizon-client --features java-mods --bins --lib -- -D warnings -A clippy::manual_range_contains
 ```

@@ -324,7 +324,7 @@ impl Book {
                 Recipe::Special(special) => {
                     for shown in special.book_displays() {
                         entries.push(Entry {
-                            id: format!("minecraft:{name}"),
+                            id: crate::crafting::recipe_id(name),
                             display_id: -1,
                             category: crafting_category(&category),
                             group: group(&grp),
@@ -338,7 +338,7 @@ impl Book {
                 }
             };
             entries.push(Entry {
-                id: format!("minecraft:{name}"),
+                id: crate::crafting::recipe_id(name),
                 display_id: -1,
                 category: crafting_category(&category),
                 group: group(&grp),
@@ -359,7 +359,7 @@ impl Book {
                 _ => continue,
             };
             entries.push(Entry {
-                id: format!("minecraft:{}", c.id),
+                id: crate::crafting::recipe_id(&c.id),
                 display_id: -1,
                 category,
                 group: group(&c.group),
@@ -717,14 +717,13 @@ impl RecipeIndex {
         // The packs' files replace first and the gate answers the merged
         // file, as the crafting loader's does: a false-conditioned pack
         // file leaves the lower one gone too.
-        let mut sources: Vec<(String, serde_json::Value)> = crate::crafting::recipe_files(&dir)
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|(name, path)| {
-                let v = std::fs::read(&path)
-                    .ok()
-                    .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())?;
-                Some((format!("minecraft:{name}"), v))
+        let folder = crate::json_folder::read(&dir).ok();
+        let mut sources: Vec<(String, serde_json::Value)> = folder
+            .iter()
+            .flat_map(|folder| &folder.files)
+            .filter_map(|file| {
+                let v = serde_json::from_slice::<serde_json::Value>(file.bytes().ok()?).ok()?;
+                Some((format!("minecraft:{}", file.name), v))
             })
             .collect();
         for (id, files) in overlay.kind("recipe") {
