@@ -25,9 +25,12 @@ pub(super) struct JavaTerrain {
     world: std::path::PathBuf,
     /// Whether the mods generate this dimension, asked once (the first chunk waits for Java).
     modded: Arc<OnceLock<bool>>,
-    /// Whether that generator is a mod's own and not on the noise (One Block's): Horizon's
-    /// noise says nothing of its land, so far terrain is the generator's base columns.
+    /// Whether Horizon's noise says nothing of that generator's land, so far terrain is the
+    /// generator's base columns: a mod's own generator not on the noise (One Block's), or
+    /// one whose noise isn't vanilla's (Tectonic's density functions).
     custom: Arc<OnceLock<bool>>,
+    /// Of those, the noise generators' (land, water and surface rules; not One Block's void).
+    noise_land: Arc<OnceLock<bool>>,
     /// Whether Horizon's noise fills the Java protos (asked once the mods generate it).
     horizon_noise: OnceLock<bool>,
     registry: &'static BlockRegistry,
@@ -85,6 +88,7 @@ impl JavaTerrain {
             world: world.to_path_buf(),
             modded: Arc::new(OnceLock::new()),
             custom: Arc::new(OnceLock::new()),
+            noise_land: Arc::new(OnceLock::new()),
             horizon_noise: OnceLock::new(),
             registry,
             assets,
@@ -98,6 +102,7 @@ impl JavaTerrain {
             let modded = self.start();
             if !modded {
                 self.custom.get_or_init(|| false);
+                self.noise_land.get_or_init(|| false);
                 self.inner.no_oracle();
             }
             modded
@@ -122,10 +127,14 @@ impl JavaTerrain {
                 let origin = horizon_jvm::events::worldgen_origin(&self.dimension)
                     .ok()
                     .flatten();
-                // A generator of the mod's own, not on the noise (One Block's void): far
-                // terrain from its columns; on the noise (Grid World's), Horizon's land.
-                self.custom
-                    .get_or_init(|| origin.is_some_and(|o| o.custom && !o.noise));
+                // A generator of the mod's own, not on the noise (One Block's void), or a
+                // noise that isn't vanilla's (Tectonic's): far terrain from its columns; on
+                // vanilla's noise (Grid World's), Horizon's land.
+                let noise_land = origin.is_some_and(|o| o.noise && !o.vanilla_noise);
+                self.noise_land.get_or_init(|| noise_land);
+                self.custom.get_or_init(|| {
+                    noise_land || origin.is_some_and(|o| o.custom && !o.noise)
+                });
                 // /locate biome and maps of places not generated yet ask the mods too, and
                 // the spawn comes from their generator's origin.
                 self.inner.set_biome_oracle(Arc::new(JavaBiomes {
@@ -213,6 +222,7 @@ impl ChunkGenerator for JavaTerrain {
             inner: self.inner.clone().lod_sampler(),
             modded: self.modded.clone(),
             custom: self.custom.clone(),
+            noise_land: self.noise_land.clone(),
             registry: self.registry,
             materials: Arc::new(OnceLock::new()),
             mask: Arc::new(OnceLock::new()),
@@ -511,6 +521,7 @@ struct JavaLod {
     inner: Box<dyn LodSampler>,
     modded: Arc<OnceLock<bool>>,
     custom: Arc<OnceLock<bool>>,
+    noise_land: Arc<OnceLock<bool>>,
     registry: &'static BlockRegistry,
     /// What the land is made of ([`JavaLod::materials`]), shared by the samplers.
     materials:
@@ -590,6 +601,10 @@ impl JavaLod {
         self.custom.get() == Some(&true)
     }
 
+    fn noise_land(&self) -> bool {
+        self.noise_land.get() == Some(&true)
+    }
+
     /// The grid the mods' generator cuts the land with (`HorizonWorldgen.lodMask`), asked once
     /// the mods generate the dimension.
     fn grid_mask(&self) -> Option<GridMask> {
@@ -650,11 +665,18 @@ impl JavaLod {
                         light: 0xf0,
                     });
                 }
-                if let Some(top) = column.spans.last() {
+                // The land's top is the surface; water over it is the surface's water, as
+                // Horizon's own columns have it.
+                let land = column.spans.iter().rposition(|s| !self.is_water(s.state));
+                if let Some(k) = land {
+                    let top = column.spans[k];
+                    let water = column.spans[k + 1..]
+                        .last()
+                        .map(|w| (i32::from(w.max), w.state));
                     column.surface = Some(horizon_client::lod::Surface {
                         height: i32::from(top.max),
                         state: top.state,
-                        water: None,
+                        water,
                         biome: 0,
                     });
                 }
@@ -676,7 +698,19 @@ impl JavaLod {
                 }
             }
         }
+        // A noise generator's base columns are stone and water: the surface rules' tops.
+        if self.noise_land() {
+            let mut refs: Vec<&mut horizon_client::lod::Column> = columns.iter_mut().collect();
+            self.tops(&mut refs, at);
+        }
         columns
+    }
+
+    /// Whether `state` is water (a base column's fluid).
+    fn is_water(&self, state: horizon_world::registry::BlockStateId) -> bool {
+        self.registry
+            .state(state)
+            .is_some_and(|s| s.name == "minecraft:water")
     }
 
     /// The blocks the land is made of (the surface rules' and the default block), asked once.
@@ -717,9 +751,10 @@ impl JavaLod {
             else {
                 continue;
             };
-            // Vanilla's biomes have vanilla's rules: Horizon's own columns are those.
+            // Vanilla's biomes have vanilla's rules: Horizon's own columns are those (not a
+            // generator's base columns: stone).
             let biome = self.oracle.biomes.get(column.spans[k].biome);
-            if biome.name.starts_with("minecraft:") {
+            if biome.name.starts_with("minecraft:") && !self.noise_land() {
                 continue;
             }
             let top = i32::from(column.spans[k].max) - 1;
@@ -825,6 +860,7 @@ impl LodSampler for JavaLod {
             inner: self.inner.fork()?,
             modded: self.modded.clone(),
             custom: self.custom.clone(),
+            noise_land: self.noise_land.clone(),
             registry: self.registry,
             materials: self.materials.clone(),
             mask: self.mask.clone(),

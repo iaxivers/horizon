@@ -78,6 +78,8 @@ public final class HorizonWorldgen {
         final Map<Long, Live> live = new ConcurrentHashMap<>();
         /** Horizon's noise fills the protos (horizonNoise). */
         boolean horizonNoise;
+        /** The land's shape is vanilla's noise (vanillaNoise): Horizon's far terrain stands for it. */
+        boolean vanillaNoise;
         /**
          * Lower-status chunks, oldest first out (a lock-free map: every chunk's structure
          * references read 289 of them, from every worker at once; a synchronized LRU map was
@@ -143,7 +145,8 @@ public final class HorizonWorldgen {
             WorldGenContext context = new WorldGenContext(level, generator, server.getStructureTemplateManager(),
                     null, Runnable::run, null);
             Dimension made = new Dimension(level, generator, context, containers);
-            made.horizonNoise = horizonNoise(dimension, level, generator);
+            made.vanillaNoise = vanillaNoise(dimension, generator, true);
+            made.horizonNoise = made.vanillaNoise && horizonNoise(dimension, level, generator);
             DIMENSIONS.put(dimension, made);
             Natives.log("Java mods: " + dimension + "'s noise is "
                     + (made.horizonNoise ? "Horizon's" : "Java's") + (CHECK ? " (checked against vanilla's)" : ""));
@@ -351,32 +354,45 @@ public final class HorizonWorldgen {
      * that add biomes and features (TerraBlender, BOP) leave the noise alone: the noise router
      * doesn't read biomes.
      */
-    private static boolean horizonNoise(String dimension, ServerLevel level, ChunkGenerator generator) {
-        // Opt-in (HORIZON_JAVA_NOISE=horizon): measured 2026-10-31 on 2 cores, Horizon's noise
-        // (12-13 ms a chunk, plus 3 ms to copy and 1 to apply) costs a little more than
-        // vanilla's doFill (11 ms: HotSpot's batched sampleVolume), and chunks came ~5% slower.
-        if (!"horizon".equals(System.getenv("HORIZON_JAVA_NOISE"))) return false;
-        if (!(generator instanceof net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator noise)
-                || generator.getClass() != net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator.class) return false;
+    /**
+     * Whether the dimension's land is vanilla's noise: a noise generator (or a mod's on it)
+     * with the dimension's vanilla settings, and no data pack of a mod with noise settings,
+     * density functions or noises (Tectonic replaces the overworld's; any such pack counts).
+     */
+    private static boolean vanillaNoise(String dimension, ChunkGenerator generator, boolean say) {
+        if (!(generator instanceof net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator noise)) return false;
         var vanilla = switch (dimension) {
             case "minecraft:overworld" -> net.minecraft.world.level.levelgen.NoiseGeneratorSettings.OVERWORLD;
             case "minecraft:the_nether" -> net.minecraft.world.level.levelgen.NoiseGeneratorSettings.NETHER;
             case "minecraft:the_end" -> net.minecraft.world.level.levelgen.NoiseGeneratorSettings.END;
             default -> null;
         };
-        if (vanilla == null || !noise.generatorSettings().is(vanilla)) return false;
+        if (vanilla == null || !noise.generatorSettings().is(vanilla)) {
+            if (say) Natives.log("Java mods: " + dimension + "'s noise settings are " + noise.generatorSettings().getRegisteredName()
+                    + ": far terrain from the mods' generator");
+            return false;
+        }
         var resources = HorizonData.loaded.resources();
         for (String folder : new String[] {"worldgen/noise_settings", "worldgen/density_function", "worldgen/noise"}) {
             for (var stack : resources.listResourceStacks(folder, id -> true).values()) {
                 for (var resource : stack) {
                     if (!"vanilla".equals(resource.sourcePackId())) {
-                        Natives.log("Java mods: " + dimension + "'s noise comes from " + resource.sourcePackId()
-                                + ": Java fills it");
+                        if (say) Natives.log("Java mods: " + dimension + "'s noise comes from " + resource.sourcePackId()
+                                + " too: far terrain from the mods' generator");
                         return false;
                     }
                 }
             }
         }
+        return true;
+    }
+
+    private static boolean horizonNoise(String dimension, ServerLevel level, ChunkGenerator generator) {
+        // Opt-in (HORIZON_JAVA_NOISE=horizon): measured 2026-10-31 on 2 cores, Horizon's noise
+        // (12-13 ms a chunk, plus 3 ms to copy and 1 to apply) costs a little more than
+        // vanilla's doFill (11 ms: HotSpot's batched sampleVolume), and chunks came ~5% slower.
+        if (!"horizon".equals(System.getenv("HORIZON_JAVA_NOISE"))) return false;
+        if (generator.getClass() != net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator.class) return false;
         var structures = level.registryAccess().lookupOrThrow(Registries.STRUCTURE);
         for (var entry : structures.listElements().toList()) {
             if (!entry.key().identifier().getNamespace().equals("minecraft")
@@ -493,7 +509,7 @@ public final class HorizonWorldgen {
             int height = d.generator.getSpawnHeight(d.level);
             boolean own = d.generator.getClass() != net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator.class;
             boolean noise = d.generator instanceof net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
-            return new int[] {origin.x(), origin.z(), height, own ? 1 : 0, noise ? 1 : 0};
+            return new int[] {origin.x(), origin.z(), height, own ? 1 : 0, noise ? 1 : 0, d.vanillaNoise ? 1 : 0};
         } catch (Throwable t) {
             failed("origin", t);
             return null;
@@ -749,6 +765,12 @@ public final class HorizonWorldgen {
      * "fromY toY state" (toY exclusive) separated by ';', "" for an empty column. Null if the
      * mods don't generate the dimension.
      */
+    /** Far terrain's density samplers, by dimension (lodColumns). */
+    private static final java.util.Map<String, net.minecraft.world.level.levelgen.densityfunction.DensitySampler> SAMPLERS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static final java.util.concurrent.atomic.AtomicLong FAR_TIMED = new java.util.concurrent.atomic.AtomicLong();
+
     public static String[] lodColumns(String dimension, int[] xz) {
         Thread.currentThread().setContextClassLoader(HorizonWorldgen.class.getClassLoader());
         Dimension d = DIMENSIONS.get(dimension);
@@ -756,6 +778,47 @@ public final class HorizonWorldgen {
         try {
             var randomState = d.level.getChunkSource().randomState();
             String[] out = new String[xz.length / 2];
+            if (d.generator instanceof net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator noise) {
+                // A noise that isn't vanilla's (Tectonic's): the land's height only, from the
+                // router's final density (solid where it is above 0, as NoiseChunk fills): a
+                // NoiseChunk a column (getBaseHeight, getBaseColumn) took ~80 ms each with this
+                // pack's routers. Down from the top in 8-block steps, then block by block.
+                // The default block up to it, the sea's fluid over it to the sea level.
+                var settings = noise.generatorSettings().value();
+                String stone = net.minecraft.commands.arguments.blocks.BlockStateParser.serialize(settings.defaultBlock());
+                String fluid = net.minecraft.commands.arguments.blocks.BlockStateParser.serialize(settings.defaultFluid());
+                // The router's sampler, made once (getSampler builds it: sampleBlockValueUncached
+                // made it again for every value, ~1 s a column).
+                var density = SAMPLERS.computeIfAbsent(dimension, k -> randomState.getSampler(settings.noiseRouter().finalDensity()));
+                var none = net.minecraft.world.level.levelgen.densityfunction.SamplerContext.EMPTY_UNCACHED;
+                int sea = noise.getSeaLevel(), minY = settings.noiseSettings().minY();
+                int maxY = minY + settings.noiseSettings().height() - 1;
+                long t0 = System.nanoTime();
+                for (int i = 0; i < out.length; i++) {
+                    int x = xz[2 * i], z = xz[2 * i + 1];
+                    int y = maxY;
+                    while (y >= minY && density.sampleValue(none, x, y, z) <= 0) y -= 8;
+                    int h = minY;
+                    if (y >= minY) {
+                        // Solid at y; the air above it is within 8 blocks.
+                        int up = Math.min(y + 8, maxY + 1);
+                        h = y + 1;
+                        for (int t = y + 1; t < up; t++) {
+                            if (density.sampleValue(none, x, t, z) <= 0) break;
+                            h = t + 1;
+                        }
+                    }
+                    StringBuilder runs = new StringBuilder();
+                    if (h > minY) runs.append(minY).append(' ').append(h).append(' ').append(stone);
+                    if (h < sea) {
+                        if (runs.length() > 0) runs.append(';');
+                        runs.append(Math.max(h, minY)).append(' ').append(sea).append(' ').append(fluid);
+                    }
+                    out[i] = runs.toString();
+                }
+                if (FAR_TIMED.incrementAndGet() % 20 == 1) Natives.log("far heights: " + out.length + " columns in " + (System.nanoTime() - t0) / 1000 + " us");
+                return out;
+            }
             for (int i = 0; i < out.length; i++) {
                 var column = d.generator.getBaseColumn(xz[2 * i], xz[2 * i + 1], d.level, randomState);
                 StringBuilder runs = new StringBuilder();

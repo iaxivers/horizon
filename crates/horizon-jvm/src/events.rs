@@ -1753,9 +1753,12 @@ pub struct WorldgenOrigin {
     pub z: i32,
     pub height: i32,
     pub custom: bool,
-    /// The generator is vanilla's noise generator or a mod's on it (Grid World's): its land's
-    /// shape is the noise's, so Horizon's far terrain stands for it.
+    /// The generator is vanilla's noise generator or a mod's on it (Grid World's).
     pub noise: bool,
+    /// Its noise is vanilla's (the dimension's settings, no mod's noise settings, density
+    /// functions or noises): the land's shape is Horizon's noise, so Horizon's far terrain
+    /// stands for it. Tectonic's isn't.
+    pub vanilla_noise: bool,
 }
 
 /// [`WorldgenOrigin`] of `dimension`; None if the mods don't generate it.
@@ -1774,8 +1777,8 @@ pub fn worldgen_origin(dimension: &str) -> Result<Option<WorldgenOrigin>, String
             return Ok(None);
         }
         let array = jni::objects::JIntArray::from(array);
-        let mut out = [0i32; 5];
-        if env.get_array_length(&array)? < 5 {
+        let mut out = [0i32; 6];
+        if env.get_array_length(&array)? < 6 {
             return Ok(None);
         }
         env.get_int_array_region(&array, 0, &mut out)?;
@@ -1785,6 +1788,7 @@ pub fn worldgen_origin(dimension: &str) -> Result<Option<WorldgenOrigin>, String
             height: out[2],
             custom: out[3] != 0,
             noise: out[4] != 0,
+            vanilla_noise: out[5] != 0,
         }))
     })?;
     Ok(found.flatten())

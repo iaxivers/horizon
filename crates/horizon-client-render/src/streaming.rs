@@ -1250,6 +1250,19 @@ impl Streaming {
     pub fn pending(&self) -> usize {
         self.shared.queue.lock().unwrap().len()
     }
+    /// What [`Self::busy`] waits for: generating, decorating, viewing, finishing, lighting,
+    /// meshing, queued.
+    pub fn busy_parts(&self) -> [usize; 7] {
+        [
+            self.generating.len(),
+            self.decorating,
+            self.viewing.len(),
+            self.finishing.len(),
+            self.lighting.len(),
+            self.meshing.len(),
+            self.pending(),
+        ]
+    }
     /// Whether any chunk is queued or on its way from generation to a mesh.
     pub fn busy(&self) -> bool {
         !(self.generating.is_empty()
