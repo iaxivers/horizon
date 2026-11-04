@@ -56,6 +56,8 @@ The Java bridge runs **real Fabric mods for 26.3** inside Horizon. **Horizon's w
 
 ### Try it
 
+**New here? Follow the [simple step-by-step version](human-java-bridge.md).**
+
 **Easiest: press Play in Prism Launcher.** On Windows or Linux (macOS is untested), with Rust, Git and a JDK 25 installed:
 
 ```sh

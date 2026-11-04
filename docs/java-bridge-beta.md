@@ -1,5 +1,7 @@
 # Fabric mods in Horizon: testers' guide
 
+**Just want to play? Use the [simple step-by-step version](../human-java-bridge.md).**
+
 This fork of [Horizon](https://github.com/horizon-rust/horizon) (Minecraft: Java Edition 26.3
 rewritten in Rust) runs **real Fabric mods for 26.3** inside Horizon.
 
@@ -62,9 +64,12 @@ write to, like Documents. Don't run it from inside the zip. That's all: go to th
 **Otherwise, build it** (once; about 15 minutes). Install the tools, then run the same three lines
 on every system:
 
-- **Windows**, in PowerShell. When the Rust installer asks about Visual Studio, accept its option:
+- **Windows**, in PowerShell:
   ```powershell
-  winget install Git.Git Rustlang.Rustup EclipseAdoptium.Temurin.25.JDK
+  winget install Git.Git
+  winget install Rustlang.Rustup
+  winget install EclipseAdoptium.Temurin.25.JDK
+  winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
   ```
   Close the PowerShell window and open a new one afterwards.
 - **Fedora:** `sudo dnf install git gcc java-25-openjdk-devel alsa-lib-devel systemd-devel libxkbcommon-x11-devel`,
