@@ -4,13 +4,17 @@ import dev.horizonlab.bridge.Natives;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReferenceArray;
+import java.util.concurrent.locks.ReentrantLock;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.Registries;
@@ -595,8 +599,12 @@ public final class HorizonWorldgen {
         if (live == null || live.token() != token) return null;
         try {
             CompoundTag tag;
-            synchronized (live.chunk()) {
+            ReentrantLock lock = lockOf(live.chunk());
+            lock.lock();
+            try {
                 tag = save(d, live.chunk());
+            } finally {
+                lock.unlock();
             }
             tag.putBoolean("horizon:decorated", live.chunk().getPersistedStatus().isOrAfter(ChunkStatus.FEATURES));
             ByteArrayOutputStream bytes = new ByteArrayOutputStream(64 * 1024);
@@ -622,8 +630,10 @@ public final class HorizonWorldgen {
         Live live = d.live.get(ChunkPos.pack(x, z));
         if (live == null || live.token() != token) return;
         ProtoChunk chunk = live.chunk();
+        ReentrantLock lock = lockOf(chunk);
+        lock.lock();
         try {
-            synchronized (chunk) {
+            {
                 BlockState[] states = states(palette);
                 int minY = chunk.getMinY();
                 LevelChunkSection[] sections = chunk.getSections();
@@ -652,6 +662,8 @@ public final class HorizonWorldgen {
             }
         } catch (Throwable t) {
             failed("restore", t);
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -959,16 +971,45 @@ public final class HorizonWorldgen {
         return new ProtoChunk(new ChunkPos(x, z), UpgradeData.EMPTY, d.level, d.containers, null);
     }
 
+    /** Each chunk's lock, while the chunk lives. */
+    private static final Map<ProtoChunk, ReentrantLock> LOCKS = Collections.synchronizedMap(new WeakHashMap<>());
+
+    private static ReentrantLock lockOf(ProtoChunk chunk) {
+        return LOCKS.computeIfAbsent(chunk, c -> new ReentrantLock());
+    }
+
+    /**
+     * Takes {@code lock} to bring {@code chunk} to {@code status}. False if another thread got the
+     * chunk there first: the wait ends then, without the lock. A thread that only checked the
+     * status and then waited for the lock could wait on a holder that had since gone past what
+     * it needed and was itself waiting for a chunk this thread holds: a circle (seen as a world
+     * stuck on Loading terrain, all workers blocked in here).
+     */
+    private static boolean lockFor(ReentrantLock lock, ProtoChunk chunk, ChunkStatus status) {
+        try {
+            while (!lock.tryLock(20, TimeUnit.MILLISECONDS)) {
+                if (chunk.getPersistedStatus().isOrAfter(status)) return false;
+            }
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted making a chunk", e);
+        }
+    }
+
     /**
      * Runs vanilla's steps on {@code chunk} up to {@code target}, one at a time under the
-     * chunk's lock: a step reads its neighbours at lower statuses only, so two threads
+     * chunk's lock: a step reads its neighbours at lower statuses only, and a thread stops
+     * waiting for a chunk that has reached what it needs ({@link #lockFor}), so two threads
      * advancing neighbours never wait on each other in a circle.
      */
     private static void advance(Dimension d, ProtoChunk chunk, ChunkStatus target) {
         for (ChunkStatus status : STEPS) {
             if (status.isAfter(target)) break;
             if (chunk.getPersistedStatus().isOrAfter(status)) continue;
-            synchronized (chunk) {
+            ReentrantLock lock = lockOf(chunk);
+            if (!lockFor(lock, chunk, status)) continue;
+            try {
                 if (chunk.getPersistedStatus().isOrAfter(status)) continue;
                 ChunkStep step = ChunkPyramid.GENERATION_PYRAMID.getStepTo(status);
                 long started = HorizonProfile.start();
@@ -982,6 +1023,8 @@ public final class HorizonWorldgen {
                 }
                 HorizonProfile.add("worldgen " + status.getName(), started);
                 if (!chunk.getPersistedStatus().isOrAfter(status)) chunk.setPersistedStatus(status);
+            } finally {
+                lock.unlock();
             }
         }
     }
