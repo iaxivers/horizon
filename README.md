@@ -22,6 +22,9 @@
   <a href="#contributing"><b>Contributing</b></a>
 </p>
 
+> [!IMPORTANT]
+> **This fork runs real Fabric mods in Horizon.** Want to try it? **[Follow the step-by-step guide](human-java-bridge.md)**, then press Play in Prism Launcher.
+
 # Horizon
 
 Minecraft: Java Edition 26.3, rewritten in Rust. Same worlds, same rules, same terrain, checked against the Java game by more than 300 differential harnesses. Free, open source and unofficial.
