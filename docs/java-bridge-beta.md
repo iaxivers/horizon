@@ -78,8 +78,8 @@ After a `git pull`, build again and run `use-build` again.
 5. Press **Play**.
 
 **The first start takes a few minutes.** The launcher downloads the Fabric mods build for your
-version (and Mojang's Java 25 if you have no Java 25 JDK); before each Play it checks for a newer
-build and takes it; then the game builds the mods' content once.
+version (and Mojang's Java 25 if you have no Java 25 JDK); then the game builds the mods' content once.
+New builds come with a new launcher download from the release page, for now.
 
 **Check it worked:** make a Creative world, type `/give @s ` and press Tab: your mods' items
 should be in the list.
@@ -175,5 +175,19 @@ rebuilt on the next start.
 | `… is not prepared yet` | Play 26.3 once to the title screen in the official launcher, close it, and prepare the version again |
 | `Java 25 for Fabric mods: …` | Check your internet connection, or install a JDK 25 from [adoptium.net](https://adoptium.net) |
 | `your mods couldn't start` | Remove the mod it names. Check your mods are for 26.3 and have their libraries |
+| Windows won't open the launcher ("Windows protected your PC") | Click **More info → Run anyway**. The launcher isn't signed with a paid certificate yet. If your antivirus deletes it, allow its folder |
+| `Fabric 26.3 mods run only when Horizon's launcher starts the game for a signed-in account…` | Your launcher is older than the game build. Download the launcher again from the [release page](https://github.com/iaxivers/horizon-java-bridge/releases/tag/java-mods) and replace the old one; your mods and settings stay |
+| `Fabric can't start: no …\jars\client.jar` | Fixed in the launcher of 2026-11-05: download the launcher again. Or run `horizon-launcher prepare --version <your version>` |
+| The game closes at once; `hs_err_pid….log` says `jimage file name is null` | Fixed in the game build of 2026-11-06 (a Windows path bug): restart the launcher and press Play |
+| The mods do nothing, no error | Check every jar is for **Fabric 26.3**: one jar for another Minecraft version stops **all** mods from loading. The log names it |
+| A mod's keys aren't in Controls, zoom/FOV mods don't zoom, Xaero's map looks blurry, 3D Skin Layers draws wrong | Known bugs, being fixed. No need to report again |
+
+**On Windows, commands from PowerShell:** the launcher is a windowed program, so PowerShell doesn't
+wait for it. Add `| Out-Host` to see its output, e.g.
+`.\horizon-launcher.exe prepare | Out-Host`.
+
+**Sending a report:** the launcher's **Fabric mods** tab has **Copy bug report** (once your launcher has it):
+one click copies the log, crash files and mod list for a GitHub issue or Discord message. Without it, send
+`logs/latest.log` from the game folder and the newest file in `crash-reports/`.
 
 More about how it all works: [java-bridge.md](java-bridge.md).
