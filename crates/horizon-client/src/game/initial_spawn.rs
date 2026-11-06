@@ -326,6 +326,7 @@ impl Game<'_> {
                 SpawnCandidate::Suggestion => (suggestion[0], suggestion[2]),
             };
             if !self.streaming.is_lit(x >> 4, z >> 4) {
+                log::debug!("player spawn: {x} {z} not loaded");
                 continue;
             }
             let feet = match candidate {

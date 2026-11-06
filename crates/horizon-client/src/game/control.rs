@@ -1413,6 +1413,9 @@ impl Game<'_> {
             "levels": self.renderer.as_ref().map_or_else(Vec::new, |r| r.lod_levels()),
             "pending_observations": self.lod_observe.len(),
             "refined_samples": self.lod.as_ref().map_or(0, |lod| lod.refined_samples()),
+            // The near terrain still loading: on a machine of four cores or fewer far
+            // terrain holds its meshing back meanwhile (`Lod::set_near_loading`).
+            "near_loading": self.streaming.busy(),
         });
         // The other players' cracks this client draws (LevelRenderer.destroyingBlocks).
         let destroying: Vec<_> = self

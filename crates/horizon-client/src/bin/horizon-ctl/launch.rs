@@ -221,7 +221,12 @@ pub fn launch(socket: &Path, args: &[String]) -> Result<Value, Value> {
         .map_err(
             |e| json!({ "error": format!("{}: {e}", install.game.display()), "kind": "launch" }),
         )?;
-    let deadline = Instant::now() + Duration::from_secs(300);
+    // HORIZON_CTL_LAUNCH_TIMEOUT (seconds): a big modded pack takes longer to open.
+    let wait = std::env::var("HORIZON_CTL_LAUNCH_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(300u64);
+    let deadline = Instant::now() + Duration::from_secs(wait);
     let info = json!({
         "pid": child.id(),
         "socket": socket,
@@ -254,7 +259,7 @@ pub fn launch(socket: &Path, args: &[String]) -> Result<Value, Value> {
         thread::sleep(Duration::from_millis(100));
     }
     Err(
-        json!({ "error": "control socket did not open within 300 seconds", "kind": "launch", "log": log }),
+        json!({ "error": format!("control socket did not open within {wait} seconds"), "kind": "launch", "log": log }),
     )
 }
 

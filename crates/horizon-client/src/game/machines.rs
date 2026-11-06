@@ -5,6 +5,7 @@
 use super::{Game, storage::is_shulker_box};
 
 mod crafter;
+mod dropper;
 pub(in crate::game) mod native_energy;
 pub(in crate::game) mod native_fluids;
 pub(in crate::game) mod native_items;
@@ -1365,26 +1366,24 @@ impl Game<'_> {
         let target = offset(key, facing);
         let remaining = if dropper {
             match self.containers().view(target, false) {
-                None => self.dispense_default(key, facing, stack),
-                Some(into) => {
-                    let one = ItemStack {
-                        count: 1,
-                        ..stack.clone()
-                    };
-                    if self
-                        .add_item(None, &into, one, Some(facing.opposite()))
-                        .is_none()
-                    {
-                        self.view_changed(&into);
-                        Some(ItemStack {
-                            count: stack.count - 1,
-                            ..stack
-                        })
-                        .filter(|s| s.count > 0)
-                    } else {
-                        Some(stack)
+                None => {
+                    // getContainerAt: a container entity in front (a chest minecart).
+                    match self.entity_container_at([
+                        f64::from(target.0) + 0.5,
+                        f64::from(target.1) + 0.5,
+                        f64::from(target.2) + 0.5,
+                    ]) {
+                        Some(id) => {
+                            let into = stack.clone();
+                            self.with_entity_container(id, |g, into_view| {
+                                g.drop_into(into_view, facing, into)
+                            })
+                            .unwrap_or(Some(stack))
+                        }
+                        None => self.dispense_default(key, facing, stack),
                     }
                 }
+                Some(into) => self.drop_into(&into, facing, stack),
             }
         } else {
             self.dispense_item(key, facing, stack)?

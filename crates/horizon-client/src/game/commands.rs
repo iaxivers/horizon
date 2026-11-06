@@ -3873,10 +3873,14 @@ impl Game<'_> {
         let from = origin.map(|v| v.floor() as i32);
         let found = self.end.locator().and_then(|t| t.locate(&names, from, 100));
         let Some((name, p)) = found else {
-            return Err(CommandError::new(Text::tr(
-                "commands.locate.structure.not_found",
-                &[&s],
-            )));
+            // LocateCommand.ERROR_STRUCTURE_INVALID: a tag no data pack has (there is no
+            // #minecraft:bastion_remnant; the bastion is minecraft:bastion_remnant).
+            let key = if names.is_empty() {
+                "commands.locate.structure.invalid"
+            } else {
+                "commands.locate.structure.not_found"
+            };
+            return Err(CommandError::new(Text::tr(key, &[&s])));
         };
         let link = Text::teleport_link(p[0], None, p[2]);
         let (dx, dz) = (f64::from(p[0] - from[0]), f64::from(p[2] - from[2]));

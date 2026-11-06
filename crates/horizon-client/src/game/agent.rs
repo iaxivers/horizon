@@ -338,6 +338,11 @@ impl Game<'_> {
             "state": self.state_string(state),
             "loaded": self.world.chunks.contains_key(&(pos[0] >> 4, pos[2] >> 4)),
         });
+        // The biome there, as this client has it (F3's "Biome").
+        if let Some(chunk) = self.world.chunks.get(&(pos[0] >> 4, pos[2] >> 4)) {
+            let id = chunk.biome(pos[0], pos[1], pos[2]);
+            v["biome"] = json!(self.res.biomes().get(id).name);
+        }
         // How far a chest's or a shulker box's lid is open, 0..1, as drawn.
         match self.be_anims.ticker(state.0) {
             Some(Ticker::Lid) => v["lid"] = json!(self.chest_lid(pos, 1.0)),
@@ -489,6 +494,8 @@ impl Game<'_> {
                 "velocity": [p.velocity.x, p.velocity.y, p.velocity.z],
                 "on_ground": p.ground.on_ground,
                 "flying": p.flying,
+                "may_fly": p.may_fly,
+                "invulnerable": p.invulnerable,
                 "fall_flying": p.fall_flying,
                 "sneaking": self.keys.held(Action::Sneak),
                 "sprinting": p.sprinting,
@@ -704,6 +711,11 @@ impl Game<'_> {
         // — a fake player the server keeps at health 0 — is still here.
         for m in self.mobs.iter().filter(|m| !m.removed) {
             let mut v = json!({ "id": m.id, "kind": "mob", "health": m.health, "baby": m.is_baby(), "hurt_time": m.hurt_time });
+            // A passenger (`isPassenger`) and the id of what it rides.
+            if m.extra.passenger {
+                v["passenger"] = json!(true);
+                v["mount"] = json!(m.extra.mount);
+            }
             // VillagerData as this game knows it: on a client, what the
             // server's synched data says.
             if matches!(m.species(), Species::Villager | Species::ZombieVillager) {

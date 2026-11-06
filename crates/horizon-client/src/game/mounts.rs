@@ -3,6 +3,7 @@
 //! (`LocalPlayer.aiStep`'s riding jump), positioning, dismounting, and the
 //! mount's health and jump bar on the HUD.
 use super::Game;
+mod jump;
 use horizon_client::actions::Action;
 use horizon_client::{
     blocks::Fluid,
@@ -443,31 +444,7 @@ impl Game<'_> {
         let saddled = self.mobs[i].extra.saddled && Self::jumps(self.mobs[i].species());
         let mut jump = 0.0;
         if saddled {
-            let st = &mut self.mount;
-            if st.jump_ticks < 0 {
-                st.jump_ticks += 1;
-                if st.jump_ticks == 0 {
-                    st.jump_scale = 0.0;
-                }
-            }
-            if st.was_jumping && !keys.jump {
-                st.jump_ticks = -10;
-                let amount = (st.jump_scale * 100.0).floor() as i32;
-                // PlayerRideableJumping.getPlayerJumpPendingScale, the scale a
-                // guest's START_RIDING_JUMP carries as `data`.
-                jump = equine::jump_pending_scale(amount);
-            } else if !st.was_jumping && keys.jump {
-                st.jump_ticks = 0;
-                st.jump_scale = 0.0;
-            } else if st.was_jumping {
-                st.jump_ticks += 1;
-                st.jump_scale = if st.jump_ticks < 10 {
-                    st.jump_ticks as f32 * 0.1
-                } else {
-                    0.8 + 2.0 / (st.jump_ticks - 9) as f32 * 0.1
-                };
-            }
-            st.was_jumping = keys.jump;
+            jump = self.mount.charge_jump(keys.jump);
         }
         jump
     }

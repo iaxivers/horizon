@@ -8,6 +8,7 @@
 //!
 //! Every single-player world runs this way; LAN guests and dedicated servers
 //! use the same server code.
+mod thread_end;
 use super::{
     Dim, Game, Options, PackResources, Resources, UiResources, WorldIcon,
     execution_role::ExecutionRole,
@@ -479,6 +480,7 @@ impl Game<'_> {
             .spawn(move || {
                 // MinecraftServer.spin's Thread.setPriority(8).
                 horizon_threads::favour_current();
+                let _ends = thread_end::Ends;
                 let result = serve(
                     &res,
                     pack,
@@ -488,6 +490,10 @@ impl Game<'_> {
                     server_flags.clone(),
                     server_tasks,
                     &ready_tx,
+                );
+                log::info!(
+                    "Horizon: the server thread's loop returned (stop asked: {})",
+                    server_flags.stop.load(Ordering::Relaxed)
                 );
                 if let Err(e) = result {
                     log::error!("Horizon: integrated server: {e}");
