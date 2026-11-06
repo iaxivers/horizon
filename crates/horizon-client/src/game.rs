@@ -12710,6 +12710,7 @@ impl Game<'_> {
     /// integrated-server selection. Server startup must use this entry point.
     fn load_world(&mut self, request: world_loading::WorldRequest) -> Result<()> {
         self.join_world_rest()?;
+        mem_mark("world rest joined");
         self.perf.world_opening();
         let prepared = request.prepare(
             &self.res,
@@ -12718,7 +12719,10 @@ impl Game<'_> {
             &self.settings,
             &horizon_world::datafix::progress::UpgradeProgress::new(),
         )?;
-        self.finish_open_world(prepared)
+        mem_mark("world prepared");
+        let opened = self.finish_open_world(prepared);
+        mem_mark("world opened");
+        opened
     }
 
     fn finish_open_world(&mut self, prepared: world_loading::PreparedWorld) -> Result<()> {
@@ -20794,7 +20798,6 @@ struct CoreTables {
 }
 /// The block facts and the tables read from them.
 struct GameplayTables {
-    behaviour_json: serde_json::Value,
     facts: BlockFacts,
     gameplay_projection: Vec<horizon_client::blocks::GameplayProjection>,
     light: LightTables,
@@ -20951,6 +20954,8 @@ fn gameplay_tables(
     let (facts, gameplay_projection) =
         BlockFacts::load_with_projection(root, assets.registry, &behaviour_json, parallel)
             .map_err(|e| e.to_string())?;
+    // Read again only if the level behaviours' snapshot misses (`load_world_rest`).
+    drop(behaviour_json);
     horizon_client::block_contact::set_mod_blocks(
         facts
             .states
@@ -20975,7 +20980,6 @@ fn gameplay_tables(
     Ok(GameplayTables {
         light: light?,
         motion: motion?,
-        behaviour_json,
         facts,
         gameplay_projection,
     })
@@ -21068,6 +21072,7 @@ fn load_resources(
         root = vanilla_root.to_path_buf();
     };
     log::info!("load core tables: {:.2}s", started.elapsed().as_secs_f32());
+    mem_mark("core tables (assets, facts, biomes, collision, motion)");
     let CoreTables {
         assets,
         item_defaults,
@@ -21076,7 +21081,6 @@ fn load_resources(
         visibility,
         gameplay:
             GameplayTables {
-                behaviour_json,
                 facts,
                 gameplay_projection,
                 light,
@@ -21106,6 +21110,7 @@ fn load_resources(
     );
     drop(pack_step);
     log::info!("load pack tables: {:.2}s", started.elapsed().as_secs_f32());
+    mem_mark("pack tables");
     progress.set(4);
     if !menu {
         horizon_client::ui::load_metadata(&root);
@@ -21155,7 +21160,6 @@ fn load_resources(
                     &root,
                     &resources,
                     &assets,
-                    &behaviour_json,
                     &gameplay_projection,
                     visibility,
                     &progress,
@@ -21168,6 +21172,7 @@ fn load_resources(
                     .set(rest)
                     .map_err(|_| "world resources already loaded".to_owned())?;
                 progress.set(9);
+                mem_mark("world rest");
                 horizon_client::telemetry::mark_rest_ready();
                 log::info!(
                     "Horizon: rest-ready after {} ms",
@@ -21185,7 +21190,6 @@ fn load_resources(
             &root,
             &resources,
             &assets,
-            &behaviour_json,
             &gameplay_projection,
             visibility,
             progress,
@@ -21225,6 +21229,7 @@ fn load_resources(
             "Horizon: handoff CPU resources prepared on worker in {} ms",
             prepared_at.elapsed().as_millis()
         );
+        mem_mark("renderer textures (CPU)");
         (Some(game_cpu), Some(renderer_cpu))
     } else {
         (None, None)
@@ -21276,7 +21281,6 @@ fn load_world_rest(
     root: &std::path::Path,
     resources: &Resources,
     assets: &Assets,
-    behaviour_json: &serde_json::Value,
     gameplay_projection: &[horizon_client::blocks::GameplayProjection],
     visibility: horizon_world::block_render::FaceVisibility,
     progress: &Progress,
@@ -21306,9 +21310,11 @@ fn load_world_rest(
         });
         Ok((items, recipes, stations))
     };
+    // `block-behaviours.json` is read again only if the snapshot misses: its tree went
+    // with the facts' load (hundreds of MB for a modded pack, kept until here before).
     let load_behaviours = || {
         startup::time("rest.behaviours", || {
-            Behaviours::load_with_gameplay(registry, root, behaviour_json, gameplay_projection)
+            Behaviours::load_with_gameplay_from_file(registry, root, gameplay_projection)
         })
     };
     let load_block_entity_render = || -> Result<_> {
@@ -21399,6 +21405,7 @@ fn load_world_rest(
     let (animate, fog) = animate?;
     let (mob_types, mob_data) = mobs?;
     let (transformers, (player_type, player_arm, player_arm_slim, spin_attack)) = transformers?;
+    mem_mark("items, behaviours, block entities, animate, mobs");
     log::info!(
         "Horizon: resources loaded in {:.1}s; {} block states, {} items, {} biomes; {} worker threads",
         started.elapsed().as_secs_f32(),
@@ -21407,6 +21414,9 @@ fn load_world_rest(
         biomes.list.len(),
         threads
     );
+    // The tables' parse is done: its garbage (gigabytes for a modded pack) back to the system.
+    horizon_threads::trim_heap();
+    mem_mark("resources");
     progress.set(8);
     let _tail = startup::step("rest.tail");
     Ok(WorldRest {
@@ -21504,6 +21514,7 @@ fn build_renderer(
         wide_frame,
         shader_pack,
     ))?;
+    mem_mark("renderer");
     renderer.hud.sprite_animations = atlas
         .sprite_animations
         .iter()
@@ -23694,4 +23705,9 @@ fn write_level_for_role(
     } else {
         level.write_without_player(dir)
     }
+}
+
+/// [`horizon_client::mem_log::mark`].
+pub(crate) fn mem_mark(stage: &str) {
+    horizon_client::mem_log::mark(stage);
 }

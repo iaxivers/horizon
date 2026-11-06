@@ -59,6 +59,7 @@ pub mod level_loading;
 pub mod light;
 pub mod lod;
 pub mod logging;
+pub mod mem_log;
 pub mod menu_blur;
 pub mod mesher;
 pub mod minimap;

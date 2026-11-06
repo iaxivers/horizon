@@ -5,8 +5,10 @@
 #[cfg(target_os = "windows")]
 pub mod boot_paint;
 pub mod heap_census;
+mod heap_trim;
 pub mod jobs;
 pub mod process_memory;
+pub use heap_trim::trim_heap;
 
 use std::sync::{
     OnceLock,

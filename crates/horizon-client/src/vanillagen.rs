@@ -722,6 +722,8 @@ pub fn shared_data_with(
         let oldest = cache.iter().position(|e| !e.1.is_empty());
         cache.remove(oldest.expect("counted"));
     }
+    horizon_threads::trim_heap();
+    crate::mem_log::mark("worldgen data");
     cache.push((dir.to_owned(), overrides.clone(), data.clone()));
     Ok(data)
 }

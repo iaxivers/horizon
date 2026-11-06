@@ -58,6 +58,7 @@ impl WorldRequest {
                 &options.resources,
                 &horizon_world::loot::PackOverlay::NONE,
             );
+            horizon_client::mem_log::mark("loot data");
         };
         // Bone meal's and saplings' features, over the plain worldgen bundle.
         let live_features = || growth::install_live_features(res, pack, options);
@@ -237,6 +238,7 @@ impl WorldRequest {
             level.seed,
             &level.enabled_features,
         )?;
+        horizon_client::mem_log::mark("streaming (generator)");
         drop(streaming_step);
         streaming.radius = settings.render_distance;
         let mut world = World::new(res.facts().air, level.seed);

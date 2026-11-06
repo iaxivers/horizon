@@ -17,6 +17,8 @@ use std::{collections::HashMap, fs, io, path::Path, sync::Arc};
 #[path = "data/cache.rs"]
 mod cache;
 pub(super) use cache::set_dir as set_cache_dir;
+#[path = "data/streaming.rs"]
+mod streaming;
 
 /// Per-state flags read from vanilla accessors over an empty level.
 pub mod state_flags {
@@ -688,11 +690,8 @@ fn build_with_behaviour_json(
     root: &Path,
     behaviour: &Value,
 ) -> io::Result<Behaviours> {
-    let gameplay = read_json(&root.join("gameplay-facts.json"))?;
-    let gameplay_states = gameplay["states"]
-        .as_array()
-        .ok_or_else(|| fail("missing gameplay states"))?;
-    build_with_gameplay(registry, root, behaviour, gameplay_states)
+    let gameplay = streaming::read_gameplay(&root.join("gameplay-facts.json"))?;
+    build_with_gameplay(registry, root, behaviour, &gameplay.states)
 }
 
 fn build_with_gameplay<G: GameplayStateSource>(
