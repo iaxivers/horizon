@@ -84,7 +84,8 @@ pub fn game_jar(root: &Path) -> Result<PathBuf, String> {
         Ok(jar)
     } else {
         Err(format!(
-            "no {}: run horizon-prepare --prepare first",
+            "Minecraft's own game jar is missing ({}): prepare this Horizon version again on \
+             the launcher's Home (play Minecraft 26.3 once in the official launcher first)",
             jar.display()
         ))
     }
@@ -113,7 +114,8 @@ pub fn game_libraries(root: &Path) -> Result<Vec<PathBuf>, String> {
     }
     if jars.is_empty() {
         return Err(format!(
-            "no game libraries in {}: run horizon-prepare --prepare first",
+            "Minecraft's own libraries are missing ({}): prepare this Horizon version again on \
+             the launcher's Home (play Minecraft 26.3 once in the official launcher first)",
             dir.display()
         ));
     }

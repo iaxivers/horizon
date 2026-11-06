@@ -165,8 +165,28 @@ fn run_jars(dir: &Path) -> Vec<PathBuf> {
         return kept.clone();
     }
     let (kept, left) = horizon_jvm::renderers::split(&jars);
+    // Horizon's pinned Fabric API, always: a player's own (another version) is skipped.
+    let (theirs, kept): (Vec<PathBuf>, Vec<PathBuf>) =
+        kept.into_iter().partition(|j| own_fabric_api(j));
+    for jar in &theirs {
+        log::info!(
+            "Java mods: {} skipped: Horizon brings its own Fabric API (the file is left as it is)",
+            jar.file_name().unwrap_or_default().to_string_lossy()
+        );
+    }
     *last = Some((jars, kept.clone(), left));
     kept
+}
+
+/// Whether `jar` is Fabric API (its id `fabric-api`, or a file named `fabric-api…`), which
+/// Horizon brings pinned ([`horizon_jvm::libs::ensure_fabric_api`]).
+fn own_fabric_api(jar: &Path) -> bool {
+    let named = jar.file_name().is_some_and(|n| {
+        n.to_string_lossy()
+            .to_ascii_lowercase()
+            .starts_with("fabric-api")
+    });
+    named || horizon_jvm::renderers::mod_id(jar).as_deref() == Some("fabric-api")
 }
 
 /// The last [`run_jars`]: all jars, the ones Fabric loads, the ones left out.
@@ -582,8 +602,8 @@ fn start_neoforge(
     true
 }
 
-/// Fabric's part of the config: the prepared game jar and libraries, and Fabric API unless
-/// `mods-java/` holds its own.
+/// Fabric's part of the config: the prepared game jar and libraries, and Horizon's pinned Fabric
+/// API (a player's own is skipped, [`run_jars`]).
 fn fabric(
     root: &Path,
     dir: &Path,
@@ -591,23 +611,13 @@ fn fabric(
     jars: &[PathBuf],
     side: horizon_jvm::Side,
 ) -> Result<horizon_jvm::Fabric, String> {
-    let own_fabric_api = jars.iter().any(|j| {
-        j.file_name().is_some_and(|n| {
-            n.to_string_lossy()
-                .to_ascii_lowercase()
-                .starts_with("fabric-api")
-        })
-    });
-    let add_mods = if own_fabric_api {
-        Vec::new()
-    } else {
-        vec![horizon_jvm::libs::ensure_fabric_api(
-            &work.join("fabric-api"),
-        )?]
-    };
-    // With mods left out (`run_jars`), Fabric reads no folder: the jars it loads are listed.
-    let (mut add_mods, mods) = (add_mods, dir.to_path_buf());
-    let mods = if left_out().is_empty() {
+    let mut add_mods = vec![horizon_jvm::libs::ensure_fabric_api(
+        &work.join("fabric-api"),
+    )?];
+    // With jars left out (`run_jars`: renderers, a player's own Fabric API), Fabric reads no
+    // folder: the jars it loads are listed.
+    let mods = dir.to_path_buf();
+    let mods = if horizon_jvm::jars(dir).len() == jars.len() {
         mods
     } else {
         let none = work.join("no-mods");

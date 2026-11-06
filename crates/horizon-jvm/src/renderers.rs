@@ -90,6 +90,11 @@ fn read_info(jar: &Path) -> Info {
     }
 }
 
+/// The jar's Fabric mod id (`fabric.mod.json`'s `id`), if it has one.
+pub fn mod_id(jar: &Path) -> Option<String> {
+    read_info(jar).id
+}
+
 /// `jars` split into the ones Fabric loads and the ones left out (in `jars`' order).
 pub fn split(jars: &[PathBuf]) -> (Vec<PathBuf>, Vec<LeftOut>) {
     let infos: Vec<Info> = jars.iter().map(|j| read_info(j)).collect();
