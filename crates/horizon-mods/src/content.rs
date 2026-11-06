@@ -16,6 +16,8 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
 };
+mod states;
+pub use states::State;
 
 /// Content files per mod, bytes per file and bytes per mod.
 pub const MAX_FILES: usize = 65_536;
@@ -251,6 +253,10 @@ struct BlockFile {
     item: bool,
     #[serde(default)]
     components: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    states: Vec<State>,
+    #[serde(default)]
+    state_table: Option<states::StateTable>,
 }
 fn yes() -> bool {
     true
@@ -275,6 +281,8 @@ pub struct Block {
     pub default_state: BTreeMap<String, String>,
     /// Also add a block item with the same id.
     pub item: bool,
+    /// Its own states, in order (empty: the template's).
+    pub states: Vec<State>,
     /// Its item's component patch, as an [`Item`]'s.
     pub components: BTreeMap<String, serde_json::Value>,
     /// A connecting block (template `minecraft:chorus_plant`, a `PipeBlock`
@@ -723,12 +731,14 @@ impl Content {
                     "{name}: a mod adds files in its own namespaces ({top}/{id}/ and those listed in namespaces), to vanilla and convention (c) tags, or to vanilla's atlases"
                 ));
             }
-            if !own && top == "data" && rest.starts_with("horizon/") {
+            if !owned && top == "data" && rest.starts_with("horizon/") {
                 return Err(format!(
-                    "{name}: blocks, items, mob effects, entity types and menu types are declared in data/{id}/horizon/"
+                    "{name}: blocks, items, mob effects, entity types and menu types are declared in data/<namespace>/horizon/ of a namespace the mod owns"
                 ));
             }
-            let Some(decl) = (own && top == "data")
+            // Under the mod's id, or another namespace it owns (`namespaces`): the block is
+            // `<namespace>:<path>` (a ported mod's modules: BuildCraft's `buildcraftenergy`).
+            let Some(decl) = (owned && top == "data")
                 .then(|| rest.strip_prefix("horizon/"))
                 .flatten()
             else {
@@ -739,7 +749,7 @@ impl Content {
                     .strip_prefix(kind)?
                     .strip_prefix('/')?
                     .strip_suffix(".json")?;
-                Some(format!("{id}:{path}"))
+                Some(format!("{namespace}:{path}"))
             };
             if let Some(block) = parse("block") {
                 blocks.push((block, name.clone()));
@@ -755,7 +765,7 @@ impl Content {
                 menus.push((menu, name.clone()));
             } else {
                 return Err(format!(
-                    "{name}: data/{id}/horizon/ holds block/, item/, mob_effect/, creative_tab/, entity_type/ and menu/*.json only"
+                    "{name}: data/{namespace}/horizon/ holds block/, item/, mob_effect/, creative_tab/, entity_type/ and menu/*.json only"
                 ));
             }
         }
@@ -776,6 +786,8 @@ impl Content {
                     "{name}: connects_to is a block tag, #namespace:path"
                 ));
             }
+            let states =
+                states::read(file.states, file.state_table).map_err(|e| format!("{name}: {e}"))?;
             let block = Block {
                 id: block,
                 template: file.template,
@@ -785,6 +797,7 @@ impl Content {
                 state_properties: file.state_properties,
                 default_state: file.default_state,
                 item: file.item,
+                states,
                 components: file.components,
                 connects_to: file
                     .connects_to
@@ -1071,6 +1084,7 @@ fn check_block(file: &Block) -> Result<(), String> {
     if p.sounds.as_deref().is_some_and(|s| !vanilla_id(s)) {
         return Err("sounds names a vanilla block (minecraft:...)".into());
     }
+    states::check(&file.states)?;
     if !file.item && !file.components.is_empty() {
         return Err("item is false, so the block has no item to take components".into());
     }
@@ -1406,6 +1420,7 @@ capabilities = ["registries"]
                     ..BlockProperties::default()
                 },
                 item: true,
+                states: Vec::new(),
                 components: BTreeMap::new(),
                 connects_to: None,
                 thickness: None,
@@ -1827,6 +1842,7 @@ capabilities = ["registries"]
         assert!(block("3").is_err());
     }
 
+    mod state_table;
     #[test]
     fn block_items_patch_their_components() {
         let block = br#"{"template": "minecraft:iron_block", "components": {
@@ -2219,10 +2235,13 @@ capabilities = ["registries"]
         let content = hmod("listed", &manifest, files).unwrap();
         assert_eq!(content.files.len(), 3);
         assert_eq!(content.namespaces, ["ruby", "kaisyn"]);
-        // Declarations stay in the id's namespace.
+        // A listed namespace declares blocks under its own name (a ported mod's modules).
         let decl: &[(&str, &[u8])] = &[("data/kaisyn/horizon/block/a.json", BLOCK)];
-        let e = hmod("listed-decl", &manifest, decl).unwrap_err();
-        assert!(e.contains("declared in data/ruby/horizon/"), "{e}");
+        let content = hmod("listed-decl", &manifest, decl).unwrap();
+        assert_eq!(content.blocks[0].id, "kaisyn:a");
+        // An unlisted one may not.
+        let unlisted: &[(&str, &[u8])] = &[("data/other/horizon/block/a.json", BLOCK)];
+        assert!(hmod("listed-undeclared", &manifest, unlisted).is_err());
         // A namespace it does not list is still outside.
         let other: &[(&str, &[u8])] = &[("data/other/structure/a.nbt", b"nbt")];
         assert!(hmod("listed-other", &manifest, other).is_err());
