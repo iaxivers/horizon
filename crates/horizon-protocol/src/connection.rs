@@ -16,6 +16,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod wide;
+
 /// Called when a [`Pipe`] end has bytes to read or was closed ([`Pipe::on_ready`]).
 type Notify = Arc<dyn Fn() + Send + Sync>;
 
@@ -234,6 +236,8 @@ pub struct ConnReader {
     pub counters: Arc<Counters>,
     /// Set for a server of an older release: what arrives is renumbered.
     adapter: Option<Arc<crate::adapter::Session>>,
+    /// An in-memory pipe's (kept once detached): its frames may pass 21 bits.
+    wide: bool,
 }
 /// Closes a connection from another thread: a read or a write blocked on it fails.
 pub struct Closer(Stream);
@@ -250,6 +254,9 @@ pub struct ConnWriter {
     counters: Arc<Counters>,
     /// Set for a server of an older release: what is sent is renumbered.
     adapter: Option<Arc<crate::adapter::Session>>,
+    /// An in-memory pipe's (kept once detached): frames past 21 bits are allowed
+    /// ([`frame::unbounded_contents`]).
+    pub wide: bool,
 }
 /// `InetAddress.getByName` under Java's default `java.net.preferIPv6Addresses=false`: IPv4
 /// addresses first, whatever order the system resolver gives (macOS lists IPv6 first). Vanilla
@@ -350,6 +357,7 @@ impl Connection {
     fn over(stream: Stream) -> Result<Self> {
         let counters = Arc::new(Counters::default());
         let write = stream.try_clone()?;
+        let wide = matches!(stream, Stream::Memory(_));
         Ok(Self {
             reader: ConnReader {
                 stream,
@@ -361,6 +369,7 @@ impl Connection {
                 threshold: None,
                 counters: counters.clone(),
                 adapter: None,
+                wide,
             },
             writer: ConnWriter {
                 stream: write,
@@ -368,6 +377,7 @@ impl Connection {
                 threshold: None,
                 counters,
                 adapter: None,
+                wide,
             },
         })
     }
@@ -485,7 +495,7 @@ impl ConnReader {
     }
     /// The bytes the next frame needs, once its length prefix is whole.
     fn next_header(&self) -> Result<Option<usize>> {
-        Ok(frame::header(&self.buffer[self.start..self.end])?.map(|(prefix, len)| prefix + len))
+        Ok(self.header()?.map(|(prefix, len)| prefix + len))
     }
     /// Take the next frame off the buffer, if it is whole.
     fn next(&mut self) -> Result<Next> {
@@ -495,7 +505,7 @@ impl ConnReader {
         if self.end - self.start < wanted {
             return Ok(Next::Partial(wanted));
         }
-        let (prefix, _) = frame::header(&self.buffer[self.start..self.end])?.expect("whole");
+        let (prefix, _) = self.header()?.expect("whole");
         let frame = self.start + prefix..self.start + wanted;
         self.start = frame.end;
         Ok(match self.packet(frame)? {
@@ -606,7 +616,7 @@ impl ConnWriter {
             }
             return Ok(());
         }
-        self.send_contents(&frame::contents(body, self.threshold)?)
+        self.send_contents(&self.contents(body)?)
     }
     /// Send a frame whose contents [`frame::contents`] made with this
     /// writer's threshold.
