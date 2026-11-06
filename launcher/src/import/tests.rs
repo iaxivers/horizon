@@ -123,6 +123,17 @@ fn says_what_a_dropped_file_is() {
             zip_file(&p, &[("shaders/final.fsh", b"")]);
             (p, Ok(Dropped::Pack(packs::Kind::Shader)))
         },
+        // A Fabric mod's jar goes to the Java mods; a jar of another loader is refused.
+        {
+            let p = dir.join("FarmersDelight.jar");
+            zip_file(&p, &[("fabric.mod.json", br#"{"id":"farmersdelight"}"#)]);
+            (p, Ok(Dropped::JavaMod))
+        },
+        {
+            let p = dir.join("forge.jar");
+            zip_file(&p, &[("META-INF/mods.toml", b"")]);
+            (p, Err(()))
+        },
         {
             let p = dir.join("glow.hshader");
             put(&p, b"PK");

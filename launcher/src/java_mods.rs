@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 
 /// The folder's name in the game folder, as the game reads it (`horizon_jvm::DIR`).
 pub const DIR: &str = "mods-java";
+/// The Minecraft version the bridge runs Fabric mods for: a jar whose `depends.minecraft`
+/// excludes it can't start (Fabric refuses the whole set).
+pub const MINECRAFT: &str = "26.3";
 
 /// One jar of `mods-java/`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,6 +20,9 @@ pub struct JavaMod {
     pub name: Option<String>,
     pub version: Option<String>,
     pub size: u64,
+    /// `fabric.mod.json`'s `depends.minecraft`, as written, when it excludes [`MINECRAFT`]:
+    /// a jar made for another Minecraft version. None when it fits or can't be told.
+    pub wrong_minecraft: Option<String>,
 }
 
 impl JavaMod {
@@ -92,7 +98,173 @@ fn describe(path: &Path) -> JavaMod {
         name: field("name"),
         version: field("version"),
         size: std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+        wrong_minecraft: meta
+            .as_ref()
+            .and_then(|m| m.pointer("/depends/minecraft"))
+            .filter(|wants| runs_on(wants, MINECRAFT) == Some(false))
+            .map(|wants| match wants {
+                serde_json::Value::Array(any) => any
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" or "),
+                other => other.as_str().unwrap_or_default().to_string(),
+            }),
     }
+}
+
+/// Whether `file` is a Fabric mod's jar: a `.jar` with a `fabric.mod.json` that parses.
+pub fn is_fabric_mod(file: &Path) -> bool {
+    is_jar(file) && fabric_meta(file).is_some()
+}
+
+/// The mods two or more jars of `mods` are, by Fabric id: (the id, their file names). Fabric
+/// refuses to start with two copies of a mod.
+pub fn duplicates(mods: &[JavaMod]) -> Vec<(String, Vec<String>)> {
+    let mut by_id: std::collections::BTreeMap<&str, Vec<String>> = Default::default();
+    for m in mods {
+        if let Some(id) = m.id.as_deref() {
+            by_id.entry(id).or_default().push(m.file.clone());
+        }
+    }
+    by_id
+        .into_iter()
+        .filter(|(_, files)| files.len() > 1)
+        .map(|(id, files)| (id.to_string(), files))
+        .collect()
+}
+
+/// Whether a mod whose `depends.minecraft` is `wants` (a version predicate, or a list of them
+/// any of which will do) runs on Minecraft `version`, as Fabric's resolver reads it: `*`,
+/// `26.3`, `=26.3`, `>=26.3`, `<27`, `~26.3` (26.3.*), `^26.3` (26.*), `26.3.x`, several
+/// joined by spaces (all must hold). None when it can't be told (a form this doesn't read).
+pub fn runs_on(wants: &serde_json::Value, version: &str) -> Option<bool> {
+    let have = Version::parse(version)?;
+    match wants {
+        serde_json::Value::String(all) => {
+            let mut out = Some(true);
+            for term in all.split_whitespace() {
+                match term_holds(term, &have) {
+                    Some(false) => return Some(false),
+                    None => out = None,
+                    Some(true) => {}
+                }
+            }
+            out
+        }
+        serde_json::Value::Array(any) => {
+            let mut out = Some(false);
+            for one in any {
+                match runs_on(one, version) {
+                    Some(true) => return Some(true),
+                    None => out = None,
+                    Some(false) => {}
+                }
+            }
+            out
+        }
+        _ => None,
+    }
+}
+
+/// A version as Fabric compares them: numbers, then a pre-release (`-rc.1`) before the release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Version {
+    numbers: Vec<u64>,
+    pre: Option<String>,
+}
+
+impl Version {
+    fn parse(text: &str) -> Option<Self> {
+        let text = text.split('+').next()?;
+        let (numbers, pre) = match text.split_once('-') {
+            Some((n, p)) => (n, Some(p.to_string())),
+            None => (text, None),
+        };
+        let numbers = numbers
+            .split('.')
+            .map(|n| n.parse().ok())
+            .collect::<Option<Vec<u64>>>()?;
+        Some(Self { numbers, pre })
+    }
+
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let len = self.numbers.len().max(other.numbers.len());
+        let at = |v: &Self, i: usize| v.numbers.get(i).copied().unwrap_or(0);
+        (0..len)
+            .map(|i| at(self, i).cmp(&at(other, i)))
+            .find(|o| o.is_ne())
+            .unwrap_or_else(|| match (&self.pre, &other.pre) {
+                (None, None) => std::cmp::Ordering::Equal,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (Some(a), Some(b)) => a.cmp(b),
+            })
+    }
+
+    /// The first version past every one starting with this one's first `len` numbers
+    /// (`26.3`, 2 → `26.4`).
+    fn bumped(&self, len: usize) -> Self {
+        let mut numbers: Vec<u64> = (0..len.max(1))
+            .map(|i| self.numbers.get(i).copied().unwrap_or(0))
+            .collect();
+        if let Some(last) = numbers.last_mut() {
+            *last += 1;
+        }
+        Self { numbers, pre: None }
+    }
+}
+
+/// One space-free predicate of `depends.minecraft` against `have`.
+fn term_holds(term: &str, have: &Version) -> Option<bool> {
+    use std::cmp::Ordering::*;
+    if term == "*" || term.eq_ignore_ascii_case("x") {
+        return Some(true);
+    }
+    let (op, rest) = [">=", "<=", ">", "<", "=", "~", "^"]
+        .into_iter()
+        .find_map(|op| term.strip_prefix(op).map(|r| (op, r)))
+        .unwrap_or(("", term));
+    // `26.3.x`, `26.x`, `1.21.*`: the numbers before the wildcard must match.
+    let parts: Vec<&str> = rest.split('.').collect();
+    if let Some(wild) = parts
+        .iter()
+        .position(|p| p.eq_ignore_ascii_case("x") || *p == "*")
+    {
+        if !op.is_empty() && op != "=" {
+            return None;
+        }
+        let prefix = parts[..wild]
+            .iter()
+            .map(|n| n.parse().ok())
+            .collect::<Option<Vec<u64>>>()?;
+        return Some(
+            prefix
+                .iter()
+                .enumerate()
+                .all(|(i, n)| have.numbers.get(i).copied().unwrap_or(0) == *n),
+        );
+    }
+    let want = Version::parse(rest)?;
+    let order = have.cmp(&want);
+    Some(match op {
+        ">=" => order != Less,
+        "<=" => order != Greater,
+        ">" => order == Greater,
+        "<" => order == Less,
+        "" | "=" => order == Equal,
+        // ~26.3: 26.3 up to 26.4; ~26: 26 up to 27.
+        "~" => order != Less && have.cmp(&want.bumped(want.numbers.len().min(2))) == Less,
+        // ^26.3: 26.3 up to 27; ^0.5.1: up to 0.6.
+        _ => {
+            let first = want
+                .numbers
+                .iter()
+                .position(|n| *n != 0)
+                .unwrap_or(want.numbers.len().saturating_sub(1));
+            order != Less && have.cmp(&want.bumped(first + 1)) == Less
+        }
+    })
 }
 
 /// The jar's `fabric.mod.json`, if it has one that parses.
@@ -182,9 +354,28 @@ pub fn failures(home: &Path) -> Vec<Failure> {
 
 fn failures_in(log: &str) -> Vec<Failure> {
     let mut out: Vec<Failure> = Vec::new();
+    // Inside Fabric's resolution report, whose lines after its first ("Incompatible mods
+    // found!") carry no time or thread: "\t - Mod 'Name' (id) 1.0 requires …".
+    let mut report = false;
     for line in log.lines() {
+        let record = line.starts_with('[') && line.contains("]: ");
+        if report && !record {
+            if let Some(failure) = report_line(line) {
+                if !out.contains(&failure) {
+                    out.push(failure);
+                }
+            }
+            continue;
+        }
+        report = false;
         // "[12:00:00] [Server thread/INFO]: ..." → the message.
         let message = line.split_once("]: ").map_or(line, |(_, m)| m).trim();
+        if message.contains("Incompatible mods found")
+            || message.contains("Mod resolution failed")
+            || message.contains("incompatible mod set")
+        {
+            report = true;
+        }
         let failure = if let Some(rest) = message.split_once("[Java mods] ").map(|(_, r)| r) {
             let Some((name, _)) = rest.split_once(" failed in ") else {
                 continue;
@@ -210,6 +401,22 @@ fn failures_in(log: &str) -> Vec<Failure> {
         }
     }
     out
+}
+
+/// A line of Fabric's resolution report worth showing: "- Mod 'Name' (id) …" names the mod
+/// (its row in the tab is marked), "- Install fabric-api, any version." and the like don't.
+fn report_line(line: &str) -> Option<Failure> {
+    let text = line.trim().strip_prefix("- ")?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let name = text
+        .strip_prefix("Mod '")
+        .and_then(|rest| rest.split_once("' (").map(|(name, _)| name.to_string()));
+    Some(Failure {
+        name,
+        text: text.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -289,5 +496,115 @@ mod tests {
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].name.as_deref(), Some("Farmer's Delight"));
         assert!(found[1].text.starts_with("Java mods: not started"));
+    }
+
+    /// Fabric's report spreads over lines with no time or thread: each "- Mod '…'" names its
+    /// mod, a suggestion is kept unnamed, and the next log record ends the report.
+    #[test]
+    fn reads_the_mods_fabrics_resolution_report_names() {
+        let log = "\
+[10:00:00] [Java mods/WARN]: Java mods: Fabric can't start: Incompatible mods found!
+net.fabricmc.loader.impl.FormattedException: Some of your mods are incompatible with the game or each other!
+A potential solution has been determined, this may resolve your problem:
+\t - Install fabric-language-kotlin, version 1.13.0 or later.
+More details:
+\t - Mod 'Farmer's Delight' (farmersdelight) 3.6 requires version 1.21.1 of 'Minecraft' (minecraft), but only the wrong version is present: 26.3!
+\t - Mod 'Croptopia' (croptopia) 4.0 requires any version of fabric-language-kotlin, which is missing!
+[10:00:01] [Render thread/INFO]: - Mod 'Not a report' (no) 1.0
+";
+        let found = failures_in(log);
+        let names: Vec<_> = found.iter().map(|f| f.name.as_deref()).collect();
+        assert_eq!(
+            names,
+            [None, None, Some("Farmer's Delight"), Some("Croptopia")],
+            "{found:#?}"
+        );
+        assert!(found[1].text.starts_with("Install fabric-language-kotlin"));
+        assert!(found[2].text.contains("requires version 1.21.1"));
+    }
+
+    fn on_26_3(wants: serde_json::Value) -> Option<bool> {
+        runs_on(&wants, "26.3")
+    }
+
+    #[test]
+    fn reads_which_minecraft_versions_a_mod_runs_on() {
+        use serde_json::json;
+        for yes in [
+            "*",
+            "26.3",
+            "=26.3",
+            "26.3.0",
+            ">=26.3",
+            ">=26.3-alpha.1",
+            ">26.2",
+            "<=26.3",
+            "<27",
+            "~26.3",
+            "~26",
+            "^26.1",
+            "26.3.x",
+            "26.x",
+            ">=26.2 <26.4",
+            ">=1.21",
+        ] {
+            assert_eq!(on_26_3(json!(yes)), Some(true), "{yes}");
+        }
+        for no in [
+            "1.21.x",
+            "1.21.1",
+            "~1.21",
+            "^1.21",
+            ">26.3",
+            "<26.3",
+            ">=26.4",
+            "~26.4",
+            "26.4.x",
+            ">=1.21 <1.22",
+            "26.3-rc.1",
+        ] {
+            assert_eq!(on_26_3(json!(no)), Some(false), "{no}");
+        }
+        // A list: any of them will do.
+        assert_eq!(on_26_3(json!(["1.21.x", "~26.3"])), Some(true));
+        assert_eq!(on_26_3(json!(["1.21.x", "1.20.1"])), Some(false));
+        // What this can't read is never called wrong.
+        assert_eq!(on_26_3(json!("weird-thing")), None);
+        assert_eq!(on_26_3(json!([">=1.21.x"])), None);
+        assert_eq!(on_26_3(json!(3)), None);
+    }
+
+    #[test]
+    fn marks_jars_for_another_minecraft_and_two_copies_of_a_mod() {
+        let root = scratch("versions");
+        let home = root.join("home");
+        let old = root.join("old.jar");
+        jar(
+            &old,
+            Some(r#"{"id":"old","depends":{"minecraft":["1.21.x","1.20.1"]}}"#),
+        );
+        let new = root.join("new.jar");
+        jar(
+            &new,
+            Some(r#"{"id":"new","depends":{"minecraft":"~26.3"}}"#),
+        );
+        let copy = root.join("new-copy.jar");
+        jar(&copy, Some(r#"{"id":"new","depends":{"minecraft":"*"}}"#));
+        assert_eq!(
+            add(&home, &old).unwrap().wrong_minecraft.as_deref(),
+            Some("1.21.x or 1.20.1")
+        );
+        assert_eq!(add(&home, &new).unwrap().wrong_minecraft, None);
+        add(&home, &copy).unwrap();
+        assert!(is_fabric_mod(&new));
+        assert!(!is_fabric_mod(&root.join("missing.jar")));
+        assert_eq!(
+            duplicates(&list(&home)),
+            [(
+                "new".to_string(),
+                vec!["new-copy.jar".to_string(), "new.jar".to_string()]
+            )]
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

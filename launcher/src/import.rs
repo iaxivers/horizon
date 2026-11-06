@@ -35,6 +35,9 @@ pub enum Dropped {
     Pack(packs::Kind),
     /// A data pack: it goes into a world.
     DataPack,
+    /// A Fabric mod's jar (it has `fabric.mod.json`): it goes into the selected instance's
+    /// `mods-java/` (`java_mods::add`), with Fabric 26.3 mods on.
+    JavaMod,
     /// A game build: a `horizon-client` program, or a release archive or an
     /// Actions artifact around one. `build_import` installs it as its own
     /// version beside the releases, so a build can be played without waiting
@@ -93,6 +96,12 @@ pub fn what(file: &Path) -> Result<Dropped, String> {
                 true => Dropped::Modpack,
                 false => Dropped::Instance,
             });
+        }
+        Some("jar") if crate::java_mods::is_fabric_mod(file) => return Ok(Dropped::JavaMod),
+        Some("jar") => {
+            return Err(format!(
+                "{name} is not a Fabric mod (it has no fabric.mod.json): Horizon runs Fabric mods."
+            ))
         }
         Some("zip") => {}
         // A build for Linux or macOS is named `horizon-client` with no

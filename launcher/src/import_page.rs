@@ -68,6 +68,28 @@ impl Launcher {
                         }));
                     self.game_packs.stale();
                 }
+                Ok(Dropped::JavaMod) => {
+                    let Some(i) = self.selected_instance().cloned() else {
+                        continue;
+                    };
+                    if i.java.is_some() {
+                        self.importing.note = Some(Err(trf(
+                            "{name} is a Fabric mod: {instance} plays Minecraft: Java Edition, so \
+                             add it on its Mods page.",
+                            &[("name", &name), ("instance", &i.name)],
+                        )));
+                    } else if !i.java_mods {
+                        self.importing.note = Some(Err(trf(
+                            "{name} is a Fabric mod: turn on Fabric 26.3 mods (beside Play) for \
+                             {instance}, then drop it again.",
+                            &[("name", &name), ("instance", &i.name)],
+                        )));
+                    } else {
+                        self.add_java_mods(i.home.clone(), vec![file]);
+                        self.home_tab = home_tabs::HomeTab::JavaMods;
+                        self.importing.note = None;
+                    }
+                }
                 Ok(Dropped::DataPack) => {
                     self.importing.note = Some(Err(trf(
                         "{name} is a data pack: drop it on a world on Home, or install it into \

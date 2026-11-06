@@ -3293,6 +3293,27 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
                         p.title, i.name
                     );
                 }
+                Dropped::JavaMod => {
+                    let i = match instance {
+                        Some(name) => instances::find(&name)?,
+                        None => instances::selected(),
+                    };
+                    let m = horizon_launcher::java_mods::add(&i.home, &file)?;
+                    println!(
+                        "Added {} to {}'s {}: it loads with Fabric 26.3 mods on \
+                         (horizon-launcher java-mods on)",
+                        m.title(),
+                        i.name,
+                        horizon_launcher::java_mods::DIR
+                    );
+                    if let Some(wants) = &m.wrong_minecraft {
+                        eprintln!(
+                            "{} is made for Minecraft {wants}, not {}: it can't start.",
+                            m.file,
+                            horizon_launcher::java_mods::MINECRAFT
+                        );
+                    }
+                }
                 Dropped::DataPack => {
                     return Err(format!(
                         "{} is a data pack: put it into a world with horizon-launcher worlds \
