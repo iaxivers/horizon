@@ -3989,6 +3989,10 @@ pub enum Msg {
     Imported(Result<String, String>),
     /// A version's Fabric mods build is installed (`java_variant::ensure`), or why not.
     JavaBuild(String, Result<(), String>),
+    /// Play's download of the Fabric mods build or Java 25 (`java_variant::ensure_with`), 0 to 1.
+    JavaPlayProgress(f32),
+    /// Play stopped before the game: why the Fabric mods build or Java 25 can't be had.
+    JavaPlayStopped(String),
     /// A Java instance's game is ready to start (`java_game`, wrapped): the instance's id and
     /// game folder, and the command or why not.
     /// A Java instance's game ready to start, and its variables for the post-exit command.

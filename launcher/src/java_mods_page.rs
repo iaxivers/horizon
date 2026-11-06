@@ -21,6 +21,8 @@ pub(super) struct JavaModsTab {
     note: Option<Result<String, String>>,
     /// The Fabric 26.3 mods switch's download, while it runs and once it ended.
     build: Option<JavaBuild>,
+    /// Play's download of the Fabric mods build (or Java 25), while Play waits for it.
+    play_progress: Option<f32>,
 }
 
 /// The switch's download of a version's Java mods build: the version, and how it went once done.
@@ -128,6 +130,35 @@ impl Launcher {
         }
     }
 
+    /// Play's download for the Fabric mods moved on (`ensure_at_play`).
+    pub(super) fn java_play_progress(&mut self, p: f32) {
+        self.java_mods.play_progress = Some(p);
+    }
+
+    /// How far Play's download for the Fabric mods is, while Play waits for it.
+    pub(super) fn java_play_progress_shown(&self) -> Option<f32> {
+        self.starting_client
+            .as_ref()
+            .and(self.java_mods.play_progress)
+    }
+
+    /// Play's start is over (the game started, or Play stopped): no download bar.
+    pub(super) fn java_play_done(&mut self) {
+        self.java_mods.play_progress = None;
+    }
+
+    /// Play stopped before the game: the Fabric mods build or Java 25 can't be had. Said in
+    /// the window, as any other reason Play can't start.
+    pub(super) fn java_play_stopped(&mut self, why: String) {
+        self.java_play_done();
+        if self.starting_client.take().is_some() {
+            self.client_error = Some(why);
+            self.starting_pack = None;
+            self.joining = None;
+            self.quick_play = None;
+        }
+    }
+
     /// A switch's download ended.
     pub(super) fn java_build_done(&mut self, tag: String, result: Result<(), String>) {
         if let Some(build) = self.java_mods.build.as_mut().filter(|b| b.tag == tag) {
@@ -219,14 +250,32 @@ impl Launcher {
         self.java_mods.list.len()
     }
 
-    fn add_java_mods(&mut self, home: PathBuf, paths: Vec<PathBuf>) {
+    pub(super) fn add_java_mods(&mut self, home: PathBuf, paths: Vec<PathBuf>) {
+        let had = java_mods::list(&home);
         let mut added = Vec::new();
         let mut failed = Vec::new();
         for path in paths {
             match java_mods::add(&home, &path) {
-                Ok(m) => added.push(m.title().to_string()),
+                Ok(m) => {
+                    if let Some(wants) = &m.wrong_minecraft {
+                        failed.push(wrong_minecraft(&m.file, wants));
+                    }
+                    if let Some(other) = had
+                        .iter()
+                        .find(|h| h.id.is_some() && h.id == m.id && h.file != m.file)
+                    {
+                        failed.push(trf(
+                            "{file} is the same mod as {other}: keep only one of them.",
+                            &[("file", &m.file), ("other", &other.file)],
+                        ));
+                    }
+                    added.push(m.title().to_string());
+                }
                 Err(e) => failed.push(e),
             }
+        }
+        if !added.is_empty() && !failed.is_empty() {
+            failed.insert(0, trf("Added {names}.", &[("names", &added.join(", "))]));
         }
         self.java_mods.note = Some(if failed.is_empty() {
             Ok(trf(
@@ -342,6 +391,16 @@ impl Launcher {
         for failure in self.java_mods.failures.iter().filter(|f| f.name.is_none()) {
             section = section.child(notice(failure.text.clone(), &t));
         }
+        for (id, files) in java_mods::duplicates(&self.java_mods.list) {
+            section = section.child(notice(
+                trf(
+                    "{files} are the same mod ({id}): Fabric won't start with both. Keep only \
+                     one of them.",
+                    &[("files", &files.join(", ")), ("id", &id)],
+                ),
+                &t,
+            ));
+        }
         if self.java_mods.list.is_empty() {
             section = section.child(text(theme::CAPTION).text_color(t.muted).child(tr(
                 "No Java mods yet: add Fabric mods' jars, or drop them here.",
@@ -386,6 +445,17 @@ impl Launcher {
                         text(theme::CAPTION)
                             .text_color(t.danger)
                             .child(f.text.clone()),
+                    );
+                }
+                let wrong = m
+                    .wrong_minecraft
+                    .as_ref()
+                    .map(|w| wrong_minecraft(&m.file, w));
+                if let Some(wrong) = &wrong {
+                    info = info.child(
+                        text(theme::CAPTION)
+                            .text_color(t.danger)
+                            .child(wrong.clone()),
                     );
                 }
                 let mut actions = div().flex().items_center().gap(px(6.));
@@ -444,7 +514,7 @@ impl Launcher {
                     .px(px(10.))
                     .py(px(6.))
                     .border_2()
-                    .border_color(if failed.is_empty() {
+                    .border_color(if failed.is_empty() && wrong.is_none() {
                         t.outline
                     } else {
                         t.danger
@@ -472,12 +542,32 @@ impl Launcher {
     }
 }
 
+/// What the tab says of a jar made for another Minecraft version.
+fn wrong_minecraft(file: &str, wants: &str) -> String {
+    trf(
+        "{file} is made for Minecraft {wants}, not {version}: it can't start in Horizon. Get its \
+         version for {version}.",
+        &[
+            ("file", file),
+            ("wants", wants),
+            ("version", java_mods::MINECRAFT),
+        ],
+    )
+}
+
 /// Play's thread, before the session: with Fabric 26.3 mods on ([`Launcher::java_build_at_play`]),
-/// the version's Java mods build first, when it isn't there yet; why not goes to the game's log.
-pub(super) fn ensure_at_play(java_build: bool, tag: &str, tx: &Sender<Msg>) {
-    if java_build {
-        if let Err(e) = java_variant::ensure(tag, |_| {}) {
-            let _ = tx.send(Msg::Line(Job::Client, e));
-        }
+/// the version's Java mods build first, when it isn't there yet, its lines in the game log and
+/// its download on Play's bar. Why it can't be had stops Play (`Msg::JavaPlayStopped`, shown
+/// in the window): the game would refuse the mods anyway.
+pub(super) fn ensure_at_play(java_build: bool, tag: &str, tx: &Sender<Msg>) -> Result<(), String> {
+    if !java_build {
+        return Ok(());
     }
+    let progress = |p: f32| {
+        let _ = tx.send(Msg::JavaPlayProgress(p));
+    };
+    let log = |line: &str| {
+        let _ = tx.send(Msg::Line(Job::Client, line.to_string()));
+    };
+    java_variant::ensure_with(tag, &progress, &log)
 }

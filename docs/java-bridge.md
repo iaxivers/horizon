@@ -2848,6 +2848,37 @@ Testers no longer build: the fork publishes **the `java-mods` pre-release** on i
   with the JVM up. Harness-only as far as seen (players don't poll the socket); not fixed. Work
   around: start once without `--wait`, then test.
 
+### First-run traps (2026-11-06, bridge-firstrun)
+
+A review of a first Play with Fabric mods on; what changed:
+- **Play stops on the real reason** (`java_mods_page::ensure_at_play` → `Msg::JavaPlayStopped`
+  → `client_error`) when `java_variant::ensure_with` fails, instead of logging it and failing
+  later in `switch_command` with a message that never helped. Its download shows on Play's bar
+  (`Msg::JavaPlayProgress`, "Downloading") and its lines (Java 25, game files, the build) in
+  the game log.
+- **One download at a time:** `java_variant::BUILD_LOCK` around `ensure_with`, `follow` and
+  `use_build` (the switch and Play at once wrote the same `.java.partial`).
+- **Launcher contract:** `java_release::CONTRACT` (1), written as `contract` into
+  `java-mods.json` by java-mods-release.yml (read from that line); a manifest without it is 1.
+  `fits` refuses another contract ("needs a newer launcher: download it from <release page>").
+  **Bump it** with any change to the game's opt-in/owner check that an older launcher can't
+  meet (the gate owner's call): Play's refresh of a fork build then leaves the old build
+  playing and says why, instead of installing one that refuses the mods.
+- **Wrong-version jars:** `java_mods::runs_on` reads `depends.minecraft` (Fabric's predicates:
+  `>=`, `<`, `~`, `^`, `x` wildcards, AND by spaces, OR by arrays; unknown forms never flagged);
+  the tab and Add name a jar that excludes 26.3, and two jars with one mod id. `failures_in`
+  keeps Fabric's "- Mod '…'" report lines (no log prefix), so the tab marks the mod.
+- **A player's Fabric API is skipped** (`bridge.rs` `run_jars`, by id or `fabric-api*` name),
+  with a log line; Fabric then gets an explicit jar list (no folder scan) whenever jars were left
+  out. The pinned one always loads.
+- **Player-facing messages** name player actions (Prepare again on Home, download the launcher)
+  instead of `horizon-launcher …`/`horizon-prepare` commands; `has_game_files` also wants a jar
+  in `libraries/client/`, so the launcher re-prepares a version missing them.
+- **A Fabric jar dropped on the window** (`import::Dropped::JavaMod`) goes into the selected
+  instance's `mods-java/` with the switch on, else says to turn it on.
+- Tested: launcher unit tests (`java_variant::`, `java_release::`, `java_mods::`, `import::`),
+  clippy. Not tested on a real machine: the window's Play stop/progress and the drop.
+
 ### Launcher only (2026-11-04, bridge-launcher-only)
 
 Players play the Java mods only through Horizon's launcher, signed in (Ludovic's first condition

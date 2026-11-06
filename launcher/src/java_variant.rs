@@ -68,13 +68,15 @@ pub fn java_home() -> Option<PathBuf> {
         .map(|r| r.home)
 }
 
-/// [`java_home`], else Mojang's Java 25 downloaded now. The caller has passed the owner gate.
-fn ensure_java() -> Result<PathBuf, String> {
+/// [`java_home`], else Mojang's Java 25 downloaded now, its lines to `log`. The caller has
+/// passed the owner gate.
+fn ensure_java(log: &dyn Fn(&str)) -> Result<PathBuf, String> {
     if let Some(home) = java_home() {
         return Ok(home);
     }
     let need = java::Need::named(&JAVA_MAJOR.to_string())?;
-    java::install(&need, &|line| eprintln!("{line}"))
+    log(crate::i18n::tr("Downloading Java 25 for Fabric mods…"));
+    java::install(&need, &|line| log(&line))
         .map(|r| r.home)
         .map_err(|e| format!("Java {JAVA_MAJOR} for Fabric mods: {e}"))
 }
@@ -193,9 +195,10 @@ fn download_into(
 /// A 404 or an asset the signed checksums don't list: the release has no Java mods build.
 fn missing(tag: &str, why: &str) -> String {
     if why.ends_with("answered 404") || why.contains(asset().unwrap_or("-java")) {
-        format!(
-            "its release has none to download yet ({why}). A build of your own: \
-             horizon-launcher java-mods use-build <horizon-client> --version {tag}"
+        crate::i18n::trf(
+            "its release has no Fabric mods build to download yet ({why}). Pick another \
+             Horizon version for {tag}'s instance on Home, or wait for the next build.",
+            &[("why", why), ("tag", tag)],
         )
     } else {
         why.to_string()
@@ -271,6 +274,7 @@ pub(crate) fn in_use(e: &std::io::Error) -> bool {
 /// A Java mods build the player has (built from a checkout with `--features java-mods`, or from
 /// a fork's Actions) as installed version `tag`'s. Nothing signed it.
 pub fn use_build(tag: &str, program: &Path) -> Result<(), String> {
+    let _one = one_at_a_time();
     if !program.is_file() {
         return Err(format!("{}: no such file", program.display()));
     }
@@ -284,24 +288,47 @@ pub fn use_build(tag: &str, program: &Path) -> Result<(), String> {
     place(&staging, &dir(tag), "")
 }
 
+/// What keeps two downloads of a build (the switch turning on, Play, an install's
+/// [`follow`], `use-build`) from writing the same `.java.partial` at once: each waits for the
+/// one before it, then finds the build there.
+static BUILD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// [`BUILD_LOCK`], held until the guard drops; a panic in the holder doesn't keep it shut.
+fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    BUILD_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Installs `tag`'s Java mods build unless it has it (the release of that tag, from GitHub), and
 /// Java 25 unless there is one: only past the owner gate, when something is missing.
 pub fn ensure(tag: &str, progress: impl Fn(f32)) -> Result<(), String> {
+    ensure_with(tag, &progress, &|line| eprintln!("{line}"))
+}
+
+/// [`ensure`], saying what it does in `log` (the window's game log) as it goes.
+pub fn ensure_with(tag: &str, progress: &dyn Fn(f32), log: &dyn Fn(&str)) -> Result<(), String> {
+    let _one = one_at_a_time();
     let fork = fork_commit(tag);
     if is_installed(tag) && java_home().is_some() && fork.is_none() && has_game_files(tag) {
         return Ok(());
     }
     owner_signed_in()?;
-    ensure_game_files(tag)?;
+    ensure_game_files(tag, log)?;
     if let Some(installed) = fork {
-        refresh_from_fork(tag, &installed, &progress);
+        refresh_from_fork(tag, &installed, progress, log);
     }
     if !is_installed(tag) {
+        log(&crate::i18n::trf(
+            "Downloading the Fabric mods build for {tag}…",
+            &[("tag", tag)],
+        ));
         fetch(tag, progress).map_err(|e| {
-            format!("Fabric 26.3 mods are on, but {tag} has no Fabric mods build here: {e}")
+            crate::i18n::trf(
+                "Fabric 26.3 mods are on, but {tag} has no Fabric mods build here: {why}",
+                &[("tag", tag), ("why", &e)],
+            )
         })?;
     }
-    ensure_java().map(|_| ())
+    ensure_java(log).map(|_| ())
 }
 
 /// The version's own checked copy of the game, `.local/minecraft/<version>/jars/client.jar`, which
@@ -315,25 +342,53 @@ fn game_jar(tag: &str) -> PathBuf {
         .join("jars/client.jar")
 }
 
+/// Fabric's game jar ([`game_jar`]) and at least one of the game's libraries beside it
+/// (`libraries/client/`, which `horizon_jvm::facade::game_libraries` reads): without them the
+/// game can't start the mods, so the launcher repairs them before Play.
 fn has_game_files(tag: &str) -> bool {
-    game_jar(tag).is_file()
+    let jar = game_jar(tag);
+    jar.is_file()
+        && jar
+            .parent()
+            .and_then(Path::parent)
+            .is_some_and(has_libraries)
+}
+
+/// Whether `<minecraft>/libraries/client/` (searched through) holds a `.jar`.
+fn has_libraries(minecraft: &Path) -> bool {
+    let mut stack = vec![minecraft.join("libraries/client")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for path in entries.flatten().map(|e| e.path()) {
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "jar") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// [`game_jar`] and the libraries, past the owner gate: copied, checked, from an installed
 /// version that has them, else imported as Prepare imports them (the player's Minecraft
 /// folder, or Mojang's download for the owner).
-fn ensure_game_files(tag: &str) -> Result<(), String> {
+fn ensure_game_files(tag: &str, say: &dyn Fn(&str)) -> Result<(), String> {
     if has_game_files(tag) {
         return Ok(());
     }
+    say(&crate::i18n::trf(
+        "Getting Minecraft's own files for Fabric mods into {tag}…",
+        &[("tag", tag)],
+    ));
     let dir = backend::version_dir(tag);
-    let log = |line: &str| eprintln!("{line}");
-    if horizon_prepare::artifacts::reuse_imported(&dir, &log).unwrap_or(false)
-        && has_game_files(tag)
+    if horizon_prepare::artifacts::reuse_imported(&dir, say).unwrap_or(false) && has_game_files(tag)
     {
         return Ok(());
     }
-    let log = |line: String| eprintln!("{line}");
+    let log = |line: String| say(&line);
     let minecraft = backend::minecraft_dir(None)?;
     let (preparer, _) = backend::preparer(tag, &minecraft, backend::MinecraftFrom::Install, &log)?;
     match preparer {
@@ -348,19 +403,22 @@ fn ensure_game_files(tag: &str) -> Result<(), String> {
     if has_game_files(tag) {
         Ok(())
     } else {
-        Err(format!(
-            "Fabric 26.3 mods need Minecraft's own files in {}: prepare {tag} again",
-            game_jar(tag).display()
+        Err(crate::i18n::trf(
+            "Fabric 26.3 mods need Minecraft's own files ({path}), and preparing {tag} didn't \
+             make them: play Minecraft 26.3 once to the title screen in the official launcher, \
+             then prepare {tag} again on Home.",
+            &[("path", &game_jar(tag).display().to_string()), ("tag", tag)],
         ))
     }
 }
 
-fn fetch(tag: &str, progress: impl Fn(f32)) -> Result<(), String> {
+fn fetch(tag: &str, progress: &dyn Fn(f32)) -> Result<(), String> {
     asset().ok_or_else(no_build_here)?;
     if crate::build_import::is_imported(tag) {
-        return Err(format!(
-            "{tag} is an imported build: give it its Fabric mods build with \
-             horizon-launcher java-mods use-build <horizon-client> --version {tag}"
+        return Err(crate::i18n::trf(
+            "{tag} is an imported build, which has no Fabric mods build to download: import \
+             one built with Fabric mods, or pick a Horizon release on Home.",
+            &[("tag", tag)],
         ));
     }
     // The version's own release first; the fork's build when it has none (java_release).
@@ -369,17 +427,18 @@ fn fetch(tag: &str, progress: impl Fn(f32)) -> Result<(), String> {
             .iter()
             .find(|r| r.tag == tag)
             .ok_or_else(|| format!("No Horizon release is tagged {tag}."))?;
-        install(release, tag, &progress)
+        install(release, tag, progress)
     });
     own.or_else(|own| {
-        install_from_fork(tag, &progress)
+        install_from_fork(tag, progress)
             .map_err(|fork| format!("{own} From {}: {fork}", java_release::REPO))
     })
 }
 
-/// A build from the fork's release, replaced by a newer one that fits `tag`. Best effort: the
-/// installed build plays when the check or the download fails.
-fn refresh_from_fork(tag: &str, installed: &str, progress: &impl Fn(f32)) {
+/// A build from the fork's release, replaced by a newer one that fits `tag` and this launcher
+/// ([`java_release::fits`]). Best effort: the installed build plays when the check or the
+/// download fails, and `log` says why.
+fn refresh_from_fork(tag: &str, installed: &str, progress: &dyn Fn(f32), log: &dyn Fn(&str)) {
     let keys = java_release::keys();
     let fetch = |url: &str| backend::fetch_small(url);
     let newer = java_release::manifest(&keys, &fetch).and_then(|manifest| {
@@ -387,14 +446,24 @@ fn refresh_from_fork(tag: &str, installed: &str, progress: &impl Fn(f32)) {
         java_release::fits(&manifest, java_release::prepared_format(&version), tag)?;
         Ok(manifest.commit != installed)
     });
+    let not_updated = |e: &str| {
+        log(&crate::i18n::trf(
+            "The Fabric mods build of {tag} was not updated (the one installed plays): {why}",
+            &[("tag", tag), ("why", e)],
+        ))
+    };
     match newer {
         Ok(true) => {
+            log(&crate::i18n::trf(
+                "Downloading a newer Fabric mods build for {tag}…",
+                &[("tag", tag)],
+            ));
             if let Err(e) = install_from_fork(tag, progress) {
-                eprintln!("Fabric mods build of {tag} not updated: {e}");
+                not_updated(&e);
             }
         }
         Ok(false) => {}
-        Err(e) => eprintln!("Fabric mods build of {tag} not checked for an update: {e}"),
+        Err(e) => not_updated(&e),
     }
 }
 
@@ -406,6 +475,10 @@ pub fn follow(release: &Release, tag: &str) {
         .iter()
         .any(|i| i.java_mods && i.version.as_deref().is_none_or(|v| v == tag));
     if !wanted || asset().is_none() || is_installed(tag) {
+        return;
+    }
+    let _one = one_at_a_time();
+    if is_installed(tag) {
         return;
     }
     if let Err(e) = owner_signed_in() {
@@ -463,9 +536,9 @@ pub fn switch_command(cmd: &mut Command) -> Result<(), String> {
         // An imported build plays the mods itself (`use-build` can still give it another).
         plain.clone()
     } else {
-        return Err(format!(
-            "{tag}'s Fabric mods build isn't installed: turn Fabric 26.3 mods off and on again, \
-             or horizon-launcher java-mods on"
+        return Err(crate::i18n::trf(
+            "{tag}'s Fabric mods build isn't installed: press Play again to download it.",
+            &[("tag", &tag)],
         ));
     };
     let mut next = Command::new(program);
@@ -572,6 +645,36 @@ mod tests {
         only(&to, "new.txt");
         assert_eq!(leftovers(), [DIR]);
         let _ = fs::remove_dir_all(&scratch);
+    }
+
+    /// Two downloads (the switch and Play at once) never run together: the second waits for
+    /// the first, and a holder that panicked doesn't keep the lock shut.
+    #[test]
+    fn one_build_download_runs_at_a_time() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static INSIDE: AtomicUsize = AtomicUsize::new(0);
+        static MOST: AtomicUsize = AtomicUsize::new(0);
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    let _one = one_at_a_time();
+                    let now = INSIDE.fetch_add(1, Ordering::SeqCst) + 1;
+                    MOST.fetch_max(now, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    INSIDE.fetch_sub(1, Ordering::SeqCst);
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(MOST.load(Ordering::SeqCst), 1);
+        let _ = std::thread::spawn(|| {
+            let _one = one_at_a_time();
+            panic!("a download failed badly");
+        })
+        .join();
+        drop(one_at_a_time());
     }
 
     #[test]

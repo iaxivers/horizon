@@ -280,7 +280,10 @@ impl Launcher {
                 tr("Preparing"),
                 horizon_launcher::mojang::progress().map(|(d, n)| d as f32 / n.max(1) as f32),
             )),
-            (_, _, Some(_)) => Some((tr("Starting"), None)),
+            (_, _, Some(_)) => match self.java_play_progress_shown() {
+                Some(p) => Some((tr("Downloading"), Some(p))),
+                None => Some((tr("Starting"), None)),
+            },
             _ => None,
         };
         let open = self.home_menu == HomeMenu::Play;

@@ -1170,6 +1170,7 @@ impl Launcher {
                     }
                 }
                 Msg::Session(session) => {
+                    self.java_play_done();
                     self.load_auth_statuses(false);
                     if let Some(tag) = self.starting_client.take() {
                         let mut cmd = backend::client_command(&tag);
@@ -1323,6 +1324,8 @@ impl Launcher {
                 }
                 Msg::DiskUse(disk) => self.disk = disk,
                 Msg::JavaBuild(tag, result) => self.java_build_done(tag, result),
+                Msg::JavaPlayProgress(p) => self.java_play_progress(p),
+                Msg::JavaPlayStopped(why) => self.java_play_stopped(why),
                 Msg::Imported(result) => {
                     self.importing_build = false;
                     self.installed = backend::installed();
@@ -1825,7 +1828,10 @@ impl Launcher {
         // Fabric mods play only for a signed-in owner: never the developer option's offline pass.
         let offline_without_owner = self.settings.dev_offline && !java_build;
         std::thread::spawn(move || {
-            java_mods_page::ensure_at_play(java_build, &tag, &tx);
+            if let Err(e) = java_mods_page::ensure_at_play(java_build, &tag, &tx) {
+                let _ = tx.send(Msg::JavaPlayStopped(e));
+                return;
+            }
             backend::complete_assets(&tag);
             let session = account::session_for_game(&backend::game_home(), offline_without_owner);
             let _ = tx.send(Msg::Session(session));
