@@ -343,5 +343,12 @@ Also running: client-bugs diagnosis agent (keybinds, FOV, Xaero res, 3D skin, mu
 
 - 01:45 INTEGRATION branch claude/bridge-integration (5bf5536df9) = java-bridge 5c5e6b5 + win-fixes + firstrun-clean + gate-2, conflicts resolved (gate-2's no-refresh ensure + `update`, firstrun's BUILD_LOCK/logging), CONTRACT = 2. Launcher clippy -D warnings clean, 115 launcher tests pass; horizon-client cargo check with java-mods and java-mods-dev OK; horizon-jvm 15 unit tests pass. (clippy on horizon-world fails on a pre-existing manual_range_contains lint from a newer clippy — not ours.) NOT run: regress on the integration (would need a second game target dir; disk ~5 GB and the keybind agent uses /home/claude/horizon/target/fast). Morning: user tests this ONE branch.
 
+- 02:00 Translations: claude/bridge-integration → 7edae9f1ee, 2156 entries (26 keys × 86 languages); launcher i18n test passes. Small languages best-effort.
+
+- 03:00 Keybinds+FOV DONE: claude/bridge-modkeys-fov (f6fb990275, off java-bridge). Mod keys (KeyMapping.ALL minus vanilla) listed/rebindable/saved in Controls, sent by mapping name; mod FOV via horizon:java_view applied in fov_degrees; `player.fov` in ctl state. New regress keys-rebind, keys-server, fov PASS; keys, pot, hud, litematica pass. Screenshots /home/claude/send/modfov-{zoomed,normal}.png, modkeys-*.png (checked: Xaero's waypoint keys in Controls). Zoomify itself untested (no jar). Not merged.
+- 03:00 Freed disk (launcher debug cache deleted, 18 GB free). Started Xaero HUD-res worker: claude/bridge-hud-res in /home/claude/horizon.
+
 ## Rules tonight
 Nothing to java-bridge or a release unless tested; everything else on branches; morning summary 08:00.
+
+- 03:30 Check-in 2: started upstream A-series/B1/B2/B4a branch cutting (claude/up-*, not opened; bodies in /home/claude/send/upstream-pr-bodies.md).
