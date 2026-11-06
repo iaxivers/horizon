@@ -119,10 +119,11 @@ mod tests {
                         .unwrap()
                         .into_iter()
                         .map(|quad| BakedFace {
-                            quad,
+                            quad: quad.into(),
                             layer: 7,
                             opaque: true,
                             translucent: false,
+                            force_translucent: false,
                             fusion: None,
                         })
                         .collect();
@@ -154,10 +155,11 @@ mod tests {
                 .unwrap()
                 .into_iter()
                 .map(|quad| BakedFace {
-                    quad,
+                    quad: quad.into(),
                     layer: 0,
                     opaque: true,
                     translucent: false,
+                    force_translucent: false,
                     fusion: None,
                 })
                 .collect();

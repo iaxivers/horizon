@@ -147,7 +147,7 @@ impl Game<'_> {
             self.streaming.biome_blend,
         );
         let tables = &self.pack.context.tables;
-        let light = |quad: &horizon_assets::bake::ModelQuad| {
+        let light = |quad: &horizon_client::models::catalog::BakedQuad| {
             let coords = tables.flat_light(state, [seed.x, seed.y, seed.z], quad, |p| {
                 self.world.light(p[0], p[1], p[2])
             });

@@ -108,7 +108,7 @@ mod tests {
         }
     }
     use crate::models::catalog::BakedFace;
-    use horizon_assets::{bake::ModelQuad, model::Material};
+    use crate::models::catalog::BakedQuad;
     fn slab_top() -> BakedModel {
         BakedModel {
             ambient_occlusion: true,
@@ -118,8 +118,9 @@ mod tests {
                 layer: 0,
                 opaque: true,
                 translucent: false,
+                force_translucent: false,
                 fusion: None,
-                quad: ModelQuad {
+                quad: BakedQuad {
                     positions: [
                         [0.0, 0.5, 0.0],
                         [0.0, 0.5, 1.0],
@@ -129,10 +130,6 @@ mod tests {
                     uv: [[0.0; 2]; 4],
                     facing: Direction::Up,
                     cull: None,
-                    material: Material {
-                        sprite: "block/stone".into(),
-                        force_translucent: false,
-                    },
                     tint_index: -1,
                     shade_direction_override: None,
                     light_emission: 0,

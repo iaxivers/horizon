@@ -291,6 +291,11 @@ impl FusionTextures {
             .keys()
             .filter_map(|name| sprites.layers.get(name).copied())
             .collect();
+        // A baked face keeps its layer, not its sprite's name: the sheets by their layer.
+        let by_layer: HashMap<u32, String> = textures
+            .keys()
+            .filter_map(|name| Some((*sprites.layers.get(name)?, name.clone())))
+            .collect();
         let mut models: HashMap<String, Vec<ModelFace>> = HashMap::new();
         let mut sheets: Vec<(Sheet, Connection)> = Vec::new();
         let mut by_name: HashMap<String, Option<usize>> = HashMap::new();
@@ -303,7 +308,9 @@ impl FusionTextures {
                 .entry(namespaced(&variant.model))
                 .or_insert_with_key(|name| connecting_model(root, name));
             for face in &mut model.faces {
-                let sprite = &face.quad.material.sprite;
+                let Some(sprite) = by_layer.get(&face.layer) else {
+                    continue;
+                };
                 // The model's face on the side this one turned to, else any with its sprite.
                 let side = Face::ALL[face.quad.facing as usize];
                 let mut drawing = found.iter().filter(|(s, _, _)| s == sprite);

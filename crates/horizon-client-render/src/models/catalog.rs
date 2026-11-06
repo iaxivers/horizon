@@ -1,7 +1,9 @@
 //! Bind prepared registry states to model choices; bake each transformed model
 //! once and share its geometry across positions. Resource failure recovery and
 //! resource-pack reloads remain separate work.
+mod baked_quad;
 use crate::{Result, sprites::Sprites};
+pub use baked_quad::BakedQuad;
 use horizon_assets::{
     bake::{BlockModelTransform, ModelQuad, RenderType, bake_block_model},
     blockstate::{
@@ -26,13 +28,15 @@ use std::{
 };
 
 pub struct BakedFace {
-    pub quad: ModelQuad,
+    pub quad: BakedQuad,
     pub layer: u32,
     /// The texels under the quad's UVs are all opaque (`SpriteContents.computeTransparency`):
     /// drawn in the solid layer without an alpha test.
     pub opaque: bool,
     /// Fractional alpha: drawn in the sorted translucent pass.
     pub translucent: bool,
+    /// The material forces it translucent and no `render_type` overrides: an OptiFine tile keeps that.
+    pub force_translucent: bool,
     /// The Fusion connecting texture rule its sprite joins by ([`crate::fusion`]), plus one:
     /// two bytes, within the padding every face already has.
     pub fusion: Option<std::num::NonZeroU16>,
@@ -100,8 +104,9 @@ fn bake_resolved(
             };
             Ok(BakedFace {
                 translucent,
+                force_translucent: quad.render_type.is_none() && quad.material.force_translucent,
                 opaque,
-                quad,
+                quad: quad.into(),
                 layer,
                 fusion: None,
             })
@@ -354,7 +359,19 @@ impl StateModels {
             baked.push((variant, model));
         }
         // Every variant of every definition was baked above.
-        let choices = choices.iter().map(|c| c.map(|v| index[&key(v)])).collect();
+        let choices: Vec<CompiledChoices<u32>> =
+            choices.iter().map(|c| c.map(|v| index[&key(v)])).collect();
+        let faces: usize = baked.iter().map(|(_, m)| m.faces.len()).sum();
+        let multipart: usize = states
+            .iter()
+            .filter(|s| matches!(s, Some((_, SelectedModels::Multipart(_)))))
+            .count();
+        log::info!(
+            "Horizon: {} baked block models, {faces} faces, {} definitions; {multipart} multipart states of {}",
+            baked.len(),
+            choices.len(),
+            states.len()
+        );
         Ok(Self {
             choices,
             states,

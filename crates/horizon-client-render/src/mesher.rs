@@ -919,7 +919,7 @@ impl MeshTables {
         &self,
         state: BlockStateId,
         pos: [i32; 3],
-        quad: &horizon_assets::bake::ModelQuad,
+        quad: &crate::models::catalog::BakedQuad,
         light: impl Fn([i32; 3]) -> u8,
     ) -> u32 {
         let own = self.info.get(state.0 as usize);
@@ -1808,7 +1808,7 @@ impl Mesher<'_> {
                 opaque,
             } => TileLayer::Layer {
                 layer,
-                translucent: translucent || q.render_type.is_none() && q.material.force_translucent,
+                translucent: translucent || face.force_translucent,
                 opaque,
             },
             TileLayer::Skip | TileLayer::Default => own,
