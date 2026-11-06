@@ -13,6 +13,8 @@ use crate::{
 use horizon_core::geometry::{Axis, VoxelShape};
 use std::{collections::HashMap, io};
 
+mod mod_templates;
+
 /// `PipeBlock`'s shape for `size` pixels across (`makeShapes`): the core
 /// cube, with an arm from the centre out to each joined side (`sides` by
 /// `Direction`: down, up, north, south, west, east).
@@ -61,6 +63,10 @@ pub struct CachedCollisionRegistry<'r> {
     state_shapes: Vec<i32>,
     grid_count: usize,
     canonical_identities: bool,
+    /// Mod blocks (a content root's) by the vanilla template they copy: a
+    /// template state with no cached shape has a rule of its own (scaffolding,
+    /// bamboo...), which the mod block's states follow.
+    templates: HashMap<String, String>,
 }
 impl<'r> CachedCollisionRegistry<'r> {
     pub fn registry(&self) -> &'r BlockRegistry {
@@ -216,12 +222,14 @@ impl<'r> CachedCollisionRegistry<'r> {
         {
             return Err(invalid("invalid cached shape mapping"));
         }
+        let templates = mod_templates::read(tag.get("templates"))?;
         Ok(Self {
             registry,
             shapes,
             state_shapes: state_shapes.clone(),
             grid_count: grids.len(),
             canonical_identities,
+            templates,
         })
     }
     /// Older exports omit native canonical identities. Such imports retain their

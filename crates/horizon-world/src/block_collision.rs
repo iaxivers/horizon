@@ -13,6 +13,8 @@ use crate::{
 use horizon_core::geometry::{Aabb, Axis, Direction, Vec3, VoxelShape};
 use std::{collections::HashMap, io, sync::Arc};
 
+mod mod_blocks;
+
 #[derive(Clone, Copy, Debug)]
 pub struct ShulkerCollisionState {
     pub previous_progress: f32,
@@ -79,6 +81,8 @@ pub struct BlockCollisionRegistry<'r> {
     cached: Arc<CachedCollisionRegistry<'r>>,
     dynamic: HashMap<BlockStateId, DynamicSupport>,
     contextual: HashMap<BlockStateId, ContextualRule>,
+    /// States with neither a cached shape nor a rule (mod blocks only): a full cube.
+    fallback: HashMap<BlockStateId, VoxelShape>,
     scan_flags: Vec<u8>,
     /// Piston and piston-head states for moving-piston collision; None in
     /// registries without pistons.
@@ -93,6 +97,7 @@ impl<'r> BlockCollisionRegistry<'r> {
     pub fn new(cached: Arc<CachedCollisionRegistry<'r>>) -> io::Result<Self> {
         let mut dynamic = HashMap::new();
         let mut contextual = HashMap::new();
+        let mut fallback = HashMap::new();
         let mut scan_flags = Vec::with_capacity(cached.registry().len());
         for index in 0..cached.registry().len() {
             let id = BlockStateId(index as u32);
@@ -102,13 +107,9 @@ impl<'r> BlockCollisionRegistry<'r> {
                     .into_iter()
                     .any(|axis| shape.min(axis) < 0.0 || shape.max(axis) > 1.0)
             });
-            if let Some(rule) = ScaffoldingCollision::from_state(state)? {
-                contextual.insert(id, ContextualRule::Scaffolding(rule));
-            } else if let Some(rule) = LiquidCollision::from_state(state)? {
-                contextual.insert(id, ContextualRule::Liquid(rule));
-            } else if state.name == "minecraft:powder_snow" {
-                contextual.insert(id, ContextualRule::PowderSnow);
-            }
+            let rules = mod_blocks::StateRules::new(&cached, id, state)?;
+            let state = &*rules.state;
+            contextual.extend(rules.contextual.map(|rule| (id, rule)));
             // No contextual rule and an empty cached shape: empty everywhere.
             let empty = !contextual.contains_key(&id)
                 && cached.cached_shape(id)?.is_some_and(VoxelShape::is_empty);
@@ -118,19 +119,16 @@ impl<'r> BlockCollisionRegistry<'r> {
                     | (u8::from(empty) << 2)
                     | (u8::from(contextual.contains_key(&id)) << 3),
             );
-            if cached.cached_shape(id)?.is_none() {
-                if let Some(rule) =
-                    DynamicSupport::from_state(cached.registry().state(id).unwrap())?
-                {
-                    dynamic.insert(id, rule);
-                }
-            }
+            dynamic.extend(rules.dynamic.map(|rule| (id, rule)));
+            fallback.extend(rules.fallback.then(|| (id, VoxelShape::block())));
         }
+        mod_blocks::warn_fallback(&cached, &fallback);
         let pistons = PistonBlockBindings::new(cached.registry()).ok();
         Ok(Self {
             cached,
             dynamic,
             contextual,
+            fallback,
             scan_flags,
             pistons,
         })
@@ -183,6 +181,9 @@ impl<'r> BlockCollisionRegistry<'r> {
             .cached_shape(state)
             .map_err(CollisionQueryError::Data)?
         {
+            return Ok(shape.clone());
+        }
+        if let Some(shape) = self.fallback.get(&state) {
             return Ok(shape.clone());
         }
         self.dynamic
