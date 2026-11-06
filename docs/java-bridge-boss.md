@@ -287,3 +287,61 @@ upstream prep chat (launcher switch, then the shared-file hooks), and the reply 
   put a commit's `crates/horizon-jvm/java` in place (remove the folder first: later files
   linger), `java.sh`, `regress.py --java-only`.
 - Checked: game build, launcher build, clippy (both builds), 24 cases + voice.
+
+## Overnight 2026-11-05/06 (boss log)
+
+
+## Running (2026-11-06 ~00:30)
+- Release run 42128315839 from java-bridge f90ab51 (Windows JVM `\\?\` fix). Check-in trigger at 01:02 Oslo.
+- Gate agent: branch bridge-gate-2, works in /home/claude/horizon (don't touch that dir). Was sent the gate findings (a–e below).
+- Bug-report button agent: branch bridge-bugreport, worktree /home/claude/wt-bugreport.
+- Windows fixes agent: branch bridge-win-fixes, worktree /home/claude/wt-win (hunter items 1–7).
+- My own worktree: /home/claude/wt-boss.
+
+## First-run hunt findings: start a fix agent ONLY after win-fixes and bugreport are merged (same files: java_variant.rs, java_mods.rs, java_mods_page.rs, main.rs)
+P1:
+1. Play hides ensure() errors (java_mods_page.rs ensure_at_play → only log; main.rs ~1824) and shows the misleading "build isn't installed: turn mods off and on". Return the real error to the window (client_error).
+3. Switch-on + Play at once → two ensure() downloads into the same .java.partial. Guard Play while java_mods.build is running, or a mutex in ensure.
+4. Manifest needs a launcher contract/min version (java_release.rs fits): an old launcher must refuse a newer build with "download the new launcher" (tonight's failure 2). Plus a "newer fork launcher" notice.
+5. Upstream version updates break Fabric: protect the version with a working java/ build from pruning (KEEP_NEWEST=2), manifest lists fitting upstream tags, hold back Update prompt when switch on and build doesn't fit.
+P2:
+6. Wrong-MC-version jars: read depends.minecraft on add/list, name the bad jar; failures_in should collect Fabric's "- Mod '…'" lines; warn on duplicate mod ids.
+7. Player's own Fabric API jar replaces the pinned one (bridge.rs own_fabric_api): always use pinned, skip theirs with a note (as the guide says).
+8. Game ignores launcher proxy (gate agent got this one too).
+9. No progress/lines during first Play downloads (ensure_at_play passes |_|{} and eprintln!) → send Msg::Progress/Msg::Line.
+10. Dev-command error messages + untranslated: java_variant.rs ~203, ~321, ~423 ("horizon-launcher java-mods …"), facade.rs "run horizon-prepare --prepare first", java_release.rs keys path. Make has_game_files also require libraries/client/*.jar.
+11. Guide says Play updates the build; code doesn't (refresh_from_fork removal in gate-2 too). Decide: update at Play only when contract fits (item 4), else fix the guide.
+P3: 12 HORIZON_JAVA_HOME trusted blindly / game prefers JAVA_HOME (jdk-26, JRE) — validate major+javac; 14 .jar dropped on window → route to java mods; flag jars in mods/; 15 resume downloads.
+
+## Gate findings sent to gate agent
+(a) refused gate opens world without mods → stop instead; (b) 429/5xx = NoAnswer; (c) failures_in prefix; (d) RECORD_LIFE 120 s vs wrappers; (e) proxy.
+
+## Git
+New remote branches only under `claude/` (others fail "fatal error in commit_refs"); existing branches (java-bridge, docs-java-bridge-design) push fine. Push URL https://github.com/iaxivers/horizon-java-bridge (worktree origin still says iaxivers/horizon).
+Pushed: claude/boss-overnight (testers' guide: tonight's errors).
+Also running: client-bugs diagnosis agent (keybinds, FOV, Xaero res, 3D skin, multiplayer), upstream PR plan agent. Both read-only, report to me.
+
+## Done
+- 00:35 Merged claude/bridge-bugreport into java-bridge (3990c9453b): Copy bug report + Open logs folder in Fabric mods tab, `horizon-launcher java-mods report`. Launcher tests + clippy pass; GUI click not screenshot-tested. NOT released (release 42128315839 builds f90ab51 without it). User test: GUI button on PC. Note: i18n every-language test already failing on java-bridge (ko etc. lack Fabric strings) — pre-existing.
+
+- 00:40 Client-bugs brief committed to java-bridge: docs/java-bridge-brief-client-bugs.md (ee6b0ddd8d). Not implementable here: this container's prepared game can't compile the platform jar (HorizonBiomeMemo can't access Holder), so no in-game verification → these go to worker chats tomorrow (one per section).
+
+- 00:45 claude/bridge-win-fixes (6acb08fd6a) DONE, NOT merged: game-side Windows start path changes need a real Windows run (martipops/testers). Unit tests + windows-gnu clippy for horizon-jvm pass. Real-Windows checks: non-ASCII user folder, 8.3-off drive error, UNC Java, replace build / remove jar while running, Foo.JAR.
+- 00:45 Started first-run fix agent on claude/bridge-firstrun (based on win-fixes + java-bridge): items 1,3,4,6,7,9,10,11,14.
+
+- 00:55 Upstream plan committed: docs/java-bridge-upstream-plan.md + tools/java_bridge/upstream_plan/ (5c5e6b508f). ~70 PRs; P0 (Rust split of java_server.rs/java_screen.rs + off stubs) and P1 (break the 37-class Java cycle) must happen on the fork first. P1 can't be compiled here (platform jar needs a prepared game) → worker chat on a real machine. P0 is Rust-only and compile-verifiable (feature on/off, HORIZON_BRIDGE_PLATFORM=source): candidate for a later check-in when no other build runs (disk). Decision for user: gate java_screen.rs in plain builds or not. gh has no access to horizon-rust/horizon (needs add_repo push) — opening PRs is the user's call anyway.
+
+- 01:02 Release java-mods-2026-11-05-f90ab51 LIVE (all jobs success, 7 assets): Windows `\\?\` JVM fix. Testers with the 17d322a launcher get it at Play (fork refresh). Not in it: bug-report button (3990c94), docs.
+
+- 01:05 Gate-2 DONE on claude/bridge-gate-2 (8531a4651e, on f90ab51), design doc on docs-java-bridge-design (4da817e3ae). Owner record = session file (UUID + Minecraft token, 0600, 10 min) passed by path in HORIZON_JAVA_MODS_OWNER; game verifies with Mojang /minecraft/profile + /entitlements itself. Dev opt-in only in `java-mods-dev`; prototypes behind `java-mods-prototypes`; refused gate + jars → game stops (exit 78); 429/5xx = no answer; proxy passed; warning dialog per instance; no auto-refresh, new `java-mods update`. Regress direct/forged_word/forged_record/owner PASS here on real 26.3 (stand-in services for owner). NOT tested: dialog in a window, real MS sign-in, Windows. NOT merged. Trade-off for user: Fabric mods need internet at every start. Merging requires bumping the manifest contract (first-run agent item 4) and a new launcher download for testers.
+
+- 01:10 Disk at 95% → cleaned /tmp/hz-* leftovers + stale launcher incremental → 4.8 GB free. /home/claude/horizon HAS a working prepared 26.3 (gate agent ran real regress there) and is free now (gate agent done). NEXT when first-run agent finishes (disk): one worker on brief sections 1+2 (mod keybinds in Controls + mod FOV/zoom), working in /home/claude/horizon on a claude/ branch, regress + screenshots. Keep only one game build at a time; clean /tmp/hz-* after.
+
+- 01:20 First-run fixes DONE on claude/bridge-firstrun (4a03f1bf50, messages with literal $'\n\n') and clean copy claude/bridge-firstrun-clean (7d1003afdd, same tree) — use the clean one. Based on win-fixes + java-bridge ee6b0dd. Contract=1; gate-2 merge must bump to 2. Not tested in a real window. Conflicts with gate-2 expected in java_variant.rs (refresh_from_fork), ensure_with, java_mods_page.rs.
+- 01:20 Started keybinds+FOV worker in /home/claude/horizon on claude/bridge-modkeys-fov (real 26.3 regress + screenshots).
+- MERGE ORDER for morning (all unmerged): win-fixes → firstrun-clean (contains win-fixes) → gate-2 (resolve conflicts, bump contract 2) → modkeys-fov. Then release + testers re-download launcher once.
+
+- 01:45 INTEGRATION branch claude/bridge-integration (5bf5536df9) = java-bridge 5c5e6b5 + win-fixes + firstrun-clean + gate-2, conflicts resolved (gate-2's no-refresh ensure + `update`, firstrun's BUILD_LOCK/logging), CONTRACT = 2. Launcher clippy -D warnings clean, 115 launcher tests pass; horizon-client cargo check with java-mods and java-mods-dev OK; horizon-jvm 15 unit tests pass. (clippy on horizon-world fails on a pre-existing manual_range_contains lint from a newer clippy — not ours.) NOT run: regress on the integration (would need a second game target dir; disk ~5 GB and the keybind agent uses /home/claude/horizon/target/fast). Morning: user tests this ONE branch.
+
+## Rules tonight
+Nothing to java-bridge or a release unless tested; everything else on branches; morning summary 08:00.
