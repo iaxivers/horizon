@@ -31,6 +31,7 @@ pub mod menu;
 pub mod playerdata;
 pub mod prediction;
 pub mod recipes;
+pub mod replay;
 pub mod scoreboard;
 mod sound_order;
 pub mod tracking;
