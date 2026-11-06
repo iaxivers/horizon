@@ -2,6 +2,7 @@
 //! around the player, closest first. The game thread owns the world and only
 //! hands immutable `Arc` snapshots to workers; results carry a sequence number
 //! so stale work is dropped.
+mod busy;
 use crate::fast_hash::{FxHashMap, FxHashSet};
 use crate::section_mask::SectionMask;
 use crate::{
@@ -1326,6 +1327,11 @@ impl Streaming {
             }
             let key = (x + (i % 3) as i32 - 1, z + (i / 3) as i32 - 1);
             self.light_views.remove(&key);
+            // A column that is in the world meanwhile keeps the world's blocks: its proto
+            // would later be finished or saved over them.
+            if world.chunks.contains_key(&key) {
+                continue;
+            }
             self.protos.insert(key, Some(proto));
             self.written.insert(key);
         }
@@ -1373,6 +1379,17 @@ impl Streaming {
         self.generating.remove(&key);
         self.finishing.remove(&key);
         self.decorated.insert(key);
+        // A column already in the world is the world's: the player or the game may have
+        // changed it since (a block placed), and a finished proto landing on it would undo
+        // that. It stays; this one goes.
+        if world.chunks.contains_key(&key) {
+            log::warn!(
+                "Horizon: column {} {} generated again while loaded; the loaded one stays",
+                key.0,
+                key.1
+            );
+            return;
+        }
         // A column that finished after the player moved away is dropped
         // whole: its block entities and saved entities too, or they would
         // stay in the world (and the entities spawn again, duplicated, when
@@ -1555,6 +1572,12 @@ impl Streaming {
     }
     pub fn pending(&self) -> usize {
         self.shared.queue.lock().unwrap().len()
+    }
+    /// `forced` and `mod_forced` together, once each.
+    fn streamed_forced(&self) -> impl Iterator<Item = &(i32, i32)> + '_ {
+        self.forced
+            .iter()
+            .chain(self.mod_forced.iter().filter(|c| !self.forced.contains(c)))
     }
     /// Whether any chunk is queued or on its way from generation to a mesh.
     pub fn busy(&self) -> bool {
@@ -1778,6 +1801,12 @@ impl Streaming {
             // `ChunkGenerator::save_protos`), and dropped once back.
             let mut written = Vec::new();
             for key in far {
+                // Never a proto over a column the world has (its save is the column's).
+                if world.chunks.contains_key(&key) {
+                    self.written.remove(&key);
+                    self.protos.remove(&key);
+                    continue;
+                }
                 if self.written.remove(&key) {
                     written.push(key);
                 } else {
@@ -1880,8 +1909,21 @@ impl Streaming {
                 .collect();
             // Chunks no ticket reached (forced and extra areas) go last, nearest first.
             wanted.sort_unstable_by_key(|w| w.1);
+            // Ranked as vanilla's tickets would have them; but a forced chunk's
+            // neighbourhood is tried first: its rank is after the player's area (it came
+            // later), and only chunks within two of it can hold it back (`blocked`), so
+            // the order of overlapping decorations is the same.
+            let near_forced = |s: &Self, x: i32, z: i32| {
+                s.streamed_forced()
+                    .any(|f| (x - f.0).abs() <= 2 && (z - f.1).abs() <= 2)
+            };
             for w in &mut wanted {
-                w.0 = self.decoration_order.rank_or_append(w.2, w.3);
+                let rank = self.decoration_order.rank_or_append(w.2, w.3);
+                w.0 = if near_forced(self, w.2, w.3) {
+                    rank
+                } else {
+                    rank | 1 << 62
+                };
             }
             wanted.sort_unstable();
             // Most wanted chunks are blocked, and the same neighbours are
@@ -2791,7 +2833,14 @@ impl CoverGrid {
 impl Ranges<'_> {
     /// `distance`, or the band's nearer priority close to it.
     fn priority(&self, x: i32, z: i32) -> i64 {
-        let own = self.distance(x, z);
+        let mut own = self.distance(x, z);
+        // A forced chunk is as near as the player's own (vanilla's FORCED ticket is level
+        // 31, the player's chunk's), and so is the work around it: data packs forceload a
+        // chunk far away and use it at once (Skyblock Infinite's island at 0 0).
+        for f in self.forced {
+            let (dx, dz) = (i64::from(x - f.0), i64::from(z - f.1));
+            own = own.min(dx * dx + dz * dz);
+        }
         match self.band {
             Some(band) if band.within(x, z, 4) => own.min(band.priority(x, z)),
             _ => own,
@@ -3579,6 +3628,20 @@ mod tests {
         assert!(!arrival.arriving(((1, 0), -1), start, none));
     }
 
+    /// A forced chunk is as near as the player's own (vanilla's FORCED ticket has the level of
+    /// the player's chunk), and so is the work around it; a chunk near neither stays far.
+    #[test]
+    fn forced_chunks_are_wanted_as_soon_as_the_players() {
+        let mut f = GenerationFixture::new(4, true);
+        f.forced.insert((100, -100));
+        let input = f.input();
+        let ranges = &input.ranges;
+        assert_eq!(ranges.priority(100, -100), 0);
+        assert_eq!(ranges.priority(101, -98), 5);
+        assert_eq!(ranges.priority(1, 2), 5);
+        assert_eq!(ranges.priority(50, -50), 50 * 50 * 2);
+    }
+
     struct GenerationFixture {
         world: World,
         center: (i32, i32),
@@ -3680,7 +3743,7 @@ mod tests {
                         || input.ranges.near_finished(x, z, reach))
                         && missing(x, z)
                     {
-                        wanted.push((input.ranges.distance(x, z), x, z));
+                        wanted.push((input.ranges.priority(x, z), x, z));
                     }
                 }
             }
@@ -3695,7 +3758,7 @@ mod tests {
                 for dx in -forced_reach..=forced_reach {
                     let (x, z) = (fx + dx, fz + dz);
                     if missing(x, z) {
-                        wanted.push((input.ranges.distance(x, z), x, z));
+                        wanted.push((input.ranges.priority(x, z), x, z));
                     }
                 }
             }
