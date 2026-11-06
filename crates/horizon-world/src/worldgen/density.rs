@@ -79,9 +79,11 @@ impl DensityRegistry {
         };
         for (name, json) in noises {
             let name = identifier(name)?;
-            let noise = loader
-                .graph
-                .register_noise(name.clone(), decode_noise(json)?)?;
+            let noise = loader.graph.register_noise_seeded(
+                name.clone(),
+                crate::worldgen::noise_seed(json),
+                decode_noise(json)?,
+            )?;
             loader.noises.insert(name, noise);
         }
         for (name, json) in densities {

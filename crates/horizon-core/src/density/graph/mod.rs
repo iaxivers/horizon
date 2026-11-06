@@ -4,6 +4,7 @@
 use super::*;
 use std::collections::HashMap;
 mod compiler;
+mod noise_seed;
 mod seeded;
 #[cfg(test)]
 mod tests;
@@ -543,7 +544,11 @@ impl DensityGraph {
         }
         let id = NoiseId(self.noises.len());
         self.noise_names.insert(name.clone(), id);
-        self.noises.push(seeded::NoiseEntry { name, definition });
+        self.noises.push(seeded::NoiseEntry {
+            name,
+            seed: None,
+            definition,
+        });
         Ok(id)
     }
     /// Register an immutable named density value and return its holder wrapper.

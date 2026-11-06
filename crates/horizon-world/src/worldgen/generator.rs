@@ -1160,7 +1160,7 @@ where
         for (name, json) in &data.noises {
             let noise: Arc<dyn Noise> = Arc::new(
                 decode_noise(json)?
-                    .create(&mut root.from_hash_of(name))
+                    .create(&mut root.from_hash_of(&super::noise_seed::id(json, name)))
                     .map_err(DecodeError::from)?,
             );
             noises.insert(name.clone(), noise);

@@ -66,12 +66,12 @@ impl SeededContext {
             Factory::Legacy(factory) => Arc::new(
                 entry
                     .definition
-                    .create(&mut factory.from_hash_of(&entry.name))?,
+                    .create(&mut factory.from_hash_of(entry.seed()))?,
             ),
             Factory::Xoroshiro(factory) => Arc::new(
                 entry
                     .definition
-                    .create(&mut factory.from_hash_of(&entry.name))?,
+                    .create(&mut factory.from_hash_of(entry.seed()))?,
             ),
         };
         instances.insert(id, noise.clone());
@@ -93,5 +93,7 @@ impl SeededContext {
 #[derive(Clone, Debug)]
 pub(super) struct NoiseEntry {
     pub(super) name: String,
+    /// The identifier its random is hashed from, when not `name`.
+    pub(super) seed: Option<String>,
     pub(super) definition: NormalNoise,
 }
