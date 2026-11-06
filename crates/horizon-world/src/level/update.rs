@@ -278,6 +278,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         fluid: crate::fluid::FluidKind,
         delay: i32,
     ) -> ScheduleResult {
+        // A foreign fluid ticks in its own engine, by its own delays.
+        if self.level.foreign_fluid(self.state(pos)) {
+            self.level.foreign_fluid_changed(pos);
+            return ScheduleResult::Added;
+        }
         let time = self.level.game_time();
         self.ticks.schedule_fluid(time, pos, fluid, delay)
     }
@@ -496,6 +501,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         update_flags: i32,
         limit: i32,
     ) {
+        self.level.observe_neighbours_updated(pos);
         for direction in UPDATE_SHAPE_ORDER {
             let neighbour = rel(pos, direction);
             self.neighbor_shape_changed(
@@ -520,6 +526,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         block: BlockId,
         orientation: Option<Orientation>,
     ) {
+        self.level.observe_neighbours_updated(pos);
         self.add_and_run(Update::Multi {
             source: pos,
             block,
@@ -536,6 +543,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         orientation: Option<Orientation>,
     ) {
         let index = usize::from(UPDATE_ORDER[0] == skip);
+        self.level.observe_neighbours_updated(pos);
         self.add_and_run(Update::Multi {
             source: pos,
             block,

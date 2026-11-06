@@ -440,6 +440,64 @@ fn neighbor_observation_follows_dispatch_order() {
     );
 }
 
+/// A block set with updates tells the level whose neighbours it updates, once per pass
+/// (shapes, then neighbours): blocks another engine runs hear it there.
+#[test]
+fn a_set_block_names_the_position_whose_neighbours_it_updates() {
+    use std::cell::RefCell;
+
+    struct Observer {
+        inner: TestLevel,
+        seen: RefCell<Vec<BlockPos>>,
+    }
+    impl LevelAccess for Observer {
+        fn block_state(&self, pos: BlockPos) -> BlockStateId {
+            self.inner.block_state(pos)
+        }
+        fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
+            self.inner.set_raw(pos, state)
+        }
+        fn is_loaded(&self, pos: BlockPos) -> bool {
+            self.inner.is_loaded(pos)
+        }
+        fn random(&mut self) -> &mut LegacyRandom {
+            self.inner.random()
+        }
+        fn game_time(&self) -> i64 {
+            self.inner.game_time()
+        }
+        fn observe_neighbours_updated(&self, source: BlockPos) {
+            self.seen.borrow_mut().push(source);
+        }
+    }
+    let Some(f) = fixture() else { return };
+    let b = &f.behaviours;
+    let mut level = Observer {
+        inner: TestLevel::new(b),
+        seen: RefCell::new(Vec::new()),
+    };
+    let mut ticks = Ticks::new(0);
+    let pos = BlockPos::new(2, 64, 2);
+    let stone = f.registry.default_state("minecraft:stone").unwrap();
+    assert!(b.set_block(&mut level, &mut ticks, pos, stone, flags::UPDATE_ALL));
+    assert!(!level.seen.borrow().is_empty());
+    assert!(
+        level.seen.borrow().iter().all(|p| *p == pos),
+        "{:?}",
+        level.seen.borrow()
+    );
+    // Without neighbour updates (a client's set, a structure's), none is named.
+    level.seen.borrow_mut().clear();
+    assert!(b.set_block(
+        &mut level,
+        &mut ticks,
+        pos,
+        b.air(),
+        flags::UPDATE_CLIENTS | flags::UPDATE_KNOWN_SHAPE
+    ));
+    assert!(level.seen.borrow().is_empty());
+}
+
 #[test]
 fn random_tick_hook_can_change_the_block_and_skip_its_own_tick() {
     use std::cell::Cell;

@@ -613,6 +613,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// `FlowingFluid.tick` for the fluid at `pos`.
     pub(crate) fn fluid_tick(&mut self, pos: BlockPos) {
         let mut state = self.state(pos);
+        if self.level.foreign_fluid(state) {
+            return;
+        }
         let mut fluid = self.b.fluid(state);
         let kind = fluid.kind();
         if kind == FluidKind::Empty {
@@ -678,13 +681,21 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// `LiquidBlock.shouldSpreadLiquid`, including lava's conversions.
     pub(crate) fn should_spread_liquid(&mut self, pos: BlockPos, state: BlockStateId) -> bool {
         let b = self.b;
-        if !b.is_lava_fluid(b.fluid(state).kind()) {
+        // A foreign fluid carried with lava's template isn't lava (no cobblestone by water).
+        if !b.is_lava_fluid(b.fluid(state).kind()) || self.level.foreign_fluid(state) {
+            return true;
+        }
+        // Another engine's own interactions replace lava's (it runs them on its side).
+        if self.level.liquid_interaction(pos) {
             return true;
         }
         let over_soul_soil = b.is_block(self.below_state(pos), b.named.soul_soil);
         for direction in POSSIBLE_FLOW_DIRECTIONS {
             let neighbour = rel(pos, direction.opposite());
-            if b.is_water_fluid(self.fluid_at(neighbour).kind()) {
+            // A foreign fluid carried with water's template isn't water (a mod's honey).
+            if b.is_water_fluid(self.fluid_at(neighbour).kind())
+                && !self.level.foreign_fluid(self.state(neighbour))
+            {
                 let block = if self.fluid_at(pos).is_source() {
                     b.named.obsidian
                 } else {
@@ -704,6 +715,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     }
     /// `LiquidBlock.onPlace` / `neighborChanged`.
     pub(crate) fn liquid_block_changed(&mut self, pos: BlockPos, state: BlockStateId) {
+        if self.level.foreign_fluid(state) {
+            self.level.foreign_fluid_changed(pos);
+            return;
+        }
         if self.should_spread_liquid(pos, state) {
             let kind = self.b.fluid(state).kind();
             let delay = self.fluid_tick_delay(kind);
@@ -718,6 +733,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
 
     /// `LavaFluid.randomTick`.
     pub(crate) fn lava_random_tick(&mut self, pos: BlockPos) {
+        // A foreign fluid with lava's template sets nothing on fire (its own random tick
+        // is its engine's).
+        if self.level.foreign_fluid(self.state(pos)) {
+            return;
+        }
         if !self.level.can_spread_fire_around(pos) {
             return;
         }
