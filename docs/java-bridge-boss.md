@@ -352,3 +352,4 @@ Also running: client-bugs diagnosis agent (keybinds, FOV, Xaero res, 3D skin, mu
 Nothing to java-bridge or a release unless tested; everything else on branches; morning summary 08:00.
 
 - 03:30 Check-in 2: started upstream A-series/B1/B2/B4a branch cutting (claude/up-*, not opened; bodies in /home/claude/send/upstream-pr-bodies.md).
+- 05:30 Check-in 3: the session's server restarted ~03:40 and stopped both running agents (Xaero HUD-res, upstream A-series cutting); resumed both from their transcripts. Nothing merged in this check-in (nothing new tested).
