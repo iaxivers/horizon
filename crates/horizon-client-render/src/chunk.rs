@@ -107,13 +107,14 @@ impl LevelShapes {
         end: LevelShape::END,
     };
     /// The shape of the level `id` (`minecraft:overworld`,
-    /// `minecraft:the_nether`, `minecraft:the_end`); others get the
-    /// Overworld's.
+    /// `minecraft:the_nether`, `minecraft:the_end`, or an extra level's:
+    /// [`extra_level_named`]); others get the Overworld's.
     pub fn get(&self, id: &str) -> LevelShape {
         match id {
             "minecraft:the_nether" => self.nether,
             "minecraft:the_end" => self.end,
-            _ => self.overworld,
+            "minecraft:overworld" => self.overworld,
+            _ => extra_level_named(id).map_or(self.overworld, |l| l.shape),
         }
     }
     pub fn get_mut(&mut self, id: &str) -> &mut LevelShape {
@@ -128,6 +129,71 @@ impl Default for LevelShapes {
     fn default() -> Self {
         Self::VANILLA
     }
+}
+
+/// A level beyond vanilla's three (`MinecraftServer.levels` holds one per level stem): a
+/// dimension a mod or a data pack adds, with what its dimension type says. The server's
+/// registry of them is process-wide, as the level stems are the server's: the window's own
+/// client (single player) reads the same one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExtraLevel {
+    /// The level's id (`the_sift:the_sift`).
+    pub id: &'static str,
+    /// Its dimension type's id.
+    pub dimension_type: &'static str,
+    pub shape: LevelShape,
+    /// `DimensionType.coordinateScale`: `execute in` and portals scale by it.
+    pub coordinate_scale: f64,
+    /// Which vanilla level its sky, fog and light are drawn as (`minecraft:overworld`,
+    /// `minecraft:the_nether`, `minecraft:the_end`): its type's skylight and ceiling.
+    pub looks_like: &'static str,
+}
+
+static EXTRA_LEVELS: std::sync::RwLock<Vec<ExtraLevel>> = std::sync::RwLock::new(Vec::new());
+
+/// Adds `level` to the extra levels (or updates the one of its id): its index, which stays
+/// the same for the life of the process. `None` past 255 levels.
+pub fn register_extra_level(level: ExtraLevel) -> Option<u8> {
+    let mut levels = EXTRA_LEVELS.write().unwrap_or_else(|e| e.into_inner());
+    if let Some(i) = levels.iter().position(|l| l.id == level.id) {
+        levels[i] = level;
+        return u8::try_from(i).ok();
+    }
+    let i = u8::try_from(levels.len()).ok()?;
+    levels.push(level);
+    Some(i)
+}
+
+/// The extra level of index `i`.
+pub fn extra_level(i: u8) -> Option<ExtraLevel> {
+    EXTRA_LEVELS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(usize::from(i))
+        .copied()
+}
+
+/// The index of the extra level `id`.
+pub fn extra_level_index(id: &str) -> Option<u8> {
+    EXTRA_LEVELS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .position(|l| l.id == id)
+        .and_then(|i| u8::try_from(i).ok())
+}
+
+/// The extra level `id`.
+pub fn extra_level_named(id: &str) -> Option<ExtraLevel> {
+    extra_level(extra_level_index(id)?)
+}
+
+/// Every extra level, in the order they were registered.
+pub fn extra_levels() -> Vec<ExtraLevel> {
+    EXTRA_LEVELS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// The span of block Y a chunk holds: from `min_y`, `sections` sections up

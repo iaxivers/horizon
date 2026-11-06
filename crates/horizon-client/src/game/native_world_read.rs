@@ -116,11 +116,8 @@ impl Game<'_> {
         if !self.native_lifecycle.permits_read(context) {
             return Err(NativeBlockReadError::InactiveContext);
         }
-        let dim = match dimension {
-            "minecraft:overworld" => Dim::Overworld,
-            "minecraft:the_nether" => Dim::Nether,
-            "minecraft:the_end" => Dim::End,
-            _ => return Err(NativeBlockReadError::UnavailableDimension),
+        let Some(dim) = Dim::known(dimension) else {
+            return Err(NativeBlockReadError::UnavailableDimension);
         };
         let world = if dim == self.dim {
             Some(&self.world)

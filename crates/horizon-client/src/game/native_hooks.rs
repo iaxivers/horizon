@@ -8686,12 +8686,7 @@ impl Game<'_> {
         if self.serving.is_none() && self.options.dedicated.is_none() {
             return None;
         }
-        let dim = match dimension {
-            "minecraft:overworld" => super::Dim::Overworld,
-            "minecraft:the_nether" => super::Dim::Nether,
-            "minecraft:the_end" => super::Dim::End,
-            _ => return None,
-        };
+        let dim = super::Dim::known(dimension)?;
         if dim == self.dim {
             Some(&mut self.world.random)
         } else {

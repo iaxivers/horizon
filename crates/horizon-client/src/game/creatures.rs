@@ -7036,8 +7036,8 @@ impl Game<'_> {
         horizon_client::mobs::cem_anim::set_frame(horizon_client::mobs::cem_anim::Frame {
             time: self.world.game_time as f64 + alpha,
             day_time: self.world.day_time as f64 + alpha,
-            dimension: match self.dim {
-                Dim::Overworld => 0.0,
+            dimension: match self.dim.vanilla() {
+                Dim::Overworld | Dim::Extra(_) => 0.0,
                 Dim::Nether => -1.0,
                 Dim::End => 1.0,
             },

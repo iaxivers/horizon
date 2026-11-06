@@ -183,8 +183,11 @@ pub fn apply(guest: &mut Guest, level: &Level) {
     });
     guest.saved_vehicle = level.root_vehicle;
     guest.recipe_book = level.recipe_book.clone();
+    // PlayerList.placeNewPlayer: a level the server doesn't have is the Overworld (a mod's
+    // dimension is one once the mods said so: `chunk::ExtraLevel`).
     guest.dimension = match level.dimension.as_str() {
         d @ ("minecraft:the_nether" | "minecraft:the_end") => d.to_owned(),
+        d if crate::chunk::extra_level_index(d).is_some() => d.to_owned(),
         _ => "minecraft:overworld".to_owned(),
     };
     if level.ender_items.len() == 27 {

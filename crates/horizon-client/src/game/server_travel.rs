@@ -453,13 +453,10 @@ impl Game<'_> {
         });
         let source = self.dim;
         let end = plan.is_none();
-        // Coordinates scale by 8 between the Overworld and the Nether; an
-        // End portal has fixed destinations.
-        let scale = match (source, target) {
-            (Dim::Overworld, Dim::Nether) | (Dim::End, Dim::Nether) => 1.0 / 8.0,
-            (Dim::Nether, Dim::Overworld) => 8.0,
-            _ => 1.0,
-        };
+        // DimensionType.getTeleportationScale: the source's coordinate scale over the
+        // target's (8 between the Overworld and the Nether; a mod's level its own); an End
+        // portal has fixed destinations.
+        let scale = source.coordinate_scale() / target.coordinate_scale();
         self.end_portal_travel = end;
         // Leaving the End: the player's own respawn point.
         let own = if end {

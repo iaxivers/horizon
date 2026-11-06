@@ -3335,6 +3335,9 @@ enum Dim {
     Overworld,
     Nether,
     End,
+    /// A level a mod or data pack adds (its level stem): the index of its
+    /// `chunk::ExtraLevel`, registered once the server knows its levels.
+    Extra(u8),
 }
 impl Dim {
     fn id(self) -> &'static str {
@@ -3342,13 +3345,61 @@ impl Dim {
             Self::Overworld => "minecraft:overworld",
             Self::Nether => "minecraft:the_nether",
             Self::End => "minecraft:the_end",
+            Self::Extra(i) => {
+                horizon_client::chunk::extra_level(i).map_or("minecraft:overworld", |l| l.id)
+            }
         }
     }
+    /// The level `id`; one the server doesn't have is the Overworld.
     fn from_id(id: &str) -> Self {
         match id {
             "minecraft:the_nether" => Self::Nether,
             "minecraft:the_end" => Self::End,
-            _ => Self::Overworld,
+            "minecraft:overworld" => Self::Overworld,
+            _ => horizon_client::chunk::extra_level_index(id).map_or(Self::Overworld, Self::Extra),
+        }
+    }
+    /// The level `id`, if the server has it (vanilla's three, or an extra level).
+    fn known(id: &str) -> Option<Self> {
+        match id {
+            "minecraft:the_nether" => Some(Self::Nether),
+            "minecraft:the_end" => Some(Self::End),
+            "minecraft:overworld" => Some(Self::Overworld),
+            _ => horizon_client::chunk::extra_level_index(id).map(Self::Extra),
+        }
+    }
+    /// Every level the server has: vanilla's three, then the extra ones
+    /// (`MinecraftServer.levels`' order).
+    fn all() -> Vec<Self> {
+        let extra = horizon_client::chunk::extra_levels().len().min(256);
+        [Self::Overworld, Self::Nether, Self::End]
+            .into_iter()
+            .chain((0..extra).map(|i| Self::Extra(i as u8)))
+            .collect()
+    }
+    /// The vanilla level this one behaves and looks like where Horizon has only
+    /// vanilla's three (sky, fog, the light's curve): an extra level's
+    /// `looks_like`.
+    fn vanilla(self) -> Self {
+        match self {
+            Self::Extra(i) => horizon_client::chunk::extra_level(i).map_or(Self::Overworld, |l| {
+                match l.looks_like {
+                    "minecraft:the_nether" => Self::Nether,
+                    "minecraft:the_end" => Self::End,
+                    _ => Self::Overworld,
+                }
+            }),
+            vanilla => vanilla,
+        }
+    }
+    /// `DimensionType.coordinateScale`.
+    fn coordinate_scale(self) -> f64 {
+        match self {
+            Self::Nether => 8.0,
+            Self::Extra(i) => {
+                horizon_client::chunk::extra_level(i).map_or(1.0, |l| l.coordinate_scale)
+            }
+            _ => 1.0,
         }
     }
     /// The level's shape in a world of vanilla's dimension types.
@@ -3358,6 +3409,9 @@ impl Dim {
             Self::Overworld => LevelShape::OVERWORLD,
             Self::Nether => LevelShape::NETHER,
             Self::End => LevelShape::END,
+            Self::Extra(i) => {
+                horizon_client::chunk::extra_level(i).map_or(LevelShape::OVERWORLD, |l| l.shape)
+            }
         }
     }
 }
@@ -4706,7 +4760,8 @@ impl Game<'_> {
             .is_some()
             .then(|| self.lan_building_boxes.boxes(self.dim));
         let dimension = match self.dim {
-            Dim::Overworld => LevelDimension::Overworld,
+            // A mod's level behaves as the Overworld (water stays, beds sleep).
+            Dim::Overworld | Dim::Extra(_) => LevelDimension::Overworld,
             Dim::Nether => LevelDimension::Nether,
             Dim::End => LevelDimension::End,
         };
@@ -11388,7 +11443,7 @@ impl Game<'_> {
         // A native shader pack's sun shadows already fall under the entities in the Overworld:
         // the round blob would be a second one. The Nether and the End have no sun to cast them.
         let pack_shadows = self.renderer.as_ref().is_some_and(|r| {
-            r.pack_entity_shadows() || (self.dim == Dim::Overworld && r.native_shadow())
+            r.pack_entity_shadows() || (self.dim.vanilla() == Dim::Overworld && r.native_shadow())
         });
         let shadow_sprite = (self.settings.entity_shadows && !pack_shadows)
             .then(|| self.gui.atlas.sprites.get("misc/shadow").copied())
@@ -11398,7 +11453,7 @@ impl Game<'_> {
             let ambient = match self.dim {
                 Dim::Nether => 0.1,
                 Dim::End => 0.25,
-                Dim::Overworld => 0.0,
+                Dim::Overworld | Dim::Extra(_) => 0.0,
             };
             let darken = self.sky_darken();
             let a = alpha;
@@ -11522,7 +11577,7 @@ impl Game<'_> {
                 emissive: &self.gui.atlas.emissive,
                 translucent_sprites: &self.gui.atlas.translucent,
                 atlas_revision: self.gui.atlas.revision,
-                nether: self.dim == Dim::Nether,
+                nether: self.dim.vanilla() == Dim::Nether,
                 lid: &lid,
                 sign: &|p| match self.world.block_entities.get(&(p[0], p[1], p[2])) {
                     Some(BlockEntity::Sign(sign)) => Some(sign),
@@ -16568,13 +16623,13 @@ impl Game<'_> {
         }
         let (celestial, stars) = if title {
             (Vec::new(), None)
-        } else if self.dim == Dim::Overworld
+        } else if self.dim.vanilla() == Dim::Overworld
             && self.potions.effects.get("darkness").is_none()
             && self.potions.effects.get("blindness").is_none()
         {
             // Camera.doesMobEffectBlockSky: no sun, moon or stars.
             self.celestial_geometry(&sky, rain)
-        } else if self.dim == Dim::End && self.settings.horizon.sky {
+        } else if self.dim.vanilla() == Dim::End && self.settings.horizon.sky {
             (self.end_flash_geometry(), None)
         } else {
             (Vec::new(), None)
@@ -16636,7 +16691,7 @@ impl Game<'_> {
         let frame = Frame {
             weather: &weather,
             weather_time: horizon_client::weather::Time::new(self.world.game_time, alpha as f32),
-            nether_lighting: self.dim == Dim::Nether,
+            nether_lighting: self.dim.vanilla() == Dim::Nether,
             camera,
             yaw,
             pitch,
@@ -16676,15 +16731,16 @@ impl Game<'_> {
                     ),
                     horizon_client::fog::FogType::Lava | horizon_client::fog::FogType::PowderSnow
                 ),
-            skybox: self.dim == Dim::Overworld && self.settings.horizon.sky,
-            end_sky: self.dim == Dim::End && self.settings.horizon.sky,
+            skybox: self.dim.vanilla() == Dim::Overworld && self.settings.horizon.sky,
+            end_sky: self.dim.vanilla() == Dim::End && self.settings.horizon.sky,
             end_sky_sprite: self
                 .gui
                 .atlas
                 .sprites
                 .get("environment/end_sky")
                 .map(|r| [r.u0, r.v0, r.u1, r.v1]),
-            environment_fog: (self.dim == Dim::Nether).then_some((sky.fog_start, sky.fog_end)),
+            environment_fog: (self.dim.vanilla() == Dim::Nether)
+                .then_some((sky.fog_start, sky.fog_end)),
             cave_culling,
             water_fog,
             fog: Some(self.frame_fog(camera, &sky, biome, water_fog)),
@@ -16700,7 +16756,7 @@ impl Game<'_> {
             glint_alpha: self.glint_frame.alpha,
             glint_ticks: self.glint_frame.scroll_ticks(),
             clouds: (!title
-                && self.dim == Dim::Overworld
+                && self.dim.vanilla() == Dim::Overworld
                 && horizon_client::clouds::visible(&self.settings.clouds, sky.cloud_color[3]))
             .then(|| self.gui.atlas.sprites.get("horizon/white"))
             .flatten()

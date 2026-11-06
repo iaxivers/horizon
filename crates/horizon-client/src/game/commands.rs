@@ -932,7 +932,7 @@ impl Game<'_> {
         candidates
     }
     /// The loaded levels, in the order the server holds them: the
-    /// overworld, the nether, the end (MinecraftServer.getAllLevels).
+    /// overworld, the nether, the end, mods' levels (MinecraftServer.getAllLevels).
     fn loaded_dims(&self) -> Vec<Dim> {
         let mut dims = vec![self.dim];
         dims.extend(self.levels.parked_dims());
@@ -940,6 +940,7 @@ impl Game<'_> {
             Dim::Overworld => 0,
             Dim::Nether => 1,
             Dim::End => 2,
+            Dim::Extra(i) => 3 + i32::from(*i),
         });
         dims
     }
@@ -2057,10 +2058,11 @@ impl Game<'_> {
         // `time of <clock>` names the clock; otherwise the dimension's default clock.
         let clock = match ctx.get("clock") {
             Some(Arg::Resource(c)) => c.clone(),
-            _ => match self.dim {
+            // A mod's level: the clock of the vanilla level it is drawn as.
+            _ => match self.dim.vanilla() {
                 Dim::Overworld => "minecraft:overworld".to_owned(),
                 Dim::End => "minecraft:the_end".to_owned(),
-                Dim::Nether => {
+                Dim::Nether | Dim::Extra(_) => {
                     return Err(err("commands.time.no_default_clock", &[&self.dim.id()]));
                 }
             },

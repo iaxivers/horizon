@@ -184,7 +184,7 @@ impl Game<'_> {
             light,
             [feet.x, feet.y, feet.z].map(|c| c.floor() as i32),
             mob_pose(feet - camera, render.body_yaw),
-            diffuse_lights(self.dim == Dim::Nether),
+            diffuse_lights(self.dim.vanilla() == Dim::Nether),
             std::mem::take(out),
         );
         let keep = hook(&render, &mut draw);

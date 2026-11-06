@@ -193,8 +193,8 @@ impl Game<'_> {
             return PackInputs::default();
         }
         let name = picked;
-        let dimension = match self.dim {
-            Dim::Overworld => 0,
+        let dimension = match self.dim.vanilla() {
+            Dim::Overworld | Dim::Extra(_) => 0,
             Dim::Nether => -1,
             Dim::End => 1,
         };

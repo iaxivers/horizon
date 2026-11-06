@@ -309,8 +309,8 @@ impl EyeOfEnder {
 impl Game<'_> {
     /// The environment attributes of the current dimension.
     pub(super) fn dim_environment(&self) -> &Environment {
-        match self.dim {
-            Dim::Overworld => self.res.environment(),
+        match self.dim.vanilla() {
+            Dim::Overworld | Dim::Extra(_) => self.res.environment(),
             Dim::Nether => self.res.nether_environment(),
             Dim::End => self.res.end_environment(),
         }

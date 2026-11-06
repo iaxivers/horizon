@@ -2246,6 +2246,7 @@ impl Game<'_> {
             dimension.has_ceiling,
         )
         .unwrap_or_else(|_| super::Dim::from_id(&dimension.name).shape());
+        let level_dim = client_level(&spawn.dimension, &dimension, shape);
         // handleRespawn keeps the ClientLevel only for the same level key:
         // two levels sharing a dimension type are still two levels.
         let same = keep_world && r.heard_level.as_deref() == Some(spawn.dimension.as_str());
@@ -2272,7 +2273,7 @@ impl Game<'_> {
         r.position_sender = Default::default();
         r.predictions.clear();
         self.set_mode_id(spawn.game_type);
-        self.dim = Dim::from_id(&spawn.dimension);
+        self.dim = level_dim;
         self.audio.set_world(&spawn.dimension);
         // ClientPacketListener.handleLogin / handleRespawn: the server's
         // Player.getLastDeathLocation, for the recovery compass.
@@ -3304,7 +3305,7 @@ impl Game<'_> {
                         r.local_entity_silent = false;
                     }
                 }
-                let dimension_changed = self.dim != Dim::from_id(&p.spawn.dimension);
+                let dimension_changed = self.dim.id() != p.spawn.dimension;
                 let died = self.screen == Screen::Dead
                     || self
                         .player
@@ -12012,5 +12013,96 @@ mod tests {
         assert_eq!(respawn.event, 11);
         assert_eq!(crafting.event, 12);
         assert!(crafting.param == 1.0);
+    }
+}
+
+/// The level a server names (`ClientboundLoginPacket`, `ClientboundRespawnPacket`): one
+/// beyond vanilla's three (a mod's dimension) becomes an extra level of this client, drawn as
+/// its dimension type says, so its own levels stay apart from the Overworld.
+fn client_level(
+    name: &str,
+    dimension: &horizon_protocol::registry::DimensionType,
+    shape: horizon_client::chunk::LevelShape,
+) -> Dim {
+    if let Some(dim) = Dim::known(name) {
+        return dim;
+    }
+    let looks_like = if dimension.has_ceiling || !dimension.has_skylight {
+        "minecraft:the_nether"
+    } else {
+        "minecraft:overworld"
+    };
+    let level = horizon_client::chunk::ExtraLevel {
+        id: Box::leak(name.to_owned().into_boxed_str()),
+        dimension_type: Box::leak(dimension.name.clone().into_boxed_str()),
+        shape,
+        coordinate_scale: 1.0,
+        looks_like,
+    };
+    horizon_client::chunk::register_extra_level(level).map_or(Dim::Overworld, Dim::Extra)
+}
+
+#[cfg(test)]
+mod extra_level_tests {
+    use super::{Dim, client_level};
+    use horizon_client::chunk::LevelShape;
+    use horizon_protocol::registry::DimensionType;
+
+    fn dimension_type(name: &str, has_skylight: bool, has_ceiling: bool) -> DimensionType {
+        DimensionType {
+            name: name.to_owned(),
+            min_y: 0,
+            height: 256,
+            logical_height: 256,
+            has_skylight,
+            has_ceiling,
+            ambient_light: 0.0,
+            default_clock: None,
+        }
+    }
+
+    /// A level beyond vanilla's three that a server names becomes an extra level, apart from
+    /// the Overworld: its id round-trips, it keeps its index when named again, and it is drawn
+    /// as the vanilla level its type looks like. Vanilla's levels stay themselves.
+    #[test]
+    fn a_servers_own_level_round_trips_as_an_extra_level() {
+        let shape = LevelShape::new(0, 256, 256, false, true).unwrap();
+        let caves = client_level(
+            "test_dim:caves",
+            &dimension_type("test_dim:caves_type", false, true),
+            shape,
+        );
+        assert!(matches!(caves, Dim::Extra(_)));
+        assert_eq!(caves.id(), "test_dim:caves");
+        assert_eq!(Dim::from_id("test_dim:caves"), caves);
+        assert_eq!(Dim::known("test_dim:caves"), Some(caves));
+        assert_eq!(caves.vanilla(), Dim::Nether);
+        assert_eq!(caves.shape(), shape);
+        assert_eq!(caves.coordinate_scale(), 1.0);
+        assert!(Dim::all().contains(&caves));
+        let sky = client_level(
+            "test_dim:sky",
+            &dimension_type("test_dim:sky_type", true, false),
+            LevelShape::OVERWORLD,
+        );
+        assert_ne!(sky, caves);
+        assert_eq!(sky.vanilla(), Dim::Overworld);
+        let again = client_level(
+            "test_dim:caves",
+            &dimension_type("test_dim:caves_type", false, true),
+            shape,
+        );
+        assert_eq!(again, caves);
+        for vanilla in [Dim::Overworld, Dim::Nether, Dim::End] {
+            let named = client_level(
+                vanilla.id(),
+                &dimension_type(vanilla.id(), true, false),
+                shape,
+            );
+            assert_eq!(named, vanilla);
+            assert_eq!(Dim::from_id(vanilla.id()), vanilla);
+        }
+        assert_eq!(Dim::known("test_dim:unknown"), None);
+        assert_eq!(Dim::from_id("test_dim:unknown"), Dim::Overworld);
     }
 }

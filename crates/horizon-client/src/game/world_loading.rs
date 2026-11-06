@@ -820,7 +820,8 @@ pub(super) fn make_streaming(
             world_worldgen_overrides(world_root, &options.resources, &biomes, enabled_features);
         let saved_stem = horizon_client::save::world_gen_settings(world_root)
             .and_then(|s| s.get("dimensions")?.get(dim.id()).cloned())
-            .map(|stem| horizon_client::scoreboard::tag_to_json(&stem));
+            .map(|stem| horizon_client::scoreboard::tag_to_json(&stem))
+            .or_else(|| extra_level_stem(dim, shape));
         let mut inner = VanillaTerrain::for_world_with_settings(&options.resources.join("worldgen"), &overrides, pack.assets.registry, &biomes, seed, preset, dim.id(), structures, saved_stem.as_ref()).map_err(|e| {
                 if overrides.is_empty() {
                     format!("{e}\nPrepare the worldgen bundle with the launcher, or: horizon-prepare --prepare")
@@ -864,6 +865,44 @@ pub(super) fn make_streaming(
             res.threads(),
         )
     };
+    finish_streaming(&mut streaming, &save, settings, options, dim, seed);
+    Ok((streaming, save, locator))
+}
+
+/// The stem Horizon's own generator gets for an extra level (`Dim::Extra`) with no saved
+/// stem: its dimension type's build range over vanilla's Overworld noise and one biome.
+fn extra_level_stem(
+    dim: Dim,
+    shape: horizon_client::chunk::LevelShape,
+) -> Option<serde_json::Value> {
+    let Dim::Extra(_) = dim else {
+        return None;
+    };
+    Some(serde_json::json!({
+        "type": {
+            "min_y": shape.min_y,
+            "height": shape.height,
+            "logical_height": shape.logical_height,
+            "has_skylight": shape.sky_light,
+            "has_ceiling": shape.has_ceiling,
+        },
+        "generator": {
+            "type": "minecraft:noise",
+            "settings": "minecraft:overworld",
+            "biome_source": {"type": "minecraft:fixed", "biome": "minecraft:plains"},
+        },
+    }))
+}
+
+/// A new dimension's streaming settings, whatever generates it.
+fn finish_streaming(
+    streaming: &mut Streaming,
+    save: &SaveDir,
+    settings: &Settings,
+    options: &Options,
+    dim: Dim,
+    seed: i64,
+) {
     streaming.forced = save.load_forced_chunks();
     streaming.radius = settings.render_distance;
     streaming.biome_blend = settings.biome_blend;
@@ -873,12 +912,14 @@ pub(super) fn make_streaming(
         .horizon
         .leaf_culling_effective(&settings.resource_packs);
     streaming.biome_zoom = BiomeZoom::new(obfuscate_seed(seed));
-    streaming.sky_light = dim != Dim::Nether;
-    streaming.nether_shading = dim == Dim::Nether;
+    streaming.sky_light = match dim {
+        Dim::Extra(_) => dim.shape().sky_light,
+        _ => dim != Dim::Nether,
+    };
+    streaming.nether_shading = dim.vanilla() == Dim::Nether;
     // A server draws nothing: neither the integrated server nor the
     // dedicated one meshes sections.
     streaming.mesh = options.execution_role.is_client();
-    Ok((streaming, save, locator))
 }
 
 #[cfg(test)]

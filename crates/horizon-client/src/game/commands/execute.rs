@@ -619,19 +619,15 @@ impl Game<'_> {
                 let Some(Arg::Resource(dim)) = c.get("dimension") else {
                     return Ok(vec![s]);
                 };
-                if !matches!(
-                    dim.as_str(),
-                    "minecraft:overworld" | "minecraft:the_nether" | "minecraft:the_end"
-                ) {
+                // The server's levels: vanilla's and the extra ones (mods' dimensions).
+                let Some(dimension) = Dim::known(dim) else {
                     return Err(err("argument.dimension.invalid", &[dim]));
-                }
-                let dimension = Dim::from_id(dim);
-                let coordinate_scale = |dim| if dim == Dim::Nether { 8.0 } else { 1.0 };
-                let scale = coordinate_scale(s.dimension) / coordinate_scale(dimension);
+                };
+                let scale = s.dimension.coordinate_scale() / dimension.coordinate_scale();
                 vec![Source {
                     pos: [s.pos[0] * scale, s.pos[1], s.pos[2] * scale],
                     dimension,
-                    level: Some(super::super::Dim::from_id(dim)),
+                    level: Some(dimension),
                     ..s
                 }]
             }

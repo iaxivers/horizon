@@ -37,7 +37,7 @@ impl Game<'_> {
         Status::World {
             play,
             dimension: match self.dim {
-                Dim::Overworld => Dimension::Overworld,
+                Dim::Overworld | Dim::Extra(_) => Dimension::Overworld,
                 Dim::Nether => Dimension::Nether,
                 Dim::End => Dimension::End,
             },

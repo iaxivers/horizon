@@ -320,12 +320,9 @@ impl Game<'_> {
             }
             None => (true, Vec3::new(0.5, 0.0, 0.0)),
         };
-        // DimensionType.getTeleportationScale: 8 out of the Nether, 1/8 into it.
-        let scale = if self.dim == Dim::Nether {
-            8.0
-        } else {
-            1.0 / 8.0
-        };
+        // DimensionType.getTeleportationScale: 8 out of the Nether, 1/8 into it (a mod's
+        // level by its own coordinate scale).
+        let scale = self.dim.coordinate_scale() / target.coordinate_scale();
         Plan {
             dim: target,
             approximate: self.border_bounds().clamp(at.x * scale, at.y, at.z * scale),

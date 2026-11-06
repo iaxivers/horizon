@@ -640,11 +640,11 @@ impl Game<'_> {
         reg.structures = ids.structures.clone();
         reg.biomes = ids.biomes.clone();
         reg.clocks = ids.clocks.clone();
-        reg.dimensions = vec![
-            "minecraft:overworld".into(),
-            "minecraft:the_nether".into(),
-            "minecraft:the_end".into(),
-        ];
+        // The server's levels: vanilla's three and the extra ones (mods' dimensions).
+        reg.dimensions = super::Dim::all()
+            .iter()
+            .map(|d| d.id().to_owned())
+            .collect();
         reg.players = vec![PLAYER_NAME.into()];
         // Timelines of the overworld clock and their time markers.
         self.ui.timelines = ids.timelines.iter().cloned().collect();
