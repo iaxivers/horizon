@@ -26,8 +26,10 @@ use horizon_world::{
     },
 };
 use std::{path::Path, sync::Arc};
+mod foreign;
 mod lod;
 mod structure_mobs;
+pub use foreign::{BiomeOracle, NoiseFill};
 use lod::VanillaLodSampler;
 use structure_mobs::StructureMobFinalizer;
 
@@ -63,6 +65,8 @@ pub struct VanillaTerrain {
     /// `created`: the ring search waits for a pause in generation.
     last_proto: std::sync::atomic::AtomicU64,
     created: std::time::Instant,
+    /// Another generator's say in this dimension ([`BiomeOracle`]).
+    oracle: foreign::Oracle,
     /// A superflat generator (`FlatLevelSource`).
     flat: bool,
 }
@@ -272,6 +276,7 @@ impl VanillaTerrain {
                 kept.min_y + kept.height
             );
         }
+        foreign::warn_unsupported_structures(dimension, &generator.unsupported_structures());
         let unsupported = generator.unsupported_features();
         if !unsupported.is_empty() {
             log::warn!(
@@ -330,11 +335,12 @@ impl VanillaTerrain {
             dimension: dimension.to_owned(),
             last_proto: std::sync::atomic::AtomicU64::new(0),
             created: std::time::Instant::now(),
+            oracle: foreign::Oracle::default(),
             flat: false,
         })
     }
     /// The column the dimension's chunks hold (its build range's).
-    fn layout(&self) -> ColumnLayout {
+    pub fn layout(&self) -> ColumnLayout {
         let (min_y, height) = self.generator.level();
         ColumnLayout::of_level(min_y, height)
     }
@@ -601,6 +607,9 @@ impl VanillaTerrain {
         &self,
         search: &horizon_world::worldgen::generator::BiomeSearch<'_>,
     ) -> Option<(String, [i32; 3])> {
+        if let Some(found) = self.oracle.find_closest_biome(search) {
+            return found;
+        }
         let mut worker = self.query.lock().unwrap_or_else(|e| e.into_inner());
         let worker = worker.get_or_insert_with(|| self.generator.worker());
         worker.find_closest_biome(search)
@@ -608,6 +617,9 @@ impl VanillaTerrain {
     /// `BiomeSource.getNoiseBiome` at quart positions, for places that may not
     /// be generated yet (`MapItem.renderBiomePreviewMap`).
     pub fn noise_biomes(&self, quarts: &[[i32; 3]]) -> Vec<Option<String>> {
+        if let Some(biomes) = self.oracle.noise_biomes(quarts) {
+            return biomes;
+        }
         let mut worker = self.query.lock().unwrap_or_else(|e| e.into_inner());
         let worker = worker.get_or_insert_with(|| self.generator.worker());
         worker.noise_biomes(quarts)
@@ -836,6 +848,11 @@ impl ChunkGenerator for VanillaTerrain {
             .collect()
     }
     fn decorate(&self, worker: &mut GeneratorWorker, region: &mut [Proto; 9]) {
+        // A neighbour made by another generator (beside a chunk it failed and this one
+        // made): left as it is, as a failed neighbour is below.
+        if region.iter().any(|p| !p.is::<VanillaProto>()) {
+            return;
+        }
         let taken: Vec<Box<VanillaProto>> = region
             .iter_mut()
             .map(|p| {

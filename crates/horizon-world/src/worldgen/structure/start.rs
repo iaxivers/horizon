@@ -32,6 +32,8 @@ use std::{
     sync::Arc,
 };
 
+mod unsupported;
+
 pub const STEPS: [&str; 11] = [
     "raw_generation",
     "lakes",
@@ -1632,6 +1634,7 @@ pub fn place_in_chunk<W: FeatureWorld + PlacementContext, R: RandomSource + 'sta
 mod tests {
     use super::*;
     use serde_json::json;
+    mod unsupported;
 
     fn registry(structures: &[(&str, Value)], sets: &[(&str, Value)]) -> StructureRegistry {
         let text = |l: &[(&str, Value)]| {

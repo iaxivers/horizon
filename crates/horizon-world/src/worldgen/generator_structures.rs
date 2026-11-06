@@ -303,6 +303,11 @@ impl StructureState {
             fixed_biome: false,
         }))
     }
+    /// The structures this dimension's sets may place that Horizon cannot generate
+    /// ([`StructureRegistry::unsupported`]).
+    pub(super) fn unsupported(&self) -> Vec<(String, String)> {
+        self.registry.unsupported(&self.possible_sets)
+    }
     /// `FlatLevelGeneratorSettings.structureOverrides`: only the structure sets named
     /// (`minecraft:villages`) may generate.
     pub(super) fn restrict_to(&mut self, names: &[String]) {

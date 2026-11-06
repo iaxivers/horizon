@@ -58,6 +58,8 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
+mod noise_only;
+
 #[derive(Debug)]
 pub enum GeneratorError {
     Io(io::Error),
@@ -1460,7 +1462,7 @@ where
         pos: ChunkPos,
     ) -> Result<ProtoChunk, GeneratorError> {
         let mut context = std::mem::take(&mut worker.terrain_context);
-        let result = self.generate_with_context(worker, pos, &mut context);
+        let result = self.generate_with_context(worker, pos, &mut context, false);
         // Release chunk-specific bindings and caches even after a sampling error.
         context.reset();
         worker.terrain_context = context;
@@ -1506,11 +1508,14 @@ where
         }
         false
     }
+    /// The proto chunk at TERRAIN, or with `noise_only` at doFill's end (noise, aquifers,
+    /// ore veins: what another generator's surface and carvers then run on).
     fn generate_with_context(
         &self,
         worker: &mut WorkerState,
         pos: ChunkPos,
         context: &mut SamplerContext,
+        noise_only: bool,
     ) -> Result<ProtoChunk, GeneratorError> {
         let data = &self.data;
         let (min, height, sea) = (
@@ -1579,7 +1584,10 @@ where
         )
         .map_err(stage("noise"))?;
         chunk.set_generation_stage(PreLightChunkStage::Biomes);
-        let (references, own_starts) = match &self.structures {
+        // The noise alone leaves structures out: their terrain adaptation (the beardifier)
+        // is the other generator's, from its own structures.
+        let structures = self.structures.as_ref().filter(|_| !noise_only);
+        let (references, own_starts) = match structures {
             Some(structures) => {
                 let mut queries = StructureQueries {
                     pipeline: self,
@@ -1645,10 +1653,7 @@ where
         )
         .map_err(stage("noise"))?;
         let blender = self.blender_at(pos);
-        let beard = self
-            .structures
-            .as_ref()
-            .and_then(|s| s.beardifier(&references, pos));
+        let beard = structures.and_then(|s| s.beardifier(&references, pos));
         if beard.is_some() || !blender.is_empty() {
             let mut fields = horizon_core::density::WorldFields::default();
             if let Some(beard) = beard {
@@ -1708,6 +1713,15 @@ where
         .map_err(stage("noise"))?;
         let generation = self.generation();
         worker.timings.noise += lap(&mut clock);
+        if noise_only {
+            return Ok(ProtoChunk::at_noise(
+                chunk,
+                center,
+                data.clone(),
+                references,
+                own_starts,
+            ));
+        }
         // The surface rule, compiled by this worker's first chunk.
         let mut shared = worker
             .surface_rule
@@ -2416,6 +2430,13 @@ trait SeededPipeline: Send + Sync {
         worker: &mut WorkerState,
         pos: ChunkPos,
     ) -> Result<ProtoChunk, GeneratorError>;
+    /// The chunk at NoiseBasedChunkGenerator.doFill's end: noise, aquifers and ore veins,
+    /// without surface or carvers.
+    fn generate_noise(
+        &self,
+        worker: &mut WorkerState,
+        pos: ChunkPos,
+    ) -> Result<ProtoChunk, GeneratorError>;
     fn decorate(
         &self,
         worker: &mut WorkerState,
@@ -2471,6 +2492,7 @@ trait SeededPipeline: Send + Sync {
         pieces: &[serde_json::Value],
     ) -> Result<(), String>;
     fn forget_structure_starts(&self);
+    fn unsupported_structures(&self) -> Vec<(String, String)>;
     fn ring_positions(&self, worker: &mut WorkerState, set: &str) -> Option<Vec<ChunkPos>>;
     /// The structures whose random-spread set may start in `chunk`, each with whether a
     /// search's start check lets it start there.
@@ -2519,6 +2541,13 @@ where
         pos: ChunkPos,
     ) -> Result<ProtoChunk, GeneratorError> {
         Pipeline::generate(self, worker, pos)
+    }
+    fn generate_noise(
+        &self,
+        worker: &mut WorkerState,
+        pos: ChunkPos,
+    ) -> Result<ProtoChunk, GeneratorError> {
+        self.noise_only(worker, pos)
     }
     fn decorate(
         &self,
@@ -2650,6 +2679,12 @@ where
         if let Some(structures) = &self.structures {
             structures.forget_starts();
         }
+    }
+    fn unsupported_structures(&self) -> Vec<(String, String)> {
+        self.structures
+            .as_ref()
+            .map(|structures| structures.unsupported())
+            .unwrap_or_default()
     }
     #[cfg(test)]
     fn may_start_answers(&self, worker: &mut WorkerState, chunk: ChunkPos) -> Vec<(String, bool)> {
@@ -3605,6 +3640,11 @@ impl OverworldGenerator {
     /// their algorithm or bindings are not implemented, with the decode error.
     pub fn unsupported_features(&self) -> Vec<(String, String)> {
         self.pipeline.unsupported_features()
+    }
+    /// The structures this dimension's structure sets may place that Horizon can't
+    /// generate: (structure, its type), a mod's own structure type (none in vanilla).
+    pub fn unsupported_structures(&self) -> Vec<(String, String)> {
+        self.pipeline.unsupported_structures()
     }
     /// NoiseBasedChunkGenerator.getOrigin: the chunk a new world's spawn
     /// search starts from (NoiseSpawnFinder over the `spawn_target` points).
