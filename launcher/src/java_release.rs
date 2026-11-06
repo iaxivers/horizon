@@ -17,6 +17,22 @@ pub const REPO: &str = match option_env!("HORIZON_JAVA_MODS_REPO") {
 pub const TAG: &str = "java-mods";
 /// What the build is: `{"commit": …, "output_version": …}`, listed in the signed checksums.
 pub const MANIFEST: &str = "java-mods.json";
+/// What this launcher and the Fabric mods builds it installs agree on (how Play starts the
+/// build: its arguments, variables and the owner gate's word, `java_variant::switch_command`).
+/// The release workflow (`.github/workflows/java-mods-release.yml`) writes this same number,
+/// read from this line, into [`MANIFEST`] as `contract`; a manifest without one is contract 1.
+/// [`fits`] installs only a build of this contract, so an older launcher never takes a build
+/// that would refuse its mods.
+///
+/// **Bump it** (2, 3…) in the same commit as a change to the game's side of that agreement
+/// (`horizon_jvm::gate`, `game/java_mods/bridge.rs` `opted_in`) that a launcher built before
+/// it can't satisfy: players with that older launcher are then told to download a new one
+/// instead of getting a build that runs no mods.
+pub const CONTRACT: u32 = 1;
+/// The page players download the fork's launcher from.
+pub fn release_page() -> String {
+    format!("https://github.com/{REPO}/releases/tag/{TAG}")
+}
 /// The public keys the fork's builds are signed with, one base64 key per line (`#` comments).
 const KEYS: &str = include_str!("../java-mods-keys.txt");
 
@@ -30,12 +46,19 @@ pub fn asset_url(name: &str) -> String {
     format!("https://github.com/{REPO}/releases/download/{TAG}/{name}")
 }
 
-/// The published build: its commit and the preparation format (`horizon_prepare::OUTPUT_VERSION`)
-/// it was built with.
+/// The published build: its commit, the preparation format (`horizon_prepare::OUTPUT_VERSION`)
+/// it was built with, and the launcher [`CONTRACT`] it was built for.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct Manifest {
     pub commit: String,
     pub output_version: u32,
+    /// Missing in the manifests published before it existed: those are contract 1.
+    #[serde(default = "first_contract")]
+    pub contract: u32,
+}
+
+fn first_contract() -> u32 {
+    1
 }
 
 /// The signed SHA-256 of `asset` in the fork's release, fetching its checksums with `fetch`.
@@ -45,8 +68,10 @@ pub fn digest(
     fetch: &impl Fn(&str) -> Result<Option<Vec<u8>>, String>,
 ) -> Result<String, String> {
     if keys.is_empty() {
-        return Err(format!(
-            "this launcher trusts no key for {REPO}'s Fabric mods builds (launcher/java-mods-keys.txt)"
+        return Err(crate::i18n::trf(
+            "This launcher can't check Fabric mods builds (it trusts no key for them): download \
+             the launcher again from {link}",
+            &[("link", &release_page())],
         ));
     }
     let sums = fetch(&asset_url(SUMS))?;
@@ -72,8 +97,10 @@ pub fn manifest(
     serde_json::from_slice(&bytes).map_err(|e| format!("{MANIFEST}: {e}"))
 }
 
-/// Whether the build fits a version that prepares format `prepared` (None: unknown).
+/// Whether the build fits this launcher ([`CONTRACT`]) and a version that prepares format
+/// `prepared` (None: unknown).
 pub fn fits(manifest: &Manifest, prepared: Option<u32>, tag: &str) -> Result<(), String> {
+    fits_launcher(manifest.contract, CONTRACT)?;
     match prepared {
         Some(v) if v == manifest.output_version => Ok(()),
         Some(v) => {
@@ -86,6 +113,24 @@ pub fn fits(manifest: &Manifest, prepared: Option<u32>, tag: &str) -> Result<(),
         ))
         }
         None => Err(format!("{tag}'s preparation format is unknown")),
+    }
+}
+
+/// Whether a build of contract `build` plays from a launcher of contract `launcher`.
+fn fits_launcher(build: u32, launcher: u32) -> Result<(), String> {
+    if build > launcher {
+        Err(crate::i18n::trf(
+            "This Fabric mods build needs a newer launcher: download it from {link}",
+            &[("link", &release_page())],
+        ))
+    } else if build < launcher {
+        Err(crate::i18n::tr(
+            "This launcher needs a newer Fabric mods build than the one published: wait for the \
+             next build, or use the launcher you had before.",
+        )
+        .to_string())
+    } else {
+        Ok(())
     }
 }
 
@@ -195,11 +240,40 @@ mod tests {
         let m = Manifest {
             commit: "0123456789abcdef".into(),
             output_version: 3,
+            contract: CONTRACT,
         };
         assert!(fits(&m, Some(3), "nightly-2026-11-05").is_ok());
         assert!(fits(&m, Some(2), "v").unwrap_err().contains("newer"));
         assert!(fits(&m, Some(4), "v").unwrap_err().contains("older"));
         assert!(fits(&m, None, "v").is_err());
         assert_eq!(marked_commit("someone/else@abc"), None);
+    }
+
+    /// A manifest from before the field is contract 1; a build for another launcher contract
+    /// is refused, a newer one with the release page to download the launcher from.
+    #[test]
+    fn a_build_fits_only_the_launcher_contract_it_was_made_for() {
+        let old: Manifest = serde_json::from_slice(JSON).unwrap();
+        assert_eq!(old.contract, 1);
+        let two: Manifest = serde_json::from_str(
+            r#"{"commit":"0123456789abcdef","output_version":3,"contract":2}"#,
+        )
+        .unwrap();
+        assert_eq!(two.contract, 2);
+        assert!(fits_launcher(1, 1).is_ok());
+        let newer = fits_launcher(2, 1).unwrap_err();
+        assert!(newer.contains("newer launcher"), "{newer}");
+        assert!(newer.contains(&release_page()), "{newer}");
+        assert!(fits_launcher(1, 2)
+            .unwrap_err()
+            .contains("newer Fabric mods build"));
+        // `fits` asks the contract before the preparation format.
+        let ahead = Manifest {
+            contract: CONTRACT + 1,
+            ..two
+        };
+        assert!(fits(&ahead, Some(3), "v")
+            .unwrap_err()
+            .contains("newer launcher"));
     }
 }

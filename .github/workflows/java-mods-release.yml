@@ -7,7 +7,7 @@ run-name: java mods release ${{ github.ref_name }}${{ inputs.dry_run && ' (dry r
 #   mod's sources, built on the player's machine against the Fabric Loader fetched there and their own game; this
 #   machine fetches and reads nothing of Fabric's), Linux and Windows, as game-build.yml's `<asset>-java`;
 # - the fork's launcher (the "Fabric 26.3 mods (beta)" switch), which never updates itself into the main repository's.
-# They go out as the moving pre-release `java-mods`, with java-mods.json (commit, the preparation format the build
+# They go out as the moving pre-release `java-mods`, with java-mods.json (commit, launcher contract, the preparation format the build
 # reads) and SHA256SUMS signed for the `java-mods` channel with the fork's own key (secret JAVA_MODS_SIGNING_KEY;
 # public half in launcher/java-mods-keys.txt), as nightly-build.yml signs the Nightly: the signing job runs only
 # tools/ci/sign_release.sh, and publishing checks the signature as launchers do. Launchers fetch it when the
@@ -53,6 +53,10 @@ jobs:
           date=$(date -u +%F)
           output_version=$(sed -n 's/^pub const OUTPUT_VERSION: u32 = \([0-9]*\);$/\1/p' crates/horizon-prepare/src/lib.rs)
           [[ -n "$output_version" ]] || { echo "::error::no OUTPUT_VERSION in horizon-prepare"; exit 1; }
+          # The launcher contract the build is made for (launcher/src/java_release.rs CONTRACT):
+          # a launcher of another contract refuses it ("needs a newer launcher").
+          contract=$(sed -n 's/^pub const CONTRACT: u32 = \([0-9]*\);$/\1/p' launcher/src/java_release.rs)
+          [[ -n "$contract" ]] || { echo "::error::no CONTRACT in launcher/src/java_release.rs"; exit 1; }
           keys=$(grep -cv -e '^#' -e '^[[:space:]]*$' launcher/java-mods-keys.txt || true)
           dry=$DRY_RUN
           if [[ "$HAS_KEY" != true || "$keys" == 0 ]]; then
@@ -60,8 +64,8 @@ jobs:
             dry=true
           fi
           mkdir -p meta
-          printf '{"commit":"%s","date":"%s","output_version":%s,"ref":"%s"}\n' \
-            "$sha" "$date" "$output_version" "$GITHUB_REF_NAME" > meta/java-mods.json
+          printf '{"commit":"%s","contract":%s,"date":"%s","output_version":%s,"ref":"%s"}\n' \
+            "$sha" "$contract" "$date" "$output_version" "$GITHUB_REF_NAME" > meta/java-mods.json
           cat meta/java-mods.json
           { echo "sha=$sha"; echo "version=java-mods-$date-${sha:0:7}"; echo "dry_run=$dry"; } >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
