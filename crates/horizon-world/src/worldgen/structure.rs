@@ -12,6 +12,7 @@ pub mod mineshaft;
 pub mod monument;
 pub mod nether_fossil;
 pub mod ocean_ruin;
+mod packs;
 pub mod piece_limited;
 pub mod processor;
 pub mod ruined_portal;
@@ -285,6 +286,8 @@ pub struct StructureResources {
     pub transforms: StateTransforms,
     dir: PathBuf,
     templates: RwLock<HashMap<String, Option<Arc<StructureTemplate>>>>,
+    /// The data packs' templates, read before the game's own (`with_packs`).
+    packs: super::overrides::PackTemplates,
     pub processor_lists: BTreeMap<String, String>,
     jigsaw_states: BTreeMap<BlockStateId, bool>,
     pub(crate) waterlogged: HashMap<BlockStateId, BlockStateId>,
@@ -346,6 +349,7 @@ impl StructureResources {
             transforms,
             dir: dir.to_owned(),
             templates: RwLock::new(HashMap::new()),
+            packs: Default::default(),
             processor_lists,
             jigsaw_states,
             waterlogged,
@@ -368,8 +372,12 @@ impl StructureResources {
         }
         let (namespace, path) = id.split_once(':').unwrap();
         let file = self.dir.join(namespace).join(format!("{path}.nbt"));
-        let loaded = horizon_core::prepared_files::read(&file)
-            .ok()
+        // The packs' resource stack before the built-in pack (vanilla's
+        // ResourceManagerTemplateSource: the top pack's file wins).
+        let loaded = self
+            .packs
+            .read(&id)
+            .or_else(|| horizon_core::prepared_files::read(&file).ok())
             .and_then(|bytes| {
                 let mut raw = Vec::new();
                 flate2::read::GzDecoder::new(bytes.as_slice())

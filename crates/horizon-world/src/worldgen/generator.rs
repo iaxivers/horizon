@@ -405,13 +405,14 @@ impl GeneratorData {
                 let Ok(json) = fs::read_to_string(dir.join("blocks/structure-blocks.json")) else {
                     return Ok(None);
                 };
-                Ok(Some(Arc::new(super::structure::StructureResources::new(
+                let resources = super::structure::StructureResources::new(
                     registry,
                     super::structure::StateTransforms::from_json(&json, registry.len())?,
                     &dir.join("structure"),
                     read_optional_bundle(&dir, &ov, "processor_lists")?.unwrap_or_default(),
                     &tags,
-                ))))
+                );
+                Ok(Some(Arc::new(resources.with_packs(ov.templates().clone()))))
             }
         })?;
         let behaviours = loading({

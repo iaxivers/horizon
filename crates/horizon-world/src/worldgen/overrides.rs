@@ -9,6 +9,9 @@
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+mod pack_templates;
+pub use pack_templates::{PackReader, PackTemplates};
+
 /// The bundle of `dimension/<id>.json` level stems. Nothing prepared has
 /// it: a pack's level stem stands in for the world preset's.
 pub const DIMENSIONS: &str = "dimensions";
@@ -44,7 +47,13 @@ const TAG_KINDS: [(&str, &str); 3] = [
     ("tags/worldgen/biome", "biome_tags"),
 ];
 /// The pack folders `add_file` looks at, in walk order.
-pub const PACK_KINDS: [&str; 4] = ["dimension", "dimension_type", "tags", "worldgen"];
+pub const PACK_KINDS: [&str; 5] = [
+    "dimension",
+    "dimension_type",
+    "structure",
+    "tags",
+    "worldgen",
+];
 
 /// `ns:path` for a pack file `data/<ns>/<kind>/<path>.json`.
 fn resource_id(file: &str, kind: &str) -> Option<String> {
@@ -143,10 +152,12 @@ pub struct WorldgenOverrides {
     entries: BTreeMap<String, BTreeMap<String, String>>,
     /// Tag bundle name → (tag id, pack id, tag file text), lowest pack first.
     tags: BTreeMap<String, Vec<(String, String, String)>>,
+    /// The packs' structure templates.
+    templates: PackTemplates,
 }
 impl WorldgenOverrides {
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty() && self.tags.is_empty()
+        self.entries.is_empty() && self.tags.is_empty() && self.templates.is_empty()
     }
     /// A pack's file for `id` in `bundle`: called for packs from the lowest
     /// to the highest, so the last call for an id wins.
@@ -177,6 +188,9 @@ impl WorldgenOverrides {
         let Some((_, rest)) = file.strip_prefix("data/").and_then(|r| r.split_once('/')) else {
             return PackFile::Other;
         };
+        if self.templates.add(pack, file) {
+            return PackFile::Read;
+        }
         if let Some((bundle, id)) = KINDS
             .iter()
             .find_map(|(kind, bundle)| Some((bundle, resource_id(file, kind)?)))

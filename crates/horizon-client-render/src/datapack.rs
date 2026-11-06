@@ -1,6 +1,7 @@
 //! Data packs (`<world>/datapacks`: folders and zips with `pack.mcmeta`) and
 //! the parts of them commands use: `.mcfunction` functions (with macros and
 //! line continuation), function tags and predicates.
+mod reader;
 use crate::zip::Zip;
 use horizon_world::{
     nbt::Tag,
@@ -19,7 +20,7 @@ pub struct DataPack {
 }
 enum Source {
     Dir(PathBuf),
-    Zip(Box<Zip>),
+    Zip(std::sync::Arc<Zip>),
 }
 impl DataPack {
     /// Every file path under `prefix` (relative to the pack root).
@@ -161,7 +162,7 @@ pub fn discover_folder(dir: &Path) -> Vec<DataPack> {
         {
             packs.push(DataPack {
                 id: format!("file/{name}"),
-                source: Source::Zip(Box::new(z)),
+                source: Source::Zip(std::sync::Arc::new(z)),
             });
         }
     }
@@ -895,6 +896,7 @@ pub fn worldgen_overrides(
     let mut not_read: BTreeMap<String, usize> = BTreeMap::new();
     let mut warnings = Vec::new();
     for pack in packs {
+        out.set_reader(&pack.id, pack.reader());
         for file in pack.list_kinds(&overrides::PACK_KINDS) {
             let read = || String::from_utf8(pack.read(&file)?).ok();
             match out.add_file(&pack.id, &file, read) {
